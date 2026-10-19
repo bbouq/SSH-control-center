@@ -293,6 +293,19 @@ fn write_pending(db: &Connection, pending: &Pending) -> Result<()> {
     db.execute("INSERT INTO pairing_requests(id,document) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET document=excluded.document", params![pending.envelope.request_id, serde_json::to_string(pending)?])?;
     Ok(())
 }
+/// Forget a request that no Target has approved yet. An approved Target keeps its
+/// authorization; that is revoked on the Target (Allowed Masters), never from here.
+fn cancel(state: &Path, p: &Value) -> Result<Value> {
+    let id = string(p, "requestId")?;
+    let db = database(state)?;
+    let pending = read_pending(&db, id)?;
+    ensure!(
+        pending.state == "awaiting_approval",
+        "E_PAIRING_STATE: only requests still awaiting approval can be cancelled"
+    );
+    db.execute("DELETE FROM pairing_requests WHERE id=?1", [id])?;
+    Ok(json!({"requestId": id, "cancelled": true}))
+}
 fn view(pending: &Pending) -> Result<Value> {
     let requested = bundle(&pending.envelope)?;
     Ok(
@@ -526,6 +539,7 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
         "pairing.create" => create(state, config, &req.params)?,
         "pairing.status" => status(state, config, &req.params)?,
         "pairing.complete" => complete(state, config, &req.params)?,
+        "pairing.cancel" => cancel(state, &req.params)?,
         _ => bail!("E_METHOD: unsupported pairing method"),
     }))
 }

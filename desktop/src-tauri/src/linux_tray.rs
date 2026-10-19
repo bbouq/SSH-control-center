@@ -121,9 +121,9 @@ pub fn run() {
             return;
         }
         let setup = (|| -> Result<_, Box<dyn std::error::Error>> {
-            let open = MenuItem::new("เปิด SSH Control Center", true, None);
+            let open = MenuItem::new("Open SSH Control Center", true, None);
             let separator = PredefinedMenuItem::separator();
-            let quit = MenuItem::new("ปิดไอคอน Tray (Service ยังทำงานต่อ)", true, None);
+            let quit = MenuItem::new("Quit tray icon (service keeps running)", true, None);
             let open_id = open.id().clone();
             let quit_id = quit.id().clone();
             let menu = Menu::new();

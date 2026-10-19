@@ -515,3 +515,84 @@ fn installer_guard_blocks_submissions_releases_and_refuses_active_jobs() {
     assert_eq!(service.handle(&begin, &owner).unwrap()["guarded"], true);
     service.handle(&end, &owner).unwrap();
 }
+
+#[test]
+fn container_tools_are_bounded_by_role_and_hints() {
+    let definitions = sshcc_core::mcp::tools();
+    let tool = |name: &str| definitions.iter().find(|tool| tool["name"] == name).cloned().unwrap();
+    for (name, readonly) in [("containers_list", true), ("containers_logs", true), ("containers_action", false)] {
+        let definition = tool(name);
+        assert_eq!(definition["annotations"]["readOnlyHint"], readonly, "{name}");
+        assert!(!definition["inputSchema"]["required"].as_array().unwrap().iter().any(|f| f == "targetId"), "{name}");
+    }
+    assert_eq!(tool("containers_action")["inputSchema"]["properties"]["action"]["enum"], json!(["start", "stop", "restart"]));
+    let fx = Fixture::new();
+    let call = |config: &Config, params: Value| {
+        fleet::handle(fx.state(), config, &Request { method: "containers.list".into(), params })
+    };
+    // Without targetId the machine's own runtime answers, whatever its role.
+    let mut target_only = fx.config.clone();
+    target_only.roles = vec!["target".into()];
+    let local = call(&target_only, json!({})).unwrap().unwrap();
+    assert!(local.get("runtime").is_some() && local["containers"].is_array());
+    // Asking about another machine needs the Master role.
+    assert!(call(&target_only, json!({"targetId": "elsewhere"})).unwrap_err().to_string().contains("master role"));
+    let invalid = fleet::handle(fx.state(), &fx.config, &Request { method: "containers.action".into(), params: json!({"container": "--all", "action": "stop"}) });
+    assert!(invalid.unwrap_err().to_string().contains("E_ARGUMENT"));
+}
+
+#[test]
+fn awaiting_request_can_be_cancelled_once() {
+    let fx = Fixture::new();
+    let created = fx.create(None);
+    let id = created["requestId"].as_str().unwrap().to_string();
+    let cancelled = fx.call("pairing.cancel", json!({"requestId": id})).unwrap();
+    assert_eq!(cancelled["cancelled"], true);
+    let rows = fx.call("pairing.status", json!({})).unwrap();
+    assert!(!rows.as_array().unwrap().iter().any(|row| row["requestId"] == id));
+    assert!(fx.call("pairing.cancel", json!({"requestId": id})).unwrap_err().to_string().contains("E_PAIRING_REQUEST"));
+}
+
+#[test]
+fn folders_are_optional_and_scoped_to_their_master() {
+    let fx = Fixture::new();
+    let call = |method: &str, params: Value| sshcc_core::folders::handle(fx.state(), &fx.config, &Request { method: method.into(), params });
+    assert_eq!(call("folders.list", json!({})).unwrap().unwrap()["folders"], json!([]));
+    let web = call("folders.create", json!({"name": "Web servers"})).unwrap().unwrap();
+    let id = web["id"].as_str().unwrap().to_string();
+    assert!(call("folders.create", json!({"name": "web SERVERS"})).unwrap_err().to_string().contains("E_EXISTS"));
+    assert!(call("folders.create", json!({"name": "  "})).is_err());
+    call("folders.assign", json!({"targetId": "dev-01", "folderId": id})).unwrap();
+    // A machine behind merged Master "cnx" cannot join a local folder.
+    assert!(call("folders.assign", json!({"targetId": "cnx/bot-9", "folderId": id})).is_err());
+    let listed = call("folders.list", json!({})).unwrap().unwrap();
+    assert_eq!(listed["members"]["dev-01"], id);
+    call("folders.rename", json!({"id": id, "name": "Web"})).unwrap();
+    call("folders.assign", json!({"targetId": "dev-01", "folderId": null})).unwrap();
+    assert!(call("folders.list", json!({})).unwrap().unwrap()["members"].as_object().unwrap().is_empty());
+    call("folders.delete", json!({"id": id})).unwrap();
+    assert_eq!(call("folders.list", json!({})).unwrap().unwrap()["folders"], json!([]));
+    let mut target_only = fx.config.clone();
+    target_only.roles = vec!["target".into()];
+    assert!(sshcc_core::folders::handle(fx.state(), &target_only, &Request { method: "folders.list".into(), params: json!({}) }).is_err());
+}
+
+#[test]
+fn datacenters_group_masters_optionally() {
+    let fx = Fixture::new();
+    let call = |method: &str, params: Value| sshcc_core::folders::handle(fx.state(), &fx.config, &Request { method: method.into(), params });
+    assert_eq!(call("datacenters.list", json!({})).unwrap().unwrap()["datacenters"], json!([]));
+    let a = call("datacenters.create", json!({"name": "DC-A"})).unwrap().unwrap()["id"].as_str().unwrap().to_string();
+    let b = call("datacenters.create", json!({"name": "DC-B"})).unwrap().unwrap()["id"].as_str().unwrap().to_string();
+    assert!(call("datacenters.create", json!({"name": "dc-a"})).unwrap_err().to_string().contains("E_EXISTS"));
+    call("datacenters.assign", json!({"master": "local", "datacenterId": a})).unwrap();
+    call("datacenters.assign", json!({"master": "master-b", "datacenterId": b})).unwrap();
+    assert!(call("datacenters.assign", json!({"master": "peer/child", "datacenterId": b})).is_err());
+    let listed = call("datacenters.list", json!({})).unwrap().unwrap();
+    assert_eq!((listed["members"]["local"].as_str(), listed["members"]["master-b"].as_str()), (Some(a.as_str()), Some(b.as_str())));
+    call("datacenters.delete", json!({"id": b})).unwrap();
+    let listed = call("datacenters.list", json!({})).unwrap().unwrap();
+    assert!(listed["members"].get("master-b").is_none());
+    call("datacenters.assign", json!({"master": "local", "datacenterId": null})).unwrap();
+    assert!(call("datacenters.list", json!({})).unwrap().unwrap()["members"].as_object().unwrap().is_empty());
+}

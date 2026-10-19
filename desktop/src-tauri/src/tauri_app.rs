@@ -126,9 +126,9 @@ async fn open_shell(target_id: String, owner_session_id: Option<String>) -> Resu
             method: "targets.list".into(), params: serde_json::json!({}),
         }).map_err(|error| format!("{error:#}"))?;
         let target = targets.as_array().and_then(|rows| rows.iter().find(|row| row["id"] == target_id))
-            .ok_or_else(|| "ไม่พบเครื่องนี้ในทะเบียนของ Master".to_string())?;
+            .ok_or_else(|| "This machine is not in the Master registry".to_string())?;
         if target["runnerInstalled"] != true {
-            return Err("ติดตั้ง Target service บนเครื่องนี้ก่อนเปิด Shell".into());
+            return Err("Install the Target service on this machine before opening a shell".into());
         }
         let mut params = serde_json::json!({"targetId":target_id});
         if let Some(id) = &owner_session_id { params["ownerSessionId"] = serde_json::json!(id); }
@@ -138,14 +138,14 @@ async fn open_shell(target_id: String, owner_session_id: Option<String>) -> Resu
             let messages: Vec<_> = check["stages"].as_array().into_iter().flatten()
                 .filter(|stage| stage["ok"] == false)
                 .filter_map(|stage| stage["message"].as_str()).collect();
-            return Err(format!("เชื่อมต่อเครื่องไม่ได้: {}", messages.join("; ")));
+            return Err(format!("Cannot connect to the machine: {}", messages.join("; ")));
         }
         let status = &check["result"];
         if status.get("activeTerminals").is_none() {
-            return Err("เปิด Shell ต้องใช้ Target service ที่รองรับ terminal กรุณาอัปเกรดเครื่องนี้".into());
+            return Err("The terminal needs a Target service that supports it. Upgrade this machine".into());
         }
         let executor = &status["executor"];
-        let error = executor["error"].as_str().unwrap_or("Owner ยังไม่พร้อมทำงาน");
+        let error = executor["error"].as_str().unwrap_or("Owner is not ready");
         if executor["ready"] != true {
             if owner_session_id.is_none() && error.contains("E_OWNER_SESSION_REQUIRED") {
                 return Ok(serde_json::json!({"needsSession":true,"sessions":executor["sessions"]}));
@@ -162,13 +162,13 @@ async fn open_shell(target_id: String, owner_session_id: Option<String>) -> Resu
         arguments.extend(["--".into(), target_id.clone().into()]);
         #[cfg(windows)]
         let pid = crate::windows_window::spawn_shell(&executable, &arguments)
-            .map_err(|error| format!("เปิดหน้าต่าง Terminal ไม่ได้: {error}"))?;
+            .map_err(|error| format!("Could not open a Terminal window: {error}"))?;
         #[cfg(not(windows))]
         let pid = {
             let mut command = std::process::Command::new("x-terminal-emulator");
             command.arg("-e").arg(&executable);
             command.args(&arguments);
-            let child = command.spawn().map_err(|error| format!("เปิดหน้าต่าง Terminal ไม่ได้: {error}"))?;
+            let child = command.spawn().map_err(|error| format!("Could not open a Terminal window: {error}"))?;
             let pid = child.id();
             std::thread::spawn(move || { let mut child = child; let _ = child.wait(); });
             pid
@@ -230,6 +230,33 @@ async fn save_json(app: AppHandle, document: Value) -> Result<Option<String>, St
     .map_err(|error| error.to_string())?
 }
 
+// The webview names only the host and path; the bytes never pass through it and
+// are written solely to the location picked in the native save dialog.
+#[tauri::command]
+async fn save_remote_file(
+    app: AppHandle,
+    target_id: String,
+    path: String,
+    name: String,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(dest) = app
+            .dialog()
+            .file()
+            .set_title("Download file")
+            .set_file_name(name)
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let dest = dest.into_path().map_err(|error| error.to_string())?;
+        client::download(&target_id, &path, &dest).map_err(|error| format!("{error:#}"))?;
+        Ok(Some(dest.display().to_string()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 // Setup data is fetched again from the owner-authorized service. The webview
 // supplies only a request ID; writing is limited to the native save dialog.
 #[tauri::command]
@@ -251,8 +278,8 @@ async fn save_setup(app: AppHandle, request_id: String) -> Result<Option<Value>,
         let Some(path) = app
             .dialog()
             .file()
-            .set_title("บันทึกชุดติดตั้งสำหรับเครื่องใหม่")
-            .add_filter("ชุดติดตั้ง", &[extension])
+            .set_title("Save installer for the new machine")
+            .add_filter("Installer", &[extension])
             .set_file_name(filename)
             .blocking_save_file()
         else {
@@ -285,15 +312,15 @@ async fn merge_two_way(app: AppHandle, target_id: String) -> Result<Value, Strin
         let call = |method: &str, params: Value| {
             client::call(&Request { method: method.into(), params }).map_err(|error| format!("{error:#}"))
         };
-        progress("request", "ขอคำขอจับคู่จาก Master ปลายทาง");
+        progress("request", "Requesting pairing from the remote Master");
         let reply = call("merges.pair_request", serde_json::json!({"targetId":target_id}))?;
         let code = if reply.get("existingTargetId").is_some() {
             None
         } else {
-            progress("install", "ติดตั้ง SSH server และสิทธิ์ของ Master ปลายทางบนเครื่องนี้");
+            progress("install", "Installing the SSH server and the remote Master’s access on this machine");
             Some(run_pairing_setup(&reply["envelope"], &|message| progress("install", message))?)
         };
-        progress("confirm", "ให้ Master ปลายทางตรวจเครื่องนี้และ merge กลับ");
+        progress("confirm", "Remote Master is checking this machine and merging back");
         let mut params = serde_json::json!({"targetId":target_id});
         if let Some(code) = code { params["code"] = serde_json::json!(code); }
         let result = call("merges.pair_complete", params)?;
@@ -309,7 +336,7 @@ fn run_pairing_setup(envelope: &Value, progress: &dyn Fn(&str)) -> Result<String
     use std::os::windows::process::CommandExt;
     let text = |error: std::io::Error| error.to_string();
     let install = std::env::current_exe().map_err(text)?
-        .parent().ok_or("ไม่พบโฟลเดอร์ที่ติดตั้ง")?.to_path_buf();
+        .parent().ok_or("Installation folder not found")?.to_path_buf();
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
     let hex = format!("{:032x}", nanos ^ ((std::process::id() as u128) << 96));
     let run_id = format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32]);
@@ -351,7 +378,7 @@ fn run_pairing_setup(envelope: &Value, progress: &dyn Fn(&str)) -> Result<String
         let error = std::fs::read_to_string(stage.join("result.json")).ok()
             .and_then(|t| serde_json::from_str::<Value>(t.trim_start_matches('\u{feff}')).ok())
             .and_then(|r| r["error"].as_str().filter(|e| !e.is_empty()).map(str::to_owned))
-            .unwrap_or_else(|| format!("ตัวติดตั้งจบโดยไม่มีรหัสจับคู่ ({status}) อาจถูกยกเลิกที่หน้าขอสิทธิ์ admin"));
+            .unwrap_or_else(|| format!("The installer exited without a pairing code ({status}); the admin prompt may have been cancelled"));
         Err(error)
     })();
     let _ = std::fs::remove_dir_all(&staging);
@@ -360,7 +387,7 @@ fn run_pairing_setup(envelope: &Value, progress: &dyn Fn(&str)) -> Result<String
 
 #[cfg(not(windows))]
 fn run_pairing_setup(_envelope: &Value, _progress: &dyn Fn(&str)) -> Result<String, String> {
-    Err("เปิดสองทางอัตโนมัติรองรับเฉพาะ Master ที่เป็น Windows ตอนนี้".into())
+    Err("Automatic two-way setup currently supports Windows Masters only".into())
 }
 
 fn open_management_window(app: &AppHandle, isolated_window: bool) {
@@ -398,6 +425,8 @@ fn show_window(app: &AppHandle) {
             .title("SSH Control Center")
             .inner_size(1180.0, 780.0)
             .min_inner_size(820.0, 600.0)
+            // Let the page receive files dropped from the desktop (Files tab upload).
+            .disable_drag_drop_handler()
             .build();
         OPENING.store(false, Ordering::Release);
         if let Err(error) = result {
@@ -505,6 +534,7 @@ pub fn run_tauri(isolated_window: bool) {
             open_json,
             save_json,
             save_setup,
+            save_remote_file,
             merge_two_way,
             client_links,
             client_connect,
@@ -520,12 +550,12 @@ pub fn run_tauri(isolated_window: bool) {
                 return Ok(());
             }
             let open =
-                MenuItem::with_id(app, "open", "เปิด SSH Control Center", true, None::<&str>)?;
+                MenuItem::with_id(app, "open", "Open SSH Control Center", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(
                 app,
                 "quit",
-                "ปิดไอคอน Tray (Service ยังทำงานต่อ)",
+                "Quit tray icon (service keeps running)",
                 true,
                 None::<&str>,
             )?;

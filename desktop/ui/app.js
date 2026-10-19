@@ -2,19 +2,24 @@ const $ = (selector, parent = document) => parent.querySelector(selector);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const pretty = value => JSON.stringify(value, null, 2);
 document.documentElement.dataset.theme = "dark";
-const titles = { fleet: "เครื่องทั้งหมด", enroll: "เพิ่มเครื่อง", masters: "Master ที่อนุญาต", service: "Local service" };
+const titles = { datacenter: "Inventory", fleet: "All hosts", enroll: "Add target host", masters: "Allowed Masters", service: "Local service" };
 const state = {
-  page: "fleet", targets: [], masters: [], service: null, serviceError: "", selected: null,
+  page: "datacenter", targets: [], masters: [], service: null, serviceError: "", selected: null,
   tab: "overview", query: "", group: "", status: "", diagnostics: new Map(), jobs: [], jobsError: "",
   job: null, stream: "stdout", log: "", offset: 0, eof: true, polling: false, newJob: false,
   export: null, pendingJob: null, file: null, files: null, pairing: null, pairings: [], setupSaved: null,
-  merges: [], relays: [], discovered: null, merging: new Set(),
+  merges: [], relays: [], discovered: null, merging: new Set(), masterCheck: new Map(),
   view: localStorage.getItem("sshcc.fleetView") === "table" ? "table" : "graph",
   health: new Map(), healthError: "", healthLoading: false, healthAt: null, healthStarted: 0, flipped: new Set(), twoWay: new Map(),
-  clientLinks: [], clientLinksError: ""
+  clientLinks: [], clientLinksError: "",
+  // Datacenter: tree selection, collapsed branches and on-demand container data per machine ("local" = this Master).
+  dc: { node: "dc", tab: "summary", query: "", collapsed: new Set(), filter: "running", adding: null, editing: null, ctView: "containers",
+    monInterval: Number(localStorage.getItem("sshcc.monitorInterval")) || 5000, monPaused: false },
+  monitor: new Map(),
+  containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} }
 };
 const native = (command, args = {}) => {
-  if (!window.__TAURI__?.core?.invoke) throw new Error("เปิดโปรแกรม SSH Control Center เพื่อเชื่อมต่อ local service");
+  if (!window.__TAURI__?.core?.invoke) throw new Error("Open the SSH Control Center app to connect to the local service");
   return window.__TAURI__.core.invoke(command, args);
 };
 const rpc = (method, params = {}) => native("rpc", { method, params });
@@ -24,7 +29,7 @@ const osName = os => ({ windows: "Windows", linux: "Linux" })[os] || os || "";
 const timestamp = value => {
   if (!value) return "—";
   const date = new Date(typeof value === "number" ? value * 1000 : value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
 };
 const formatSize = bytes => {
   if (bytes == null || Number.isNaN(Number(bytes))) return "—";
@@ -35,9 +40,9 @@ const formatSize = bytes => {
 };
 const formatUptime = seconds => {
   const minutes = Math.floor((seconds || 0) / 60), hours = Math.floor(minutes / 60), days = Math.floor(hours / 24);
-  if (days) return days + " วัน " + (hours % 24) + " ชม.";
-  if (hours) return hours + " ชม. " + (minutes % 60) + " นาที";
-  return minutes + " นาที";
+  if (days) return days + "d " + (hours % 24) + "h";
+  if (hours) return hours + "h " + (minutes % 60) + "m";
+  return minutes + "m";
 };
 const svg = paths => '<svg class="i" viewBox="0 0 16 16" aria-hidden="true">' + paths + "</svg>";
 const icons = {
@@ -50,6 +55,7 @@ const icons = {
   search: svg('<circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/>'),
   refresh: svg('<path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"/><path d="M13.25 2.25v3.5h-3.5"/>'),
   back: svg('<path d="M13 8H3.5M7.5 4 3.5 8l4 4"/>'),
+  more: svg('<circle cx="8" cy="3.5" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="8" cy="12.5" r="1.1"/>'),
   up: svg('<path d="M8 13V3.5M4 7.5l4-4 4 4"/>'),
   chevron: svg('<path d="m6 3.5 4.5 4.5L6 12.5"/>'),
   folder: svg('<path d="M1.75 4.25c0-.7.55-1.25 1.25-1.25h3l1.5 1.75H13c.7 0 1.25.55 1.25 1.25v6c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25Z"/>'),
@@ -67,25 +73,25 @@ function notify(message, error = false) {
   $("#notice-text").textContent = String(message); notice.classList.toggle("error", error); notice.hidden = false;
 }
 function clearNotice() { $("#notice").hidden = true; }
-async function copyText(text, message = "คัดลอกแล้ว") {
+async function copyText(text, message = "Copied") {
   try { await navigator.clipboard.writeText(String(text ?? "")); }
-  catch { throw new Error("คัดลอกไม่ได้ ลองเลือกข้อความแล้วกด Ctrl+C"); }
+  catch { throw new Error("Could not copy. Select the text and press Ctrl+C"); }
   notify(message);
 }
 async function openShell(targetId, ownerSessionId) {
   const item = state.targets.find(row => row.id === targetId);
-  if (!item) throw new Error("ไม่พบเครื่องนี้ในทะเบียน");
+  if (!item) throw new Error("This target host is not in the registry");
   const result = await native("open_shell", { targetId, ownerSessionId: ownerSessionId || null });
   if (result.needsSession) {
     $("#shell-machine").textContent = item.label || item.id;
     $("#shell-target").value = item.id;
-    $("#shell-session").innerHTML = '<option value="">เลือก session ที่ต้องการ</option>' + result.sessions.map(session => '<option value="' + esc(session.id) + '">' + esc(session.account) + ' · session ' + esc(session.id) + ' · ' + esc(session.state) + '</option>').join("");
+    $("#shell-session").innerHTML = '<option value="">Choose a session</option>' + result.sessions.map(session => '<option value="' + esc(session.id) + '">' + esc(session.account) + ' · session ' + esc(session.id) + ' · ' + esc(session.state) + '</option>').join("");
     $("#shell-dialog").showModal();
     return;
   }
-  notify("เปิด Shell ของ " + (item.label || item.id) + " ในหน้าต่าง Terminal แล้ว");
+  notify("Opened a terminal for " + (item.label || item.id) + " in a Terminal window");
 }
-const jobLabels = { succeeded: "สำเร็จ", failed: "ล้มเหลว", interrupted: "ถูกขัดจังหวะ", cancelled: "ยกเลิกแล้ว", running: "กำลังรัน", queued: "รอคิว" };
+const jobLabels = { succeeded: "Succeeded", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled", running: "Running", queued: "Queued" };
 function badge(status) {
   const styles = { succeeded: "good", failed: "bad", interrupted: "bad", cancelled: "", running: "running", queued: "pending" };
   return '<span class="badge ' + (styles[status] || "") + '" title="' + esc(status) + '">' + esc(jobLabels[status] || status) + "</span>";
@@ -95,20 +101,17 @@ async function busy(button, work) {
   if (button) button.disabled = true;
   clearNotice();
   try { return await work(); }
-  catch (error) { notify(state.page === "enroll" ? pairingError(error) : error?.message || error, true); }
+  catch (error) { notify(state.page === "enroll" || state.dc.adding ? pairingError(error) : friendlyError(error), true); }
   finally { if (button?.isConnected) button.disabled = false; }
 }
 function renderHeader() {
-  const item = state.page === "fleet" ? target() : null;
-  $("#breadcrumb").innerHTML = item
-    ? '<button data-action="back-fleet">' + esc(titles.fleet) + "</button>" + icons.chevron + "<strong>" + esc(item.label || item.id) + "</strong>"
-    : "<strong>" + esc(titles[state.page]) + "</strong>";
-  $("#fleet-count").textContent = String(state.targets.length);
-  $("#node-label").textContent = state.service?.label || "Local service";
-  $("#node-role").textContent = state.service?.roles?.join(" + ") || "ยังไม่เชื่อมต่อ";
-  $("#node-dot").className = "dot " + (state.service ? "good" : "bad");
-  $("#service-label").textContent = state.service ? "Service พร้อมใช้งาน" : "Service ไม่พร้อม";
+  $("#fleet-count").textContent = String(hostCount());
+  // Always say which Master this window operates from; merged Masters are reached through it.
+  $("#service-label").textContent = state.service ? state.service.label : "Service unavailable";
+  if (state.service?.version && $("#app-version")) $("#app-version").textContent = "v" + state.service.version;
   $("#service-dot").className = "dot " + (state.service ? "good" : "bad");
+  $("#dc-tree").hidden = state.dc.treeHidden === true;
+  $(".tree-toggle").setAttribute("aria-expanded", String(state.dc.treeHidden !== true));
   document.querySelectorAll("[data-page]").forEach(button => {
     const active = button.dataset.page === state.page;
     button.classList.toggle("active", active);
@@ -129,10 +132,12 @@ async function refreshLocal() {
   renderHeader();
 }
 async function refreshFleet() {
-  const [rows, merges, relays] = await Promise.all([
-    rpc("targets.list"), rpc("merges.list").catch(() => []), rpc("relays.list").catch(() => [])
+  const [rows, merges, relays, folders, datacenters] = await Promise.all([
+    rpc("targets.list"), rpc("merges.list").catch(() => []), rpc("relays.list").catch(() => []), rpc("folders.list").catch(() => null), rpc("datacenters.list").catch(() => null)
   ]);
-  if (!Array.isArray(rows)) throw new Error("Service ส่งรายการ Target ในรูปแบบที่ไม่รองรับ");
+  if (folders) state.folders = folders;
+  if (datacenters) state.datacenters = datacenters;
+  if (!Array.isArray(rows)) throw new Error("The service returned Targets in an unsupported format");
   state.targets = rows; state.merges = merges; state.relays = relays;
   if (state.selected && !target()) state.selected = null;
   renderHeader();
@@ -153,17 +158,23 @@ async function refreshHealth(refresh = false) {
     state.healthError = ""; state.healthAt = new Date();
   } catch (error) { state.healthError = String(error?.message || error); }
   finally { state.healthLoading = false; }
-  if (state.page === "fleet" && !target() && $("#fleet-table")) $("#fleet-table").innerHTML = renderFleetView();
+  if ($("#fleet-table")) $("#fleet-table").innerHTML = renderFleetView();
+  // Re-render only read-only summaries; a machine page may hold an open form.
+  $("#dc-tree").innerHTML = renderDcTree();
+  if (state.page === "datacenter" && state.dc.tab === "summary" && state.dc.node !== "dc" && !holdsForm() && !state.dc.adding) $("#dc-panel").innerHTML = renderDcPanel();
+  if ($("#inv-summary")) $("#inv-summary").outerHTML = renderSummaryLine();
 }
 function refreshHealthIfDue() {
-  if (state.page !== "fleet" || target() || document.hidden || !document.hasFocus()) return;
+  const showsHealth = state.page === "datacenter";
+  if (!showsHealth || document.hidden || !document.hasFocus()) return;
   if (Date.now() - state.healthStarted >= HEALTH_INTERVAL - 1000) void refreshHealth();
 }
 async function navigate(page) {
   state.page = page; clearNotice(); render();
-  if (page === "fleet") {
+  if (page === "datacenter") {
     try { await refreshFleet(); if (state.page === page) render(); } catch (error) { notify(error, true); }
     void refreshHealth();
+    void loadContainersIfShown(); void loadFilesIfShown();
   }
   if (page === "masters") {
     try { await refreshMasters(); if (state.page === page) render(); } catch (error) { notify(error, true); }
@@ -174,7 +185,8 @@ async function navigate(page) {
 function render() {
   renderHeader();
   const main = $("#main");
-  if (state.page === "fleet") main.innerHTML = target() ? renderTarget() : renderFleet();
+  $("#dc-tree").innerHTML = renderDcTree();
+  if (state.page === "datacenter") main.innerHTML = '<section class="dc-main" id="dc-panel">' + renderDcPanel() + "</section>";
   if (state.page === "enroll") main.innerHTML = renderEnrollment();
   if (state.page === "masters") main.innerHTML = renderMasters();
   if (state.page === "service") main.innerHTML = renderService();
@@ -182,22 +194,15 @@ function render() {
 function heading(title, description, actions = "") {
   return '<div class="page-heading"><div><h1>' + esc(title) + "</h1>" + (description ? "<p>" + esc(description) + "</p>" : "") + "</div>" + (actions ? '<div class="page-actions">' + actions + "</div>" : "") + "</div>";
 }
-function renderFleet() {
-  const groups = [...new Set(state.targets.map(item => item.tenant).filter(Boolean))].sort();
-  return heading("เครื่องทั้งหมด", "เลือกเครื่องเพื่อดูการเชื่อมต่อ งาน และไฟล์", '<button class="primary" data-action="add">' + icons.plus + "เพิ่มเครื่อง</button>") +
-    '<div class="toolbar"><div class="search">' + icons.search + '<input id="fleet-search" type="search" aria-label="ค้นหาเครื่อง" placeholder="ค้นหาชื่อเครื่อง กลุ่ม หรือ IP…" value="' + esc(state.query) + '"></div>' +
-    '<select id="group-filter" aria-label="กรองกลุ่ม"><option value="">ทุกกลุ่ม</option>' +
-    groups.map(group => '<option value="' + esc(group) + '"' + (state.group === group ? " selected" : "") + ">" + esc(group) + "</option>").join("") +
-    '</select><div class="segmented" role="group" aria-label="มุมมอง">' +
-    [["graph", "Graph", icons.graph], ["table", "ตาราง", icons.table]].map(([view, label, icon]) => '<button data-action="fleet-view" data-view="' + view + '" aria-pressed="' + (state.view === view) + '">' + icon + label + "</button>").join("") +
-    '</div><button data-action="refresh-fleet" title="ตรวจสถานะทุกเครื่องผ่าน SSH อีกครั้ง">' + icons.refresh + 'รีเฟรช</button></div><div id="fleet-table">' + renderFleetView() + "</div>" +
-    '<details class="fleet-hint"><summary>สถานะออนไลน์ตรวจอย่างไร</summary><div><ul><li>ตรวจพอร์ต SSH ทุก 1 นาทีขณะเปิดหน้าต่างนี้</li><li>กดรีเฟรชเพื่อตรวจผ่าน SSH เต็มรูปแบบ</li><li>ตรวจละเอียดรายเครื่องได้ที่ “ตรวจการเชื่อมต่อ” ในหน้าเครื่อง</li><li>รองรับ 50 Target ต่อ Master</li></ul></div></details>';
+function renderFleetTools() {
+  return '<div id="fleet-table">' + renderFleetView() + "</div>" +
+    '<details class="fleet-hint"><summary>How online status is checked</summary><div><ul><li>The SSH port is probed every minute while this window is open</li><li>Refresh runs a full check over SSH</li><li>Use “Check connection” on a host for a detailed check</li><li>Up to 50 Targets per Master</li></ul></div></details>';
 }
 function renderFleetView() {
   if (!state.targets.length) return renderFleetRows();
-  return renderStatusBar() + (state.view === "graph" ? renderGraph() : renderFleetRows());
+  return renderGraph();
 }
-const stateLabels = { online: "ออนไลน์", offline: "ออฟไลน์", checking: "กำลังตรวจ…", unknown: "ไม่ทราบสถานะ", legacy: "รอติดตั้ง service" };
+const stateLabels = { online: "Online", offline: "Offline", checking: "Checking…", unknown: "Unknown", legacy: "Service not installed" };
 const stateStyles = { online: "good", offline: "bad", checking: "pending", legacy: "pending" };
 function nodeState(item) {
   if (item.runnerInstalled === false) return "legacy";
@@ -205,20 +210,83 @@ function nodeState(item) {
   if (!row) return state.healthError ? "unknown" : "checking";
   return row.online === true ? "online" : row.online === false ? "offline" : "unknown";
 }
+const HOT = 85;
+/** Every host this window can open: the current Master plus every Target (merged Masters included). */
+const hostCount = () => state.targets.length + 1;
+const hostsOnline = () => state.targets.filter(item => nodeState(item) === "online").length + (state.service ? 1 : 0);
+function hostRole(item) {
+  if (!item) return "Master · current";
+  if (state.merges.some(merge => merge.targetId === item.id)) return "Master · merged";
+  return state.masterCheck.get(item.id) || state.health.get(item.id)?.isMaster ? "Master" : "Target host";
+}
+/** Every host page — target host or Master — has the same tabs. */
+const HOST_PAGE_TABS = [["summary", "Summary"], ["jobs", "Jobs & logs"], ["files", "Files"], ["containers", "Containers"], ["monitoring", "Monitoring"]];
+/** This Master registered as a target host of itself (needed for its own jobs, files and terminal). */
+const selfTarget = () => state.service ? state.targets.find(item => !item.relayed && item.nodeId === state.service.nodeId) : null;
+/** The target host behind the open page: the host itself, a merged Master, or this Master's self registration. */
+function pageTarget() {
+  const node = state.dc.node || "";
+  if (node.startsWith("node:")) return state.targets.find(item => item.id === node.slice(5)) || null;
+  if (node === "master:local") return selfTarget() || null;
+  if (node.startsWith("master:")) return state.targets.find(item => item.id === node.slice(7)) || null;
+  return null;
+}
+function resetHostState(id) {
+  state.selected = id || null; state.job = null; state.jobs = []; state.jobsError = "";
+  state.files = null; state.filesError = ""; state.file = null; state.pendingJob = null; state.newJob = false;
+}
+/** Pages whose open form or editor must not be redrawn by background refreshes. */
+const holdsForm = () => state.dc.node.startsWith("node:") || ["jobs", "files"].includes(state.dc.tab);
+function sampledMem(id) {
+  const samples = state.monitor.get(id)?.samples;
+  return samples?.length > 1 ? monitorSeries(samples.slice(-2))[0]?.memory ?? null : null;
+}
+const memCell = item => { const mem = sampledMem(item.id); return mem == null ? '<span class="muted">—</span>' : '<span class="num">' + Math.round(mem) + "%</span>"; };
+function hostSite(item) {
+  if (!item) return siteOf("local")?.name || "—";
+  if (state.merges.some(merge => merge.targetId === item.id)) return siteOf(item.id)?.name || "—";
+  return siteOf(item.relayed ? item.id.split("/")[0] : "local")?.name || "—";
+}
+function hostAddress(item) {
+  const route = item.routes?.[0];
+  return item.relayed ? '<span class="muted">Via ' + esc(item.viaLabel || item.via) + "</span>"
+    : route ? '<code title="' + esc(route.kind || "") + '">' + esc(route.address) + (route.port && route.port !== 22 ? ":" + esc(route.port) : "") + "</code>" : "—";
+}
+const terminalButton = item => item ? '<button class="small" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="Open terminal on ' + esc(item.label || item.id) + '"' + (!item.runnerInstalled ? ' disabled title="Install the Target service first"' : ' title="Open terminal"') + ">" + icons.shell + '<span class="btn-label">Open terminal</span></button>' : "";
+const HOST_HEAD = "<thead><tr><th>Host</th><th>Role</th><th>Address</th><th>CPU</th><th>MEM</th><th>Status</th><th></th></tr></thead>";
+/** One row per host; only the name links to its page. */
+function hostRow(item) {
+  if (!item) return '<tr data-host="local"><td><button class="row-button" data-action="dc-select" data-node="master:local">' + esc(state.service?.label || "This Master") + "</button><small>this window</small></td><td>Master · current</td>" +
+    '<td><span class="muted">—</span></td><td>' + cpuCell({ id: "local" }) + "</td><td>" + memCell({ id: "local" }) + "</td><td>" + localStatus() + '</td><td class="actions">' + terminalButton(selfTarget()) + "</td></tr>";
+  const check = state.diagnostics.get(item.id);
+  const status = !item.runnerInstalled ? '<span class="badge pending">Service not installed</span>' : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? "Connected" : "Problem found") + "</span><small>Checked " + esc(timestamp(check.checkedAt)) + "</small>" : statusBadge(item);
+  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small></td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
+}
+const localStatus = () => '<span class="badge ' + (state.service ? "good" : "bad") + '">' + (state.service ? "Online" : "Unavailable") + "</span>";
+/** Latest CPU % from the Monitoring tab's own samples, or null when the machine was never watched. */
+function sampledCpu(id) {
+  const samples = state.monitor.get(id)?.samples;
+  return samples?.length > 1 ? monitorSeries(samples.slice(-2))[0]?.cpu ?? null : null;
+}
+const isHot = item => nodeState(item) === "online" && (sampledCpu(item.id) ?? 0) >= HOT;
+const cpuCell = item => { const cpu = sampledCpu(item.id); return cpu == null ? '<span class="muted">—</span>' : '<span class="num' + (cpu >= HOT ? " hot-text" : "") + '">' + Math.round(cpu) + "%</span>"; };
 const statusBucket = item => ({ online: "online", offline: "offline" })[nodeState(item)] || "other";
 function statusBadge(item) {
   const status = nodeState(item), error = state.health.get(item.id)?.error;
+  if (isHot(item)) return '<span class="badge hot" title="CPU ' + Math.round(sampledCpu(item.id)) + '% in the last Monitoring sample">High load</span>';
   return '<span class="badge ' + (stateStyles[status] || "") + '"' + (error ? ' title="' + esc(error) + '"' : "") + ">" + esc(stateLabels[status]) + "</span>";
 }
 function renderStatusBar() {
   const pool = state.targets.filter(item => matchesFilter(item, true));
   const count = bucket => pool.filter(item => statusBucket(item) === bucket).length;
-  const filters = [["", "ทั้งหมด", pool.length, ""], ["online", "ออนไลน์", count("online"), "good"], ["offline", "ออฟไลน์", count("offline"), "bad"], ["other", "ยังไม่ทราบ", count("other"), "pending"]]
+  // The current Master is listed too (first row) whenever no search or tenant filter hides it.
+  const local = !state.query && state.service ? 1 : 0;
+  const filters = [["", "All", pool.length + local, ""], ["online", "Online", count("online") + local, "good"], ["offline", "Offline", count("offline"), "bad"], ["other", "Unknown", count("other"), "pending"]]
     .filter(([id, , total]) => id !== "other" || total || state.status === "other");
   const meta = state.healthError
-    ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + "ตรวจสถานะไม่ได้ ชี้เพื่อดูสาเหตุ</span>"
-    : '<span class="status-meta">' + (state.healthAt ? "ตรวจล่าสุด " + esc(timestamp(state.healthAt)) : "กำลังตรวจสถานะทุกเครื่อง…") + "</span>";
-  return '<div class="status-bar"><div class="status-filters" role="group" aria-label="กรองตามสถานะ">' +
+    ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + "Status check failed (hover for the reason)</span>"
+    : '<span class="status-meta">' + (state.healthAt ? "Last checked " + esc(timestamp(state.healthAt)) : "Checking every host…") + "</span>";
+  return '<div class="status-bar"><div class="status-filters" role="group" aria-label="Filter by status">' +
     filters.map(([id, label, total, dot]) => '<button class="status-filter" data-action="status-filter" data-status="' + id + '" aria-pressed="' + (state.status === id) + '">' + (dot ? '<span class="dot ' + dot + '"></span>' : "") + label + " <strong>" + total + "</strong></button>").join("") +
     "</div>" + meta + "</div>";
 }
@@ -231,178 +299,183 @@ function pcIcon(master) {
 }
 function graphNode(item, options = {}) {
   const status = options.status || nodeState(item), row = state.health.get(item.id), name = item.label || item.id, route = item.routes?.[0];
-  const hint = status === "offline" || status === "unknown" ? row?.error || "" : status === "online" && row?.checkedAt ? "ตรวจเมื่อ " + timestamp(row.checkedAt) : "";
-  const sub = options.sub || [osName(item.os), item.tenant, !item.relayed && route?.address ? route.address : ""].filter(Boolean).join(" · ");
+  const hint = status === "offline" || status === "unknown" ? row?.error || "" : status === "online" && row?.checkedAt ? "Checked " + timestamp(row.checkedAt) : "";
+  const sub = options.sub || [osName(item.os), !item.relayed && route?.address ? route.address : ""].filter(Boolean).join(" · ");
   const main = pcIcon(options.master) + '<span class="node-info"><span class="node-label">' + esc(name) +
-    (options.alsoDirect ? ' <span class="node-tag">เชื่อมตรงด้วย</span>' : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
+    (options.alsoDirect ? ' <span class="node-tag">Also direct</span>' : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
     '<span class="node-state"><span class="dot"></span>' + esc(stateLabels[status]) + "</span></span>";
   return '<div class="node is-' + status + (options.master ? " is-master" : "") + (options.root ? " is-root" : "") + (state.flipped.has(item.id) ? " just-changed" : "") + '">' +
     (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
-    (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="เปิด Shell ของ ' + esc(name) + '" title="เปิด Shell">' + icons.shell + "</button>") + "</div>";
+    (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="Open terminal on ' + esc(name) + '" title="Open terminal">' + icons.shell + "</button>") + "</div>";
 }
 function matchesFilter(item, ignoreStatus = false) {
   const search = state.query.toLowerCase();
-  return (!state.group || state.group === item.tenant) && (ignoreStatus || !state.status || statusBucket(item) === state.status) &&
+  return (ignoreStatus || !state.status || statusBucket(item) === state.status) &&
     [item.id, item.label, item.tenant, item.viaLabel, ...(item.routes || []).map(route => route.address)].some(value => String(value || "").toLowerCase().includes(search));
 }
 function isTwoWay(merge) {
   const peer = state.targets.find(item => item.id === merge?.targetId);
   return merge?.reverse?.status === "two-way" && state.relays.some(relay => relay.masterId === peer?.nodeId && !relay.revoked);
 }
-const noMatch = '<div class="empty"><h2>ไม่พบเครื่องที่ค้นหา</h2><p>ลองค้นหาด้วยชื่อ กลุ่ม หรือ IP อื่น หรือล้างตัวกรองสถานะ</p><button data-action="clear-filter">ล้างตัวกรอง</button></div>';
+const noMatch = '<div class="empty"><h2>No matching hosts</h2><p>Try another name or IP, or clear the status filter</p><button data-action="clear-filter">Clear filters</button></div>';
+/* Topology: columns are hops from this window. Solid lines are SSH from this Master; dashed lines are
+   requests relayed through a merged Master. Nodes open the machine (or Master) page. */
+/** Topology, top-down: this Master on top, then one group for hosts it reaches directly and one per merged Master. */
 function renderGraph() {
-  const direct = state.targets.filter(item => !item.relayed), byNode = new Map(direct.map(item => [item.nodeId, item]));
-  const peers = state.merges.map(merge => ({ merge, peer: direct.find(item => item.id === merge.targetId) })).filter(entry => entry.peer);
-  const peerIds = new Set(peers.map(entry => entry.peer.id));
-  const online = list => list.filter(entry => nodeState(entry.item) === "online").length;
-  const branches = [];
-  const own = direct.filter(item => !peerIds.has(item.id) && matchesFilter(item)).map(item => ({ item }));
-  if (own.length || !peers.length) {
-    branches.push({
-      live: Boolean(state.service),
-      head: '<div class="sector-title"><div><h3>เชื่อมตรงจากเครื่องนี้</h3><span class="meta-row">ออนไลน์ ' + online(own) + "/" + own.length + " เครื่อง</span></div></div>",
-      nodes: own
-    });
+  const masters = dcModel(), local = masters[0], peers = masters.slice(1), peerIds = new Set(peers.map(master => master.id));
+  const online = entries => entries.filter(entry => nodeState(entry.item) === "online").length;
+  const card = (item, options = {}) => {
+    const status = item ? nodeState(item) : state.service ? "online" : "offline", name = item ? item.label || item.id : local.label;
+    const sub = item ? [options.role, osName(item.os), item.relayed ? "" : item.routes?.[0]?.address].filter(Boolean) : ["This window · current Master"];
+    return '<div class="topo-card is-' + status + (options.wide ? " is-wide" : "") + (item && state.flipped.has(item.id) ? " just-changed" : "") + '" data-host="' + esc(item ? item.id : "local") + '">' +
+      '<span class="topo-dot" aria-hidden="true"></span><div class="topo-text"><button class="row-button" data-action="dc-select" data-node="' + (item ? "node:" + esc(item.id) : "master:local") + '">' + esc(name) + "</button>" +
+      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabels[status] || status) + (options.alsoDirect ? " · also direct" : "") + "</span></div>" +
+      (item ? terminalButton(item) : "") + "</div>";
+  };
+  const group = (title, entries, extra = "", head = "") => '<section class="topo-group"><header><h3>' + title + '</h3><span class="topo-meta">' + online(entries) + "/" + entries.length + " online" + extra + "</span></header>" +
+    head + (entries.length ? '<div class="topo-cards">' + entries.map(entry => card(entry.item, { alsoDirect: entry.alsoDirect })).join("") + "</div>" : '<p class="help">No hosts match</p>') + "</section>";
+  const direct = local.machines.filter(entry => !peerIds.has(entry.item.id) && matchesFilter(entry.item));
+  const groups = [group("Direct from " + esc(local.label), direct)];
+  for (const peer of peers) {
+    const children = peer.machines.filter(entry => matchesFilter(entry.item));
+    groups.push(group("Through " + esc(peer.label), children, " · " + (peer.twoWay ? "two-way" : "one-way") + ' <button class="text-button" data-page="masters">Manage merge</button>',
+      '<div class="topo-cards is-head' + (online(children) ? " is-live" : "") + '">' + card(peer.item, { role: "Master · " + peer.machines.length + " target hosts", wide: true }) + "</div>"));
   }
-  for (const { merge, peer } of peers) {
-    const children = (merge.children || []).map(child => byNode.has(child.nodeId)
-      ? { item: byNode.get(child.nodeId), alsoDirect: true }
-      : { item: state.targets.find(item => item.id === peer.id + "/" + child.id) }).filter(entry => entry.item);
-    const shown = children.filter(entry => matchesFilter(entry.item));
-    if (!shown.length && !matchesFilter(peer)) continue;
-    const both = isTwoWay(merge);
-    const direction = '<span class="direction ' + (both ? "is-both" : "") + '" title="' + (both ? "สั่งเครื่องลูกของกันและกันได้" : "เราสั่งเครื่องลูกของ Master นี้ได้ แต่ Master นี้ยังสั่งเครื่องลูกของเราไม่ได้") + '">' + (both ? icons.both + "สองทาง" : icons.one + "ทางเดียว") + "</span>";
-    const synced = merge.status === "merged";
-    branches.push({
-      live: nodeState(peer) === "online",
-      head: '<div class="sector-title"><div><h3>ผ่าน ' + esc(peer.label || peer.id) + '</h3><span class="meta-row"><span' + (synced ? ' title="sync ล่าสุด ' + esc(timestamp(merge.syncedAt)) + '"' : "") + ">ออนไลน์ " + online(shown) + "/" + shown.length + " เครื่อง</span>" + direction +
-        (synced ? "" : '<span class="badge pending" title="' + esc(merge.error || merge.status) + '">merge มีปัญหา</span>') +
-        '</span></div><button class="text-button" data-action="manage-merge">จัดการ merge</button></div>' +
-        graphNode(peer, { master: true, sub: [ "Master", peer.routes?.[0]?.address, children.length + " เครื่องลูก" ].filter(Boolean).join(" · ") }),
-      nodes: shown
-    });
-  }
-  if (!branches.length) return noMatch;
-  const root = graphNode({ id: "local", label: state.service?.label || "เครื่องนี้" }, { master: true, root: true, static: true, status: state.service ? "online" : "offline", sub: "เครื่องนี้ · " + ((state.service?.roles || []).join(" + ") || "master") });
-  return '<div class="constellation"><div class="constellation-core' + (state.service ? " is-live" : "") + '">' + root + '</div><div class="constellation-sectors' + (branches.length > 1 ? " is-multi" : "") + '">' +
-    branches.map(branch => '<section class="sector' + (branch.live ? " is-live" : "") + '"><div class="sector-head">' + branch.head + "</div>" +
-      (branch.nodes.length ? '<div class="sector-nodes">' + branch.nodes.map(entry => graphNode(entry.item, { alsoDirect: entry.alsoDirect })).join("") + "</div>" : '<p class="empty-inline">ไม่มีเครื่องที่ตรงกับตัวกรอง</p>') + "</section>").join("") +
-    "</div></div>";
+  if (!direct.length && !peers.length) return '<div class="empty"><h2>No hosts to draw</h2><p>Add a target host, or clear the filters</p></div>';
+  const live = state.service ? "is-live" : "", peerOnline = peers.some(peer => online(peer.machines));
+  return '<div class="topo-tree"><div class="topo-root">' + card(null) + '</div><span class="topo-stem ' + live + '" aria-hidden="true"></span>' +
+    '<span class="topo-bus" aria-hidden="true"><i class="to-left' + (live && online(direct) ? " is-live" : "") + '"></i><i class="to-right' + (live && peerOnline ? " is-live" : "") + '"></i></span>' +
+    '<div class="topo-groups">' + groups.join("") + "</div></div>";
 }
 function renderFleetRows() {
   const rows = state.targets.filter(item => matchesFilter(item));
-  if (!state.targets.length) return '<div class="empty"><h2>เริ่มจากเชื่อมเครื่องแรก</h2><p>สร้างชุดติดตั้งสำหรับเครื่องใหม่ กด Approve ที่เครื่องนั้น แล้วคัดลอกรหัสกลับมาวางที่นี่</p><div class="page-actions"><button class="primary" data-action="add">' + icons.plus + 'เพิ่มเครื่อง</button><button data-action="import-registration">นำเข้า registration</button></div></div>';
-  if (!rows.length) return noMatch;
-  return '<div class="table-wrap"><table><thead><tr><th>เครื่อง</th><th>กลุ่ม</th><th>ที่อยู่</th><th>สถานะ</th><th></th></tr></thead><tbody>' +
-    rows.map(item => {
-      const check = state.diagnostics.get(item.id), route = item.routes?.[0];
-      const status = !item.runnerInstalled ? '<span class="badge pending">รอติดตั้ง service</span>' : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? "เชื่อมต่อได้" : "ตรวจพบปัญหา") + "</span><small>ตรวจเมื่อ " + esc(timestamp(check.checkedAt)) + "</small>" : statusBadge(item);
-      const address = item.relayed ? '<span class="muted">ผ่าน ' + esc(item.viaLabel || item.via) + "</span>"
-        : route ? '<code title="' + esc(route.kind || "") + '">' + esc(route.address) + (route.port && route.port !== 22 ? ":" + esc(route.port) : "") + "</code>" : "—";
-      return '<tr class="clickable"><td><div class="name-cell"><div><button class="row-button" data-action="select-target" data-id="' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc([osName(item.os), item.label && item.label !== item.id ? item.id : ""].filter(Boolean).join(" · ")) + "</small></div></div></td>" +
-        "<td>" + (item.tenant ? chip(item.tenant) : '<span class="muted">—</span>') + "</td><td>" + address + "</td><td>" + status + "</td>" +
-        '<td class="actions"><div class="target-actions"><button class="small" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="เปิด Shell ของ ' + esc(item.label || item.id) + '"' + (!item.runnerInstalled ? ' disabled title="ติดตั้ง Target service ก่อน"' : "") + ">" + icons.shell + '<span class="btn-label">เปิด Shell</span></button><button class="icon-button" data-action="select-target" data-id="' + esc(item.id) + '" aria-label="เปิดรายละเอียด ' + esc(item.label || item.id) + '" title="เปิดรายละเอียด">' + icons.chevron + "</button></div></td></tr>";
-    }).join("") + "</tbody></table></div>";
+  if (!state.targets.length && !state.service) return '<div class="empty"><h2>Connect your first target host</h2><p>Use “+ Add host” at the top right</p></div>';
+  const showLocal = !state.query && (!state.status || state.status === "online");
+  if (!rows.length && !showLocal) return noMatch;
+  return '<div class="table-wrap"><table>' + HOST_HEAD + "<tbody>" + (showLocal ? hostRow(null) : "") + rows.map(hostRow).join("") + "</tbody></table></div>";
 }
 function stat(label, value, sub = "") {
   return '<div class="stat"><span class="stat-label">' + esc(label) + '</span><div class="stat-value">' + value + "</div>" + (sub ? "<small>" + esc(sub) + "</small>" : "") + "</div>";
 }
-function renderTarget() {
-  const item = target();
-  return '<button class="text-button back" data-action="back-fleet">' + icons.back + "เครื่องทั้งหมด</button>" +
-    '<div class="page-heading"><div class="target-title"><h1>' + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) +
-    (item.os ? chip(osName(item.os)) : "") + (item.tenant ? chip(item.tenant) : "") + (item.relayed ? chip("ผ่าน " + (item.viaLabel || item.via)) : "") + "</div></div>" +
-    '<div class="target-actions"><button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="ติดตั้ง Target service ก่อน"' : "") + ">" + icons.shell + 'เปิด Shell</button><button data-action="diagnose">' + icons.pulse + "ตรวจการเชื่อมต่อ</button></div></div>" +
-    (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>เครื่องนี้นำเข้าด้วย v1 registry</strong><p>ติดตั้ง Target service แล้วนำเข้า registration ใหม่ เพื่อเรียกงานบนเครื่องนี้</p></div></div>" : "") +
-    '<div class="tabs" role="tablist" aria-label="ข้อมูลเครื่อง">' +
-    [["overview", "การเชื่อมต่อ"], ["jobs", "งานและ logs"], ["files", "ไฟล์"]].map(([id, label]) => '<button role="tab" aria-selected="' + (id === state.tab) + '" class="tab ' + (id === state.tab ? "active" : "") + '" data-action="target-tab" data-tab="' + id + '">' + label + "</button>").join("") + "</div>" +
-    (state.tab === "overview" ? renderOverview(item) : state.tab === "jobs" ? renderJobs(item) : renderFiles(item));
-}
 const routeKinds = { lan: "LAN", tailscale: "Tailscale", public: "Public IP" };
 function healthStat(item) {
   const row = state.health.get(item.id), status = nodeState(item);
-  return stat("สถานะล่าสุด", '<span class="dot ' + (stateStyles[status] || "") + '"></span>' + esc(stateLabels[status]), row?.checkedAt ? "ตรวจเมื่อ " + timestamp(row.checkedAt) : "");
+  return stat("Last status", '<span class="dot ' + (stateStyles[status] || "") + '"></span>' + esc(stateLabels[status]), row?.checkedAt ? "Checked " + timestamp(row.checkedAt) : "");
 }
 function renderOverview(item) {
-  const check = state.diagnostics.get(item.id);
   if (item.relayed) {
-    return '<div class="stat-grid">' + stat("เชื่อมต่อผ่าน Master", esc(item.viaLabel || item.via)) + stat("สิทธิ์", "ใช้สิทธิ์ของ Master นั้น") + healthStat(item) + "</div>" +
-      renderDiagnostics(check) +
-      '<div class="disclosure-list"><details><summary>ข้อมูลเทคนิค <small class="muted">Master ID, Node ID</small></summary><div><dl class="facts"><dt>Master ID</dt><dd><code>' + esc(item.via) + "</code></dd><dt>Node ID</dt><dd><code>" + esc(item.nodeId) + '</code></dd></dl><p class="help mt">คำสั่งส่งผ่าน Master นั้น แก้เส้นทางหรือนำเครื่องนี้ออกได้ที่ Master ' + esc(item.viaLabel || item.via) + " · ยกเลิก merge ได้ที่หน้า Master ที่อนุญาต</p></div></details></div>";
+    return '<div class="stat-grid">' + stat("Connected via Master", esc(item.viaLabel || item.via)) + stat("Permissions", "Uses that Master’s rights") + healthStat(item) + "</div>" +
+      '<div class="disclosure-list"><details><summary>Technical details <small class="muted">Master ID, Node ID</small></summary><div><dl class="facts"><dt>Master ID</dt><dd><code>' + esc(item.via) + "</code></dd><dt>Node ID</dt><dd><code>" + esc(item.nodeId) + '</code></dd></dl><p class="help mt">Commands go through that Master. Change routes or remove this target host on Master ' + esc(item.viaLabel || item.via) + " · Cancel the merge on the Allowed Masters page</p></div></details></div>";
   }
   const routes = item.routes || [], primary = routes[0];
   return '<div class="stat-grid">' +
-    stat("ที่อยู่หลัก", primary ? "<code>" + esc(primary.address) + ":" + esc(primary.port || 22) + "</code>" : "—", primary ? (primary.proxyJump ? "ผ่าน " + primary.proxyJump.address : routeKinds[primary.kind] || primary.kind || "") : "") +
-    stat("เส้นทางสำรอง", routes.length > 1 ? (routes.length - 1) + " เส้นทาง" : "ไม่มี") +
+    stat("Primary address", primary ? "<code>" + esc(primary.address) + ":" + esc(primary.port || 22) + "</code>" : "—", primary ? (primary.proxyJump ? "Via " + primary.proxyJump.address : routeKinds[primary.kind] || primary.kind || "") : "") +
+    stat("Fallback routes", routes.length > 1 ? String(routes.length - 1) : "None") +
     healthStat(item) +
-    stat("Target service", item.runnerInstalled ? '<span class="dot good"></span>ติดตั้งแล้ว' : '<span class="dot pending"></span>ยังไม่ติดตั้ง') +
-    "</div>" + renderDiagnostics(check) +
+    stat("Target service", item.runnerInstalled ? '<span class="dot good"></span>Installed' : '<span class="dot pending"></span>Not installed') +
+    "</div>" +
     '<div class="disclosure-list">' +
-    '<details><summary>ข้อมูลเทคนิค <small class="muted">Node ID, SSH user, เส้นทางทั้งหมด, host keys</small></summary><div><dl class="facts"><dt>Node ID</dt><dd><code>' + esc(item.nodeId || "รอ registration ใหม่") + "</code></dd><dt>SSH user</dt><dd>" + esc(item.user) + "</dd><dt>Bridge</dt><dd><code>" + esc(item.bridgePath || "—") + "</code></dd><dt>Target ID</dt><dd><code>" + esc(item.id) + "</code></dd></dl>" +
-    '<div class="table-wrap mt"><table><thead><tr><th>ลำดับ</th><th>ประเภท</th><th>ปลายทาง</th><th>ผ่านเครื่อง</th></tr></thead><tbody>' +
-    routes.map((route, i) => '<tr><td class="num">' + (i + 1) + "</td><td>" + esc(routeKinds[route.kind] || route.kind) + "</td><td><code>" + esc(route.address) + ":" + esc(route.port || 22) + "</code></td><td>" + (route.proxyJump?.address ? "<code>" + esc(route.proxyJump.address) + "</code>" : '<span class="muted">ตรง</span>') + "</td></tr>").join("") +
-    '</tbody></table></div><h3 class="mt">Host keys ที่ pin ไว้</h3><div class="output light mt"><pre>' + esc((item.hostKeys || []).join("\n") || "—") + "</pre></div></div></details>" +
-    '<details><summary>แก้ไขชื่อและเส้นทาง</summary><form id="edit-target"><div class="form-grid"><label class="full">ชื่อเครื่อง<input name="label" required value="' + esc(item.label || item.id) + '"></label><label class="full">เส้นทาง JSON<textarea class="mono" name="routes" rows="7" required spellcheck="false">' + esc(pretty(routes)) + '</textarea><small>ลำดับในรายการคือลำดับที่ลองเชื่อมต่อ · ProxyJump ต้องมี hostKeys และ identityFile</small></label></div><div class="form-actions"><button type="submit" class="primary">บันทึก</button></div><p class="help">เปลี่ยนกลุ่มโดยนำเครื่องออกแล้วลงทะเบียนใหม่ เพื่อใช้กุญแจของกลุ่มที่ถูกต้อง</p></form></details>' +
-    '<details><summary>นำเครื่องออกจาก Master นี้</summary><div><p class="help">ลบเฉพาะทะเบียนใน Master นี้ งานและข้อมูลบนเครื่องยังอยู่ หากต้องการถอนสิทธิ์ ให้ทำในหน้า Master ที่อนุญาตบนเครื่องนั้น</p><button class="danger" data-action="remove-target">นำ ' + esc(item.label || item.id) + " ออก</button></div></details>" +
+    '<details><summary>Technical details <small class="muted">Node ID, SSH user, all routes, host keys</small></summary><div><dl class="facts"><dt>Node ID</dt><dd><code>' + esc(item.nodeId || "Awaiting new registration") + "</code></dd><dt>SSH user</dt><dd>" + esc(item.user) + "</dd><dt>Bridge</dt><dd><code>" + esc(item.bridgePath || "—") + "</code></dd><dt>Target ID</dt><dd><code>" + esc(item.id) + "</code></dd></dl>" +
+    '<div class="table-wrap mt"><table><thead><tr><th>Order</th><th>Type</th><th>Destination</th><th>Jump host</th></tr></thead><tbody>' +
+    routes.map((route, i) => '<tr><td class="num">' + (i + 1) + "</td><td>" + esc(routeKinds[route.kind] || route.kind) + "</td><td><code>" + esc(route.address) + ":" + esc(route.port || 22) + "</code></td><td>" + (route.proxyJump?.address ? "<code>" + esc(route.proxyJump.address) + "</code>" : '<span class="muted">Direct</span>') + "</td></tr>").join("") +
+    '</tbody></table></div><h3 class="mt">Pinned host keys</h3><div class="output light mt"><pre>' + esc((item.hostKeys || []).join("\n") || "—") + "</pre></div></div></details>" +
+    '<details><summary>Edit name and routes</summary><form id="edit-target"><div class="form-grid"><label class="full">Host name<input name="label" required value="' + esc(item.label || item.id) + '"></label><label class="full">Routes JSON<textarea class="mono" name="routes" rows="7" required spellcheck="false">' + esc(pretty(routes)) + '</textarea><small>Routes are tried in order · ProxyJump needs hostKeys and identityFile</small></label></div><div class="form-actions"><button type="submit" class="primary">Save</button></div><p class="help">To change the tenant, remove the target host and enroll it again so it uses that tenant’s key</p></form></details>' +
+    '<details><summary>Remove this target host from this Master</summary><div><p class="help">Only removes the record on this Master; jobs and data on the host stay. To revoke access, use Allowed Masters on that machine</p><button class="danger" data-action="remove-target">Remove ' + esc(item.label || item.id) + "</button></div></details>" +
     "</div>";
 }
-function renderDiagnostics(check) {
-  const stages = check?.stages || [], failed = stages.filter(stage => !stage.ok);
-  const detail = stage => stage.message || (stage.executor ? pretty(stage.executor) : "");
-  const selected = check?.result?.executor?.selected || stages.find(stage => stage.name === "executor")?.executor?.selected;
-  const selectedNote = selected?.ownerSessionId
-    ? "<p>ใช้ Owner session <code>" + esc(selected.ownerSessionId) + "</code>" + (selected.account ? " (" + esc(selected.account) + ")" : "") + "</p>"
-    : "";
-  const summary = !check
-    ? '<div class="callout">' + icons.info + "<div><strong>ยังไม่ได้ตรวจในรอบนี้</strong><p>ตรวจทะเบียน กุญแจ SSH และ Target service โดยไม่เริ่มงานบนเครื่องปลายทาง</p></div></div>"
-    : check.ok
-      ? '<div class="callout good">' + icons.check + "<div><strong>เชื่อมต่อได้ ผ่านทุกขั้นตอน</strong><p>ตรวจ " + stages.length + " ขั้นตอนเมื่อ " + esc(timestamp(check.checkedAt)) + "</p>" + selectedNote + "</div></div>"
-      : '<div class="callout bad">' + icons.alert + "<div><strong>ตรวจพบปัญหา " + (failed.length || "") + " ขั้นตอน</strong>" +
-        (failed.length ? "<ul>" + failed.map(stage => "<li><b>" + esc(stage.name) + "</b> — " + esc(detail(stage)) + "</li>").join("") + "</ul>" : "") +
-        "<p>ตรวจเมื่อ " + esc(timestamp(check.checkedAt)) + "</p></div></div>";
-  const table = stages.length ? '<details><summary>ดูรายละเอียดผลการตรวจ</summary><div class="table-wrap"><table><thead><tr><th>ขั้นตอน</th><th>ผล</th><th>รายละเอียด</th></tr></thead><tbody>' +
-    stages.map(stage => "<tr><td>" + esc(stage.name) + '</td><td><span class="badge ' + (stage.ok ? "good" : "bad") + '">' + (stage.ok ? "ผ่าน" : "ไม่ผ่าน") + '</span></td><td class="wrap">' + esc(detail(stage)) + "</td></tr>").join("") +
-    '</tbody></table></div><div class="form-actions"><button class="small" data-action="copy-diagnostics">' + icons.copy + "คัดลอกผลตรวจ JSON</button></div></details>" : "";
-  return '<section class="section mt"><div class="section-heading"><h2>ผลตรวจการเชื่อมต่อ</h2>' + (check ? '<button class="small" data-action="diagnose">' + icons.refresh + "ตรวจอีกครั้ง</button>" : "") + "</div>" + summary + table + "</section>";
+/* Connection check result, shown right under the host heading on every tab: one clear verdict, then each step. */
+const CHECK_STEPS = {
+  "local-registration": "Registered on this Master",
+  "local-key": "SSH key on this Master",
+  "runner-installed": "Target service installed",
+  "ssh-runner": "SSH to the host · host key and Target service",
+  executor: "Ready to run jobs"
+};
+function renderCheckPanel(item) {
+  const check = state.diagnostics.get(item.id), running = state.checking === item.id;
+  if (!running && (!check || state.checkHidden?.has(item.id))) return "";
+  const close = '<button class="icon-button" data-action="check-close" aria-label="Hide the check result" title="Hide">' + icons.close + "</button>";
+  if (running) return '<section class="check-panel is-running" role="status" aria-live="polite"><span class="check-mark" aria-hidden="true">…</span><div class="check-head"><h2>Checking connection…</h2>' +
+    "<p>Registration, SSH key, SSH to the host and the Target service · no job is started</p></div></section>";
+  const stages = check.stages || [], passed = stages.filter(stage => stage.ok).length;
+  const raw = stage => stage.message || (stage.executor ? (stage.executor.reason || "Not ready") : "");
+  const where = stage => stage.route?.address ? stage.route.address + ":" + (stage.route.port || 22) : "the host";
+  // Plain words for the failures people meet most; the original text stays underneath.
+  const plain = stage => {
+    const text = raw(stage);
+    if (text === "TARGET_IDENTITY_MISMATCH" || /host key|REMOTE HOST IDENTIFICATION/i.test(text)) return "The host answered with a different identity than the one pinned at pairing. Don’t continue until you know why";
+    if (/timed out|timeout/i.test(text)) return "No answer from " + where(stage) + " in time. Is the host on, and is SSH reachable from this Master?";
+    if (/refused/i.test(text)) return where(stage) + " refused the connection. SSH may be stopped, or on another port";
+    if (/could not resolve|Name or service not known|nodename nor servname/i.test(text)) return "The name " + (stage.route?.address || "of the host") + " could not be found. Check the address";
+    if (/no route|unreachable/i.test(text)) return "This Master has no network path to " + where(stage);
+    if (/permission denied|publickey/i.test(text)) return "The host rejected this Master’s SSH key. It may have been removed on the host";
+    if (/E_OWNER_NOT_LOGGED_IN/.test(text)) return friendlyError(text);
+    return "";
+  };
+  const why = stage => { const text = plain(stage), detail = raw(stage); return text ? esc(text) + (detail && detail !== text ? '<small class="check-detail">' + esc(detail) + "</small>" : "") : esc(detail); };
+  const label = stage => (CHECK_STEPS[stage.name] || stage.name) + (stage.route?.address ? " (" + stage.route.address + ")" : "");
+  const selected = check.result?.executor?.selected || stages.find(stage => stage.name === "executor")?.executor?.selected;
+  const steps = stages.map(stage => '<li class="' + (stage.ok ? "is-ok" : "is-bad") + '"><span class="step-mark" aria-hidden="true">' + (stage.ok ? "✓" : "✕") + "</span><div><strong>" + esc(label(stage)) + "</strong>" +
+    (stage.ok ? "" : "<p>" + why(stage) + "</p>") + "</div></li>").join("");
+  return '<section class="check-panel ' + (check.ok ? "is-ok" : "is-bad") + '" role="status" aria-live="polite"><span class="check-mark" aria-hidden="true">' + (check.ok ? "✓" : "!") + "</span>" +
+    '<div class="check-head"><h2>' + (check.ok ? "Connection OK" : "Connection problem") + "</h2><p>" + passed + " of " + stages.length + " checks passed · " + esc(timestamp(check.checkedAt)) +
+    (selected?.ownerSessionId ? " · Owner session " + esc(selected.ownerSessionId) : "") + '</p></div><div class="check-actions"><button class="small" data-action="diagnose">' + icons.refresh + "Check again</button>" + close + "</div>" +
+    '<ol class="check-steps">' + steps + "</ol>" +
+    '<details class="check-raw"><summary>Raw result</summary><div><button class="small" data-action="copy-diagnostics">' + icons.copy + "Copy check JSON</button></div></details></section>";
 }
 function renderJobs(item) {
-  const disabled = !item.runnerInstalled ? ' disabled title="ติดตั้ง Target service ก่อน"' : "";
+  const disabled = !item.runnerInstalled ? ' disabled title="Install the Target service first"' : "";
   return (state.newJob ? renderNewJob(item) : "") +
-    '<section class="section"><div class="section-heading"><h2>งานบนเครื่องนี้</h2><div class="page-actions">' +
-    (state.newJob ? "" : '<button class="primary" data-action="toggle-new-job"' + disabled + ">" + icons.plus + "เริ่มงานใหม่</button>") +
-    '<button data-action="refresh-jobs">' + icons.refresh + 'รีเฟรช</button></div></div><div class="job-layout"><div class="job-list" id="job-list">' + renderJobRows() + '</div><div class="job-detail" id="job-detail">' + renderJobDetail() + "</div></div></section>";
+    '<section class="section"><div class="section-heading"><h2>Jobs on this host</h2><div class="page-actions">' +
+    (state.newJob ? "" : '<button class="primary" data-action="toggle-new-job"' + disabled + ">" + icons.plus + "New job</button>") +
+    '<button data-action="refresh-jobs">' + icons.refresh + 'Refresh</button></div></div><div class="job-layout"><div class="job-list" id="job-list">' + renderJobRows() + '</div><div class="job-detail" id="job-detail">' + renderJobDetail() + "</div></div></section>";
 }
 function renderNewJob(item) {
   const windows = isWindows(item);
-  return '<form id="start-job" class="surface new-job"><h2>เริ่มงานใหม่</h2><div class="form-grid">' +
+  return '<form id="start-job" class="surface new-job"><h2>New job</h2><div class="form-grid">' +
     '<label class="full">Working directory<input name="cwd" required class="mono" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
-    '<label class="full">คำสั่งหรือสคริปต์<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
-    '<details><summary>ตัวเลือกขั้นสูง</summary><div class="form-grid"><label>Shell<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
-    '<label>Owner session ID<input name="ownerSessionId" placeholder="ว่างไว้ให้ระบบเลือกอัตโนมัติ"></label>' +
-    (!windows ? '<label class="check-label full"><input type="checkbox" name="asAdmin">รันด้วยสิทธิ์ admin (root)</label>' : "") +
-    '<label class="full">Environment JSON <small>ตัวแปรเฉพาะงานนี้</small><textarea name="env" rows="2" class="mono" spellcheck="false">{}</textarea></label></div></details>' +
-    '<div class="form-actions"><button type="submit" class="primary"' + (!item.runnerInstalled ? " disabled" : "") + ">เริ่มงาน</button>" +
-    '<button type="button" data-action="toggle-new-job">ยกเลิก</button><span class="help">งานทำต่อแม้ปิดหน้าต่าง · ส่งซ้ำหลัง timeout จะใช้ job ID เดิม ไม่รันซ้ำ</span></div></form>';
+    '<label class="full">Command or script<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
+    '<details><summary>Advanced options</summary><div class="form-grid"><label>Shell<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
+    '<label>Owner session ID<input name="ownerSessionId" placeholder="Leave empty to pick automatically"></label>' +
+    (!windows ? '<label class="check-label full"><input type="checkbox" name="asAdmin">Run as admin (root)</label>' : "") +
+    '<label class="full">Environment JSON <small>Variables for this job only</small><textarea name="env" rows="2" class="mono" spellcheck="false">{}</textarea></label></div></details>' +
+    '<div class="form-actions"><button type="submit" class="primary"' + (!item.runnerInstalled ? " disabled" : "") + ">Start job</button>" +
+    '<button type="button" data-action="toggle-new-job">Cancel</button><span class="help">Jobs keep running if you close the window · Resending after a timeout reuses the job ID and never runs twice</span></div></form>';
 }
 function renderJobRows() {
   if (state.jobsError) return '<div class="error-inline">' + esc(state.jobsError) + "</div>";
-  if (!state.jobs.length) return '<div class="empty-inline">ยังไม่มีงานบนเครื่องนี้<br>กด “เริ่มงานใหม่” เพื่อส่งคำสั่ง</div>';
+  if (!state.jobs.length) return '<div class="empty-inline">No jobs on this host yet<br>Press “New job” to send a command</div>';
   return state.jobs.map(job => '<button class="job-row ' + (state.job?.id === job.id ? "active" : "") + '" data-action="select-job" data-id="' + esc(job.id) + '"><div>' + badge(job.status) + "<small>" + esc(timestamp(job.createdAt)) + "</small></div><code>" + esc(job.script) + "</code></button>").join("");
 }
 function renderJobDetail() {
   const job = state.job;
-  if (!job) return '<div class="empty-inline">เลือกงานเพื่อดูผล<br><small>stdout, stderr และ exit code เก็บไว้ที่เครื่องปลายทาง</small></div>';
+  if (!job) return '<div class="empty-inline">Select a job to see its output<br><small>stdout, stderr and exit code are stored on the host</small></div>';
   const running = ["running", "queued"].includes(job.status);
   return '<div class="job-head"><h3>Job <code title="Job ID ' + esc(job.id) + " · Master " + esc(job.masterId) + '">' + esc(job.id.slice(0, 8)) + "</code></h3>" + badge(job.status) +
     (job.exitCode != null ? '<span class="chip">Exit ' + esc(job.exitCode) + "</span>" : "") +
-    (running ? '<button class="danger small right" data-action="cancel-job">ยกเลิกงาน</button>' : "") + "</div>" +
+    (running ? '<button class="danger small right" data-action="cancel-job">Cancel job</button>' : "") + "</div>" +
     '<div class="output light"><pre>' + esc(job.script) + "</pre></div>" +
     '<div class="job-meta"><span>' + icons.folder + "<code>" + esc(job.cwd) + "</code></span><span>" + esc(timestamp(job.startedAt || job.createdAt)) + "</span></div>" +
     '<div class="console"><div class="console-bar"><div class="segmented" role="group" aria-label="Log stream">' +
     ["stdout", "stderr"].map(stream => '<button data-action="log-stream" data-stream="' + stream + '" aria-pressed="' + (state.stream === stream) + '">' + stream + "</button>").join("") +
-    '</div><button class="small" data-action="read-logs">' + (state.eof ? "โหลดเพิ่ม" : "หน้าถัดไป") + '</button><button class="small" data-action="copy-log">' + icons.copy + "คัดลอก</button>" +
-    (running ? '<small><span class="dot good"></span>อัปเดตทุก 5 วินาที</small>' : "") +
-    '</div><div class="output" id="log-output" tabindex="0" aria-label="Job logs"><pre>' + esc(state.log || "ยังไม่มี output") + "</pre></div></div>";
+    '</div><button class="small" data-action="read-logs">' + (state.eof ? "Load more" : "Next page") + '</button><button class="small" data-action="copy-log">' + icons.copy + "Copy</button>" +
+    (running ? '<small><span class="dot good"></span>Updates every 5 seconds</small>' : "") +
+    '</div><div class="output" id="log-output" tabindex="0" aria-label="Job logs"><pre>' + esc(state.log || "No output yet") + "</pre></div></div>";
+}
+const joinPath = (folder, name) => folder.replace(/[\\/]+$/, "") + (/^[A-Za-z]:/.test(folder) ? "\\" : "/") + name;
+/** Delete safety layers: right-click only, a dialog naming host and full path, typing the exact name, and the service refusing non-empty folders. */
+function openDeleteDialog(path, name, isDirectory) {
+  const host = state.targets.find(row => row.id === state.selected);
+  $("#delete-kind").textContent = isDirectory ? "folder" : "file";
+  $("#delete-name").textContent = name;
+  $("#delete-path").textContent = path;
+  $("#delete-host").textContent = host ? host.label || host.id : "this host";
+  $("#delete-note").textContent = isDirectory ? "Only an empty folder can be deleted. This cannot be undone." : "This cannot be undone.";
+  const form = $("#confirm-delete");
+  form.reset(); form.dataset.path = path; form.dataset.name = name;
+  form.querySelector('[type="submit"]').disabled = true;
+  $("#delete-dialog").showModal();
+  form.querySelector('[name="confirm"]').focus();
 }
 function parentPath(path) {
   const value = String(path || "").trim().replace(/[\\/]+$/, "");
@@ -413,44 +486,59 @@ function parentPath(path) {
   const parent = value.slice(0, index);
   return /^[A-Za-z]:$/.test(parent) ? parent + "\\" : parent;
 }
+/** WinSCP-like browser: path box with a folder dropdown, Up, New folder, Upload; drop files to upload; right-click to delete. */
 function renderFiles(item) {
-  return '<div class="section-heading"><div><h2>ไฟล์บนเครื่องนี้</h2><p class="help">เปิดและแก้ไขไฟล์ UTF-8 หรือสร้างโฟลเดอร์ ด้วยสิทธิ์ของ service</p></div></div>' +
-    '<form id="browse-files" class="path-bar"><button type="button" class="icon-button" data-action="parent-folder" aria-label="ขึ้นไปโฟลเดอร์ก่อนหน้า" title="ขึ้นไปโฟลเดอร์ก่อนหน้า">' + icons.up + "</button>" +
-    '<input name="path" id="file-path" aria-label="Absolute path ของไฟล์หรือโฟลเดอร์" class="mono" required value="' + esc(state.file?.path || state.files?.path || (isWindows(item) ? "C:\\" : "/")) + '">' +
-    '<button type="submit" class="primary">' + icons.folder + 'เปิดโฟลเดอร์</button><button type="button" data-action="read-file">' + icons.file + 'เปิดไฟล์</button><button type="button" data-action="mkdir">' + icons.plus + "สร้างโฟลเดอร์</button></form>" +
-    '<div id="files-output">' + renderFileList() + '</div><div id="file-editor">' + renderFileEditor() + "</div>";
+  const path = state.files?.path || "~";
+  return '<div class="section-heading"><div><h2>Files on this host</h2><p class="help">Click a folder to open it, a file to edit it · drop files to upload · ⋮ to download or delete</p></div></div>' +
+    '<div class="file-bar"><button type="button" class="icon-button" data-action="parent-folder" aria-label="Up one folder" title="Up one folder"' + (state.files ? "" : " disabled") + ">" + icons.up + "</button>" +
+    '<form id="browse-files" class="path-pick"><input name="path" id="file-path" aria-label="Folder path · press Enter to open" class="mono" required value="' + esc(path) + '">' +
+    '<button type="button" class="icon-button" data-action="path-menu" aria-label="Choose a folder" title="Choose a folder">' + icons.chevron + "</button></form>" +
+    '<button type="button" data-action="mkdir"' + (state.files ? "" : " disabled") + ">" + icons.plus + 'New folder</button><button type="button" class="accent" data-action="upload-pick"' + (state.files ? "" : " disabled") + ">" + icons.up + 'Upload…</button><input type="file" id="upload-input" multiple hidden></div>' +
+    '<div id="upload-status">' + renderUploadStatus() + '</div><div id="files-output" class="file-drop">' + renderFileList() + '</div><div id="file-editor">' + renderFileEditor() + "</div>";
 }
+const fileTime = seconds => seconds ? new Date(seconds * 1000).toLocaleString("en-GB", { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 function renderFileList() {
-  if (!state.files) return '<div class="empty-inline">ระบุ absolute path แล้วกด “เปิดโฟลเดอร์” หรือ “เปิดไฟล์”</div>';
+  if (!state.files && state.filesError) return '<div class="callout pending">' + icons.alert + "<div><strong>Can’t open files yet</strong><p>" + esc(state.filesError) + "</p></div></div>";
+  if (!state.files) return '<div class="empty-inline">Reading folders…</div>';
   const entries = [...state.files.entries].sort((a, b) => (b.isDirectory ? 1 : 0) - (a.isDirectory ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
-  if (!entries.length) return '<div class="empty-inline">โฟลเดอร์นี้ว่าง</div>';
-  return '<div class="table-wrap"><table><thead><tr><th>ชื่อ</th><th>ขนาด</th><th></th></tr></thead><tbody>' +
-    entries.map(entry => '<tr><td><button class="row-button file-name' + (entry.isDirectory ? " folder" : "") + '" data-action="' + (entry.isDirectory ? "open-folder" : "open-file") + '" data-path="' + esc(entry.path) + '">' + (entry.isDirectory ? icons.folder : icons.file) + esc(entry.name) + "</button>" + (entry.isSymlink ? " " + chip("link") : "") +
-      '</td><td class="num muted" title="' + esc(entry.size ?? "") + ' bytes">' + (entry.isDirectory ? "—" : esc(formatSize(entry.size))) + '</td><td class="actions"><button class="text-button danger" data-action="remove-file" data-path="' + esc(entry.path) + '">ลบ</button></td></tr>').join("") + "</tbody></table></div>";
+  const up = parentPath(state.files.path), atRoot = up === state.files.path;
+  const parent = atRoot ? "" : '<tr><td><button class="row-button file-name folder" data-action="open-folder" data-path="' + esc(up) + '">' + icons.up + '..</button></td><td class="num muted">—</td><td class="muted">Parent folder</td><td></td></tr>';
+  return '<div class="table-wrap"><table class="file-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>' + parent +
+    entries.map(entry => '<tr data-file="' + esc(entry.path) + '" data-name="' + esc(entry.name) + '" data-dir="' + (entry.isDirectory ? "1" : "") + '"><td><button class="row-button file-name' + (entry.isDirectory ? " folder" : "") + '" data-action="' + (entry.isDirectory ? "open-folder" : "open-file") + '" data-path="' + esc(entry.path) + '">' + (entry.isDirectory ? icons.folder : icons.file) + esc(entry.name) + "</button>" + (entry.isSymlink ? " " + chip("link") : "") +
+      '</td><td class="num muted" title="' + esc(entry.size ?? "") + ' bytes">' + (entry.isDirectory ? "—" : esc(formatSize(entry.size))) + '</td><td class="muted">' + esc(fileTime(entry.modified)) + '</td><td class="row-more-cell"><button type="button" class="icon-button row-more" data-action="file-more" aria-haspopup="menu" aria-label="More actions for ' + esc(entry.name) + '" title="More actions">' + icons.more + "</button></td></tr>").join("") +
+    (entries.length ? "" : '<tr><td colspan="4" class="muted">This folder is empty · drop files here to upload</td></tr>') + "</tbody></table></div>";
 }
 function renderFileEditor() {
   if (!state.file) return "";
-  return '<div class="file-editor surface"><div class="section-heading"><h3><code>' + esc(state.file.path) + '</code></h3><button class="icon-button" data-action="close-file" aria-label="ปิดไฟล์" title="ปิดไฟล์">' + icons.close + "</button></div>" +
-    '<form id="save-file"><textarea name="content" aria-label="เนื้อหาไฟล์" class="mono" rows="14" spellcheck="false"' + (!state.file.editable ? " readonly" : "") + ">" + esc(state.file.content) + '</textarea><div class="form-actions"><button type="submit" class="primary"' + (!state.file.editable ? " disabled" : "") + '>บันทึกไฟล์</button><span class="help">' + (state.file.editable ? "ตรวจ SHA-256 ก่อนบันทึก กันการเขียนทับการแก้ไขจากเครื่องอื่น" : "แสดงบางส่วนหรือไม่ใช่ UTF-8 · ใช้ CLI สำหรับไฟล์ใหญ่หรือ binary") + "</span></div></form></div>";
+  return '<div class="file-editor surface"><div class="section-heading"><h3><code>' + esc(state.file.path) + '</code></h3><button class="icon-button" data-action="close-file" aria-label="Close file" title="Close file">' + icons.close + "</button></div>" +
+    '<form id="save-file"><textarea name="content" aria-label="File content" class="mono" rows="14" spellcheck="false"' + (!state.file.editable ? " readonly" : "") + ">" + esc(state.file.content) + '</textarea><div class="form-actions"><button type="submit" class="primary"' + (!state.file.editable ? " disabled" : "") + '>Save file</button><span class="help">' + (state.file.editable ? "SHA-256 is checked before saving so changes made elsewhere are not overwritten" : "Partial or not UTF-8 · use the CLI for large or binary files") + "</span></div></form></div>";
 }
 function pairingState(item) {
-  const labels = { awaiting_approval: "รออนุมัติที่เครื่องใหม่", needs_attention: "ติดตั้งแล้ว — รอตรวจการเชื่อมต่อ", ready: "พร้อมใช้งาน" };
-  return labels[item?.state] || "กำลังเตรียม";
+  const labels = { awaiting_approval: "Waiting for approval on the new host", needs_attention: "Installed — connection not verified", ready: "Ready" };
+  return labels[item?.state] || "Preparing";
+}
+/** Plain-language versions of errors people can act on; anything else is shown as is. */
+function friendlyError(error) {
+  const text = String(error?.message || error);
+  const host = state.targets.find(row => row.id === state.selected), name = host ? host.label || host.id : "this host";
+  if (text.includes("E_OWNER_NOT_LOGGED_IN")) return "Nobody is logged in as the Owner on " + name + ". Files, jobs and the terminal run in the Owner’s login session · log in on that host (at its screen or over SSH), then try again";
+  if (text.includes("E_OWNER_NOT_ADMIN")) return "The Owner on " + name + " is logged in without administrator rights · log in with an administrator session, then try again";
+  return text;
 }
 function pairingError(error) {
   const text = String(error?.message || error);
   const known = [
-    ["SETUP_TEMPLATES_MISSING", "ชุดติดตั้งยังไม่ครบ ให้ติดตั้งหรืออัปเดตเครื่องหลักด้วยแพ็กเกจแบบเต็ม แล้วบันทึกชุดติดตั้งอีกครั้ง"],
-    ["SETUP_TEMPLATE_MISMATCH", "ไฟล์ชุดติดตั้งไม่ตรงกับ release ที่ตรวจไว้ ให้ติดตั้งแพ็กเกจเครื่องหลักใหม่"],
-    ["HOST_KEY_MISMATCH", "กุญแจยืนยันเครื่องไม่ตรงกับที่บันทึกไว้ ระบบหยุดเชื่อมต่อ กรุณาตรวจว่าเป็นเครื่องเดิมก่อน"],
-    ["PAIRING", "รหัสจับคู่ใช้ไม่ได้กับคำขอนี้ ตรวจว่าคัดลอกครบจากเครื่องที่เพิ่งติดตั้งและใช้เครื่องหลักที่ถูกต้อง"],
-    ["64 KiB", "รหัสยาวเกินขนาดที่รองรับ กรุณาคัดลอกเฉพาะรหัสจับคู่"],
+    ["SETUP_TEMPLATES_MISSING", "Installer templates are missing. Install or update this Master with the full package, then save the installer again"],
+    ["SETUP_TEMPLATE_MISMATCH", "The installer template does not match the verified release. Reinstall the Master package"],
+    ["HOST_KEY_MISMATCH", "The host key differs from the pinned one, so the connection was stopped. Confirm it is the same host first"],
+    ["PAIRING", "This pairing code does not match the request. Check that you copied all of it from the host you just installed, on the right Master"],
+    ["64 KiB", "The code is too long. Copy only the pairing code"],
   ];
   return known.find(([code]) => text.includes(code))?.[1] || text;
 }
 async function refreshPairings() {
   const rows = await rpc("pairing.status");
-  if (!Array.isArray(rows)) throw new Error("ไม่สามารถอ่านรายการจับคู่ได้");
+  if (!Array.isArray(rows)) throw new Error("Could not read pairing requests");
   state.pairings = rows;
   if (state.pairing) state.pairing = rows.find(item => item.requestId === state.pairing.requestId) || state.pairing;
 }
@@ -461,27 +549,69 @@ function pairingStep(item) {
   return state.setupSaved?.requestId === item.requestId ? 3 : 2;
 }
 function renderStepper(step) {
-  const steps = [["ตั้งค่าที่นี่", "กรอกข้อมูลเครื่องใหม่"], ["ส่งชุดติดตั้ง", "เปิดที่เครื่องใหม่แล้วกด Approve"], ["คัดลอกรหัส", "จากเครื่องใหม่หลังติดตั้งเสร็จ"], ["วางรหัสกลับ", "ตรวจแล้วพร้อมใช้งาน"]];
+  const steps = [["Set up here", "Enter the new host’s details"], ["Send the installer", "Open it on the new host and approve"], ["Copy the code", "From the new host after install"], ["Paste it back", "Verified and ready"]];
   return '<ol class="stepper">' + steps.map(([title, text], i) => {
     const n = i + 1, status = n < step ? "done" : n === step ? "current" : "";
     return '<li class="' + status + '"' + (status === "current" ? ' aria-current="step"' : "") + '><span class="step-num">' + (status === "done" ? icons.check : n) + "</span><div><strong>" + title + "</strong><span>" + text + "</span></div></li>";
   }).join("") + "</ol>";
 }
-function renderEnrollment() {
+function renderEnrollment(options = {}) {
   const current = state.pairing;
   const groups = [...new Set(state.targets.map(item => item.tenant).filter(Boolean))];
   const requests = state.pairings.filter(item => item.state !== "ready");
-  return heading("เพิ่มเครื่องใหม่", "สร้างชุดติดตั้ง ส่งไปเปิดที่เครื่องใหม่ แล้ววางรหัสจับคู่กลับมาที่นี่") + renderStepper(pairingStep(current)) +
-    (current ? renderPairingProgress(current) : '<section class="surface"><h2>ข้อมูลเครื่องที่จะเพิ่ม</h2><form id="create-pairing" class="mt"><div class="form-grid">' +
-      '<label>ชื่อเครื่อง<input name="label" required maxlength="256" placeholder="เช่น เครื่อง build"></label>' +
-      '<label>กลุ่ม<input name="tenant" required value="' + esc(groups[0] || "lab") + '" list="pairing-groups" pattern="[A-Za-z0-9_\\-]+" maxlength="64"><datalist id="pairing-groups">' + groups.map(group => '<option value="' + esc(group) + '"></option>').join("") + "</datalist><small>ภาษาอังกฤษ ตัวเลข - หรือ _ เช่น lab, office, demo</small></label>" +
-      '<label>ระบบปฏิบัติการ<select name="os"><option value="windows">Windows / Windows Server</option><option value="linux">Ubuntu 24.04 — Desktop หรือ Server</option></select></label>' +
-      '<label>IP หรือชื่อเครื่อง<input name="address" required placeholder="เช่น 192.0.2.20 หรือชื่อใน Tailscale"><small>ที่อยู่ที่เครื่องหลักนี้เชื่อมต่อไปได้</small></label></div>' +
-      '<details><summary>ตัวเลือกขั้นสูง</summary><div class="form-grid"><label>ชื่ออ้างอิงเครื่อง<input name="targetId" pattern="[A-Za-z0-9_\\-]+" maxlength="64" placeholder="สร้างให้อัตโนมัติ"></label><label>พอร์ต SSH<input name="port" type="number" value="22" min="1" max="65535" required></label><label>ประเภทเครือข่าย<select name="routeKind"><option value="">เลือกจากที่อยู่อัตโนมัติ</option><option value="lan">LAN</option><option value="tailscale">Tailscale</option><option value="public">Public IP</option></select></label><label>บัญชีเชื่อมต่อ<input name="user" value="sshcc-bridge" required></label><label class="full">เส้นทางสำรอง / ProxyJump<textarea name="routes" rows="4" class="mono" placeholder="เว้นว่างเพื่อใช้ค่าปกติ"></textarea><small>สำหรับผู้ดูแล: รายการเส้นทาง JSON ตามรูปแบบเดิม</small></label></div></details>' +
-      '<div class="form-actions"><button type="submit" class="primary">สร้างชุดติดตั้งสำหรับเครื่องนี้</button></div><p class="help mt">ชุดติดตั้งมีเฉพาะข้อมูลสาธารณะ เครื่องใหม่ต้องกด Approve ก่อนจึงจะควบคุมได้ · ถ้าใช้ Tailscale ให้ลงชื่อเข้าใช้บนเครื่องใหม่ก่อน</p></form></section>') +
-    '<section class="surface"><h2>วางรหัสจับคู่จากเครื่องใหม่</h2><p class="help">กด “คัดลอกรหัสจับคู่” ที่เครื่องใหม่ แล้ววางข้อความทั้งหมดที่นี่ ระบบจะจับคู่กับคำขอที่ถูกต้องให้เอง</p><form id="complete-pairing"><label>รหัสจับคู่<textarea name="code" class="mono" required maxlength="65536" rows="3" autocomplete="off" spellcheck="false" placeholder="SSHCC1.…"></textarea></label><div class="form-actions"><button type="submit" class="primary">ยืนยันและตรวจการเชื่อมต่อ</button></div></form></section>' +
-    (requests.length ? '<section class="section mt"><div class="section-heading"><h2>คำขอที่ยังทำไม่เสร็จ</h2><button class="small" data-action="refresh-pairings">' + icons.refresh + 'รีเฟรช</button></div><div class="table-wrap"><table><thead><tr><th>เครื่อง</th><th>กลุ่ม</th><th>สถานะ</th><th></th></tr></thead><tbody>' + requests.map(item => "<tr><td><strong>" + esc(item.label || item.targetId) + "</strong><small>" + esc(timestamp(item.createdAt)) + "</small></td><td>" + chip(item.tenant) + '</td><td><span class="badge pending">' + esc(pairingState(item)) + '</span></td><td class="actions"><button class="small" data-action="resume-pairing" data-id="' + esc(item.requestId) + '">ทำต่อ</button></td></tr>').join("") + "</tbody></table></div></section>" : "") +
-    '<details class="mt"><summary>สำหรับผู้ดูแล (นำเข้าด้วยไฟล์)</summary><div><p class="help">นำเข้า registration หรือ v1 registry ได้ โดยยังตรวจ host key เหมือนปกติ</p><div class="page-actions"><button data-action="import-registration">นำเข้าไฟล์ registration…</button><button data-action="import-v1-registry">นำเข้า v1 registry…</button></div><form id="paste-registration" class="mt"><label>Registration JSON<textarea name="document" class="mono" rows="4" required spellcheck="false"></textarea></label><div class="form-actions"><button type="submit">นำเข้า</button></div></form></div></details>';
+  const tenant = groups[0] || "lab";
+  const folders = (state.folders.folders || []).filter(folder => folder.master === "local");
+  const folderSelect = '<label>Folder<select name="folder" id="pairing-folder"><option value="">None</option>' +
+    folders.map(folder => '<option value="' + esc(folder.id) + '"' + (options.folder === folder.id ? " selected" : "") + ">" + esc(folder.name) + "</option>").join("") +
+    '<option value="__new__">+ New folder…</option></select><input name="newFolder" id="pairing-new-folder" maxlength="64" placeholder="New folder name" hidden><small>Only for organizing the tree; optional</small></label>';
+  const asMaster = options.kind === "master", site = asMaster && (state.datacenters.datacenters || []).find(row => row.id === options.site);
+  if (asMaster) return heading("Add a Master host", (site ? "Datacenter " + site.name + " · " : "") + "Pair it like a target host. Once paired, its target hosts are merged into this tree automatically", '<button data-action="enroll-close">' + icons.close + (current ? "Close" : "Cancel") + "</button>") + renderStepper(pairingStep(current)) +
+    enrollmentBody(current, options, groups, tenant, "") + pairingTail(requests);
+  return heading("Add a target host", (options.folder && folders.find(folder => folder.id === options.folder) ? "Folder " + folders.find(folder => folder.id === options.folder).name + " · " : "") + "Create an installer, open it on the new host, then paste the pairing code back here", '<button data-action="enroll-close">' + icons.close + (current ? "Close" : "Cancel") + "</button>") + renderStepper(pairingStep(current)) +
+    enrollmentBody(current, options, groups, tenant, folderSelect) + pairingTail(requests);
+}
+function enrollmentBody(current, options, groups, tenant, folderSelect) {
+  return (current ? renderPairingProgress(current) : '<section class="surface"><h2>' + (options.kind === "master" ? "New Master host" : "New target host") + '</h2><form id="create-pairing" class="mt"><div class="form-grid">' +
+      '<label>Host name<input name="label" required maxlength="256" placeholder="e.g. build server" value="' + (options.self ? esc(state.service?.label || "") : "") + '"></label>' +
+      '<label>Operating system<select name="os"><option value="windows">Windows / Windows Server</option><option value="linux">Ubuntu 24.04 — Desktop or Server</option></select></label>' +
+      '<label>IP or hostname<input name="address" required placeholder="e.g. 192.0.2.20 or a Tailscale name" value="' + (options.self ? "127.0.0.1" : "") + '"><small>An address this Master can reach</small></label>' + folderSelect + '</div>' +
+      '<details><summary>Advanced options</summary><div class="form-grid">' +
+      '<label>Key group (tenant)<input name="tenant" required value="' + esc(tenant) + '" list="pairing-groups" pattern="[A-Za-z0-9_\\-]+" maxlength="64"><datalist id="pairing-groups">' + groups.map(group => '<option value="' + esc(group) + '"></option>').join("") + "</datalist><small>Hosts in the same key group share one SSH key on this Master. Keep the default unless you separate keys per group or team</small></label>" +
+      '<label>Target ID<input name="targetId" pattern="[A-Za-z0-9_\\-]+" maxlength="64" placeholder="Generated automatically"></label><label>SSH port<input name="port" type="number" value="22" min="1" max="65535" required></label><label>Network type<select name="routeKind"><option value="">Detect from address</option><option value="lan">LAN</option><option value="tailscale">Tailscale</option><option value="public">Public IP</option></select></label><label>Bridge account<input name="user" value="sshcc-bridge" required></label><label class="full">Fallback routes / ProxyJump<textarea name="routes" rows="4" class="mono" placeholder="Leave empty for the default"></textarea><small>For administrators: routes JSON in the existing format</small></label></div></details>' +
+      '<div class="form-actions"><button type="submit" class="primary">Create installer</button><button type="button" data-action="enroll-close">Cancel</button></div><p class="help mt">The installer contains only public data. The new host must approve before it can be controlled · With Tailscale, sign in on the new host first</p></form></section>') +
+    "";
+}
+function pairingTail(requests) {
+  return '<section class="surface"><h2>Paste the pairing code</h2><p class="help">Press “Copy pairing code” on the new host and paste all of it here. It is matched to the right request automatically</p><form id="complete-pairing"><label>Pairing code<textarea name="code" class="mono" required maxlength="65536" rows="3" autocomplete="off" spellcheck="false" placeholder="SSHCC1.…"></textarea></label><div class="form-actions"><button type="submit" class="primary">Confirm and check connection</button></div></form></section>' +
+    (requests.length ? '<section class="section mt"><div class="section-heading"><h2>Unfinished requests</h2><button class="small" data-action="refresh-pairings">' + icons.refresh + 'Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Target host</th><th>Status</th><th></th></tr></thead><tbody>' + requests.map(item => "<tr><td><strong>" + esc(item.label || item.targetId) + "</strong><small>" + esc(timestamp(item.createdAt)) + '</small></td><td><span class="badge pending">' + esc(pairingState(item)) + '</span></td><td class="actions"><div class="target-actions"><button class="small" data-action="resume-pairing" data-id="' + esc(item.requestId) + '">Resume</button>' + (item.state === "awaiting_approval" ? '<button class="small danger" data-action="pairing-cancel" data-id="' + esc(item.requestId) + '">Cancel</button>' : "") + "</div></td></tr>").join("") + "</tbody></table></div></section>" : "") +
+    '<details class="mt"><summary>For administrators (import from a file)</summary><div><p class="help">Import a registration or a v1 registry; host keys are still checked as usual</p><div class="page-actions"><button data-action="import-registration">Import registration file…</button><button data-action="import-v1-registry">Import v1 registry…</button></div><form id="paste-registration" class="mt"><label>Registration JSON<textarea name="document" class="mono" rows="4" required spellcheck="false"></textarea></label><div class="form-actions"><button type="submit">Import</button></div></form></div></details>';
+}
+/** A newly paired machine that is itself a Master: one click merges its machines into this tree. */
+function pairedMasterOffer(item) {
+  if (state.dc.adding?.kind === "master" && state.masterCheck.get(item.targetId) === false && state.pairedMaster?.targetId !== item.targetId)
+    return '<div class="callout pending mt">' + icons.alert + "<div><strong>Paired as a target host, but it is not a Master</strong><p>Install the Master role on " + esc(item.label || item.targetId) + ", then right-click it in the tree and choose “Merge its target hosts”</p></div></div>";
+  if (state.pairedMaster?.targetId !== item.targetId) return "";
+  const merge = state.merges.find(row => row.targetId === item.targetId);
+  if (merge) return '<div class="callout good mt">' + icons.check + "<div><strong>Merged · " + (merge.children || []).length + " target hosts added to the tree</strong><p>This Master reaches them through " + esc(item.label || item.targetId) + "</p></div></div>";
+  return '<div class="callout mt">' + icons.info + "<div><strong>" + esc(item.label || item.targetId) + " is also a Master</strong><p>Merge it to see and control its target hosts from here. Requests go through it; nothing changes on its target hosts</p>" +
+    '<div class="form-actions"><button class="primary" data-action="merge-master" data-id="' + esc(item.targetId) + '"' + (state.merging.has(item.targetId) ? " disabled" : "") + ">Merge its target hosts</button></div></div></div>";
+}
+/** After pairing: ask only the new host whether it is a Master (no fleet-wide probe). */
+async function checkPairedMaster(pairing) {
+  state.pairedMaster = null;
+  if (pairing?.state !== "ready" || !state.service?.roles?.includes("master")) return;
+  try {
+    const [row] = await rpc("merges.discover", { targetId: pairing.targetId });
+    if (row && !row.error) state.masterCheck.set(row.targetId, row.isMaster);
+    if (row?.isMaster) state.pairedMaster = { targetId: pairing.targetId };
+  } catch { /* the offer is optional; the Masters page can still merge */ }
+  // "Add Master host": merge right away and file it under the chosen Datacenter.
+  const adding = state.dc.adding;
+  if (adding?.kind !== "master" || state.pairedMaster?.targetId !== pairing.targetId) return;
+  const merge = await rpc("merges.add", { targetId: pairing.targetId });
+  if (adding.site) { await rpc("datacenters.assign", { master: pairing.targetId, datacenterId: adding.site }); await refreshDatacenters(); }
+  await refreshMasters();
+  notify("Added Master " + (merge.label || pairing.targetId) + " · " + (merge.children || []).length + " target hosts merged into the tree");
 }
 function renderPairingProgress(item) {
   const env = item.envelope;
@@ -491,128 +621,498 @@ function renderPairingProgress(item) {
   const failed = (item.diagnostics?.stages || []).filter(stage => !stage.ok);
   const master = env?.bundle?.master?.label || state.service?.label;
   return '<section class="surface"><div class="pairing-head"><h2>' + esc(item.label || item.targetId) + '</h2><span class="badge ' + (ready ? "good" : "pending") + '">' + esc(pairingState(item)) + "</span></div>" +
-    '<dl class="facts"><dt>เครื่องหลัก</dt><dd>' + esc(master) + "</dd><dt>กลุ่ม</dt><dd>" + esc(item.tenant) + "</dd><dt>ที่อยู่เครื่อง</dt><dd>" + esc(routes.map(route => route.address).join(", ")) + "</dd></dl>" +
-    (ready ? '<div class="callout good mt">' + icons.check + '<div><strong class="ready-message">ตรวจ service และตัวตนเครื่องผ่านแล้ว</strong><p>Agent ใช้งานเครื่องนี้ได้ทันที</p></div></div><div class="form-actions"><button class="primary" data-action="open-paired-target" data-id="' + esc(item.targetId) + '">เปิดเครื่องนี้</button><button data-action="new-pairing">' + icons.plus + "เพิ่มเครื่องถัดไป</button></div>" :
-      attention ? '<div class="callout pending mt">' + icons.alert + "<div><strong>ติดตั้งแล้ว แต่ยังตรวจการเชื่อมต่อไม่ผ่าน</strong><p>ไม่ต้องติดตั้งใหม่ แก้ที่อยู่เครื่องแล้วตรวจอีกครั้ง</p>" + (failed.length ? "<ul>" + failed.map(stage => "<li>" + esc(pairingError(stage.message)) + "</li>").join("") + "</ul>" : "") + "</div></div>" +
-        '<form id="retry-pairing" class="mt"><label>IP หรือชื่อเครื่อง<input name="address" required value="' + esc(routes[0]?.address || "") + '"><small>แก้เฉพาะเส้นทางเชื่อมต่อ โดยรักษาตัวตนและ host key เดิม</small></label><div class="form-actions"><button type="submit" class="primary">ตรวจอีกครั้ง</button><button type="button" data-action="new-pairing">เพิ่มเครื่องอื่น</button></div></form>' :
-      '<p class="mt">บันทึกชุดติดตั้งแล้วส่งไปเครื่องใหม่ เมื่อเปิดจะเห็นชื่อเครื่องหลัก <strong>' + esc(master) + "</strong> ให้กด Approve แล้วคัดลอกรหัสกลับมาวางด้านล่าง</p>" +
-        '<div class="form-actions"><button class="primary" data-action="save-setup">บันทึกชุดติดตั้งไฟล์เดียว…</button><button data-action="new-pairing">เพิ่มเครื่องอื่น</button></div>' +
-        (state.setupSaved?.requestId === item.requestId ? '<div class="callout good mt">' + icons.check + "<div><strong>บันทึกแล้ว</strong><p class=\"wrap\">" + esc(state.setupSaved.path) + "</p></div></div>" : "") +
-        '<p class="help mt">' + (item.os === "windows" ? "Windows: เปิดไฟล์ .exe แล้วกด Approve" : "Ubuntu: ติดตั้งไฟล์ .deb แล้วเปิด SSH Control Center Setup<br>Server: ใช้ sudo apt install --no-install-recommends ./ชื่อไฟล์.deb แล้วรัน sshcc-setup ใน terminal") + "</p>") +
-    '<details><summary>รายละเอียดคำขอ</summary><p class="help">คำขอ: <code>' + esc(item.requestId) + "</code><br>การยกเลิกหรือปิดหน้าจอนี้ไม่ถอนสิทธิ์ที่เครื่องใหม่อนุมัติไปแล้ว</p></details></section>";
+    '<dl class="facts"><dt>Master</dt><dd>' + esc(master) + "</dd><dt>Address</dt><dd>" + esc(routes.map(route => route.address).join(", ")) + "</dd></dl>" +
+    (ready ? '<div class="callout good mt">' + icons.check + '<div><strong class="ready-message">Service and host identity verified</strong><p>Agents can use this host now</p></div></div>' + pairedMasterOffer(item) + '<div class="form-actions"><button class="' + (pairedMasterOffer(item) ? "" : "primary") + '" data-action="open-paired-target" data-id="' + esc(item.targetId) + '">Open this target host</button><button data-action="new-pairing">' + icons.plus + "Add another target host</button><button data-action=\"enroll-close\">Done</button></div>" :
+      attention ? '<div class="callout pending mt">' + icons.alert + "<div><strong>Installed, but the connection check failed</strong><p>No need to reinstall. Fix the address and check again</p>" + (failed.length ? "<ul>" + failed.map(stage => "<li>" + esc(pairingError(stage.message)) + "</li>").join("") + "</ul>" : "") + "</div></div>" +
+        '<form id="retry-pairing" class="mt"><label>IP or hostname<input name="address" required value="' + esc(routes[0]?.address || "") + '"><small>Only the route changes; identity and host key stay the same</small></label><div class="form-actions"><button type="submit" class="primary">Check again</button><button type="button" data-action="pairing-back">' + icons.back + 'Back</button></div></form>' :
+      '<p class="mt">Save the installer and send it to the new host. It will show the Master name <strong>' + esc(master) + "</strong>; approve, then paste the code below</p>" +
+        '<div class="form-actions"><button class="primary" data-action="save-setup">Save single-file installer…</button><button data-action="pairing-back">' + icons.back + 'Back</button><button class="danger" data-action="pairing-cancel" data-id="' + esc(item.requestId) + '">Cancel request</button></div>' +
+        (state.setupSaved?.requestId === item.requestId ? '<div class="callout good mt">' + icons.check + "<div><strong>Saved</strong><p class=\"wrap\">" + esc(state.setupSaved.path) + "</p></div></div>" : "") +
+        '<p class="help mt">' + (item.os === "windows" ? "Windows: open the .exe and approve" : "Ubuntu: install the .deb, then open SSH Control Center Setup<br>Server: sudo apt install --no-install-recommends ./FILE.deb, then run sshcc-setup in a terminal") + "</p>") +
+    '<details><summary>Request details</summary><p class="help">Request: <code>' + esc(item.requestId) + "</code><br>Back keeps the request under Unfinished requests. Cancel request forgets a request no host has approved; a host that already approved keeps its access until revoked there</p></details></section>";
 }
 function renderMasters() {
   const rows = Array.isArray(state.masters) ? state.masters : [];
-  return heading("Master ที่อนุญาต", "กำหนดว่าเครื่องไหนสั่งงานเครื่องนี้ได้ และรวมเครื่องลูกจาก Master อื่น", '<button data-action="refresh-masters">' + icons.refresh + "รีเฟรช</button>") +
-    '<div class="stack"><section class="surface"><div class="card-head"><div><h2>Master ที่สั่งงานเครื่องนี้ได้</h2><p>มีผลเมื่อเครื่องนี้ทำหน้าที่ Target</p></div><button data-action="accept-enrollment" title="เลือก public enrollment bundle จาก Master อีกเครื่อง">' + icons.plus + "เพิ่ม Master…</button></div>" +
-    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>สิทธิ์</th><th></th></tr></thead><tbody>' +
-      rows.map(master => "<tr><td><strong>" + esc(master.label || master.id) + "</strong><small><code>" + esc(master.id) + '</code></small></td><td><span class="badge ' + (master.revoked ? "" : "good") + '">' + (master.revoked ? "ถอนสิทธิ์แล้ว" : "อนุญาต") + '</span></td><td class="actions">' + (master.revoked ? "" : '<button class="danger small" data-action="revoke-master" data-id="' + esc(master.id) + '">ถอนสิทธิ์</button>') + "</td></tr>").join("") +
-      "</tbody></table></div>" : '<div class="empty-inline">ยังไม่มี Master ที่ลงทะเบียนบนเครื่องนี้</div>') +
-    '<p class="help mt">ถอนสิทธิ์มีผลกับคำขอใหม่ งานที่เริ่มแล้วให้ยกเลิกจากหน้างานแยกต่างหาก</p></section>' +
+  return heading("Allowed Masters", "Choose which Masters may control this host, and merge target hosts from other Masters", '<button data-action="refresh-masters">' + icons.refresh + "Refresh</button>") +
+    '<div class="stack"><section class="surface"><div class="card-head"><div><h2>Masters that can control this host</h2><p>Another Master’s access to this host (this host is its Target)</p></div><button data-action="accept-enrollment" title="Choose a public enrollment bundle from another Master">' + icons.plus + "Allow another Master…</button></div>" +
+    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Access</th><th></th></tr></thead><tbody>' +
+      rows.map(master => "<tr><td><strong>" + esc(master.label || master.id) + "</strong><small><code>" + esc(master.id) + '</code></small></td><td><span class="badge ' + (master.revoked ? "" : "good") + '">' + (master.revoked ? "Revoked" : "Allowed") + '</span></td><td class="actions">' + (master.revoked ? "" : '<button class="danger small" data-action="revoke-master" data-id="' + esc(master.id) + '">Revoke</button>') + "</td></tr>").join("") +
+      "</tbody></table></div>" : '<div class="empty-inline">No Masters are enrolled on this host</div>') +
+    '<p class="help mt">Revoking affects new requests; cancel running jobs separately from the Jobs tab</p></section>' +
     (state.service?.roles?.includes("master") ? renderMerges() : "") + renderRelays() + "</div>";
 }
 function mergeStatus(targetId) {
-  if (state.merging.has(targetId)) return '<span class="badge running">กำลัง merge…</span>';
+  if (state.merging.has(targetId)) return '<span class="badge running">Merging…</span>';
   const merge = state.merges.find(row => row.targetId === targetId);
-  if (!merge) return '<span class="badge">ยังไม่ merge</span>';
+  if (!merge) return '<span class="badge">Not merged</span>';
   const count = (merge.children || []).length;
-  const labels = { merged: ["good", "Merged · " + count + " เครื่อง"], outdated: ["bad", "ต้องอัปเกรด Master ปลายทาง"], "not-master": ["bad", "เครื่องนี้ไม่ได้เป็น Master"], disabled: ["bad", "Master ปลายทางปิดการ merge"], error: ["bad", "ผิดพลาด"] };
+  const labels = { merged: ["good", "Merged · " + count + " target hosts"], outdated: ["bad", "Remote Master needs an upgrade"], "not-master": ["bad", "Not a Master"], disabled: ["bad", "Remote Master disabled merging"], error: ["bad", "Error"] };
   const [style, text] = labels[merge.status] || ["bad", merge.status];
-  const detail = merge.status === "merged" ? "sync ล่าสุด " + timestamp(merge.syncedAt) : (merge.error || "") + (count ? " · ยังใช้รายชื่อเดิม " + count + " เครื่อง" : "");
+  const detail = merge.status === "merged" ? "Last sync " + timestamp(merge.syncedAt) : (merge.error || "") + (count ? " · still using the previous list of " + count : "");
   return '<span class="badge ' + style + '">' + esc(text) + '</span><small class="wrap">' + esc(detail) + "</small>";
 }
 function reverseStatus(merge) {
   const running = state.twoWay.get(merge.targetId);
-  if (running) return '<span class="badge running">กำลังเปิดสองทาง…</span><small class="wrap">' + esc(running.message) + "</small>";
+  if (running) return '<span class="badge running">Enabling two-way…</span><small class="wrap">' + esc(running.message) + "</small>";
   const reverse = merge.reverse, peer = state.targets.find(item => item.id === merge.targetId);
   const relay = state.relays.find(row => row.masterId === peer?.nodeId);
-  if (isTwoWay(merge)) return '<span class="badge good">สองทาง</span><small>' + esc(merge.label || merge.targetId) + " สั่งเครื่องลูกของเครื่องนี้ได้</small>";
-  if (reverse?.status === "two-way" && relay?.revoked) return '<span class="badge">ทางเดียว</span><small>ปิดการ merge ไว้ที่เครื่องนี้</small>';
-  const labels = { "two-way": ["pending", "รอ merge กลับ"], "needs-attention": ["bad", "จับคู่แล้ว แต่ merge กลับไม่สำเร็จ"], error: ["bad", "เปิดสองทางไม่สำเร็จ"], pending: ["pending", "ทำไม่เสร็จ"] };
-  const [style, text] = labels[reverse?.status] || ["", "ทางเดียว"];
-  return '<span class="badge ' + style + '">' + text + "</span>" + (reverse?.error ? '<small class="wrap">' + esc(reverse.error) + "</small>" : !reverse ? "<small>เครื่องนี้สั่งเครื่องลูกของเครื่องนั้นได้ฝั่งเดียว</small>" : "");
+  if (isTwoWay(merge)) return '<span class="badge good">Two-way</span><small>' + esc(merge.label || merge.targetId) + " can control this Master’s target hosts</small>";
+  if (reverse?.status === "two-way" && relay?.revoked) return '<span class="badge">One-way</span><small>Merging is disabled on this host</small>';
+  const labels = { "two-way": ["pending", "Waiting for merge back"], "needs-attention": ["bad", "Paired, but merge back failed"], error: ["bad", "Two-way setup failed"], pending: ["pending", "Unfinished"] };
+  const [style, text] = labels[reverse?.status] || ["", "One-way"];
+  return '<span class="badge ' + style + '">' + text + "</span>" + (reverse?.error ? '<small class="wrap">' + esc(reverse.error) + "</small>" : !reverse ? "<small>This Master controls that Master’s target hosts one way only</small>" : "");
 }
 function renderMerges() {
   const discovered = (state.discovered || []).filter(row => row.isMaster);
   const ids = [...new Set([...state.merges.map(row => row.targetId), ...discovered.map(row => row.targetId)])];
   const name = id => state.merges.find(row => row.targetId === id)?.label || discovered.find(row => row.targetId === id)?.label || state.targets.find(row => row.id === id)?.label || id;
   const unreachable = (state.discovered || []).filter(row => row.error).length;
-  return '<section class="surface"><div class="card-head"><div><h2>รวมเครื่องลูกจาก Master อื่น</h2><p>Merge เพื่อสั่งเครื่องลูกของ Master นั้นผ่านเครื่องนั้น</p></div><button data-action="discover-masters">' + icons.search + "ค้นหา Master</button></div>" +
-    (ids.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>สถานะ</th><th>ทิศทาง</th><th></th></tr></thead><tbody>' +
+  return '<section class="surface"><div class="card-head"><div><h2>Merge target hosts from other Masters</h2><p>To add a Master: use + Add target host for it, then merge it here (or from the pairing screen)</p></div><button data-action="discover-masters">' + icons.search + "Find Masters</button></div>" +
+    (ids.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Status</th><th>Direction</th><th></th></tr></thead><tbody>' +
       ids.map(id => {
         const merge = state.merges.find(row => row.targetId === id), busyRow = state.merging.has(id) || state.twoWay.has(id);
         const canPair = merge?.status === "merged" && !isTwoWay(merge) && !(merge.reverse?.status === "two-way" && state.relays.some(row => row.masterId === state.targets.find(item => item.id === id)?.nodeId && row.revoked));
-        const pair = canPair ? '<button class="primary small" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="ตอนนี้รองรับเฉพาะเครื่องหลักที่เป็น Windows"' : "") + ">" + (merge.reverse ? "ลองอีกครั้ง" : "เปิดสองทาง") + "</button>" : "";
-        const actions = merge ? pair + '<button class="small" data-action="sync-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + '>Sync</button><button class="danger small" data-action="remove-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">ยกเลิก merge</button>" : '<button class="primary small" data-action="merge-master" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Merge</button>";
+        const pair = canPair ? '<button class="primary small" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="Currently supported only on Windows Masters"' : "") + ">" + (merge.reverse ? "Try again" : "Enable two-way") + "</button>" : "";
+        const actions = merge ? pair + '<button class="small" data-action="sync-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + '>Sync</button><button class="danger small" data-action="remove-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Remove merge</button>" : '<button class="primary small" data-action="merge-master" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Merge</button>";
         return "<tr><td><strong>" + esc(name(id)) + "</strong><small><code>" + esc(id) + "</code></small></td><td>" + mergeStatus(id) + "</td><td>" + (merge ? reverseStatus(merge) : '<span class="muted">—</span>') + '</td><td class="actions"><div class="target-actions">' + actions + "</div></td></tr>";
       }).join("") + "</tbody></table></div>"
-      : '<div class="empty-inline">' + (state.discovered ? "ไม่พบเครื่องที่เป็น Master ในเครื่องที่เชื่อมต่อ" : "กด “ค้นหา Master” เพื่อตรวจเครื่องที่เชื่อมต่ออยู่") + "</div>") +
-    (state.discovered ? '<p class="info-line">ตรวจ ' + state.discovered.length + " เครื่อง · เป็น Master " + discovered.length + " เครื่อง" + (unreachable ? " · ติดต่อไม่ได้ " + unreachable + " เครื่อง" : "") + "</p>" : "") +
-    '<details><summary>merge ทำงานอย่างไร</summary><p class="help">เครื่องลูกที่ merge แล้วจะอยู่ในหน้าเครื่องทั้งหมด ใช้ ID แบบ <code>master/เครื่องลูก</code> · คำสั่งส่งผ่าน Master นั้นด้วยสิทธิ์ของ Master นั้น<br>เปิดสองทางเพื่อให้ Master นั้นสั่งเครื่องลูกของเครื่องนี้ได้ด้วย</p></details></section>';
+      : '<div class="empty-inline">' + (state.discovered ? "None of the target hosts is a Master" : "Press “Find Masters” to check the target hosts") + "</div>") +
+    (state.discovered ? '<p class="info-line">Checked ' + state.discovered.length + " target hosts · " + discovered.length + " Masters" + (unreachable ? " · " + unreachable + " unreachable" : "") + "</p>" : "") +
+    '<details><summary>How merging works</summary><p class="help">Merged target hosts appear under All hosts with IDs like <code>master/machine</code> · Commands go through that Master with its rights<br>Enable two-way so that Master can also control this Master’s target hosts</p></details></section>';
 }
 function renderRelays() {
   if (!state.relays.length) return "";
-  return '<section class="surface"><div class="card-head"><div><h2>Master ที่ merge เครื่องนี้</h2><p>Master เหล่านี้สั่งเครื่องลูกของเครื่องนี้ผ่านเครื่องนี้ได้</p></div></div><div class="table-wrap"><table><thead><tr><th>Master</th><th>ใช้ล่าสุด</th><th>สถานะ</th><th></th></tr></thead><tbody>' +
-    state.relays.map(relay => "<tr><td><strong>" + esc(relay.label) + "</strong><small><code>" + esc(relay.masterId) + "</code></small></td><td>" + esc(timestamp(relay.lastUsedAt)) + '</td><td><span class="badge ' + (relay.revoked ? "bad" : "good") + '">' + (relay.revoked ? "ปิดการ merge" : "Merged") + '</span></td><td class="actions">' +
-      (relay.revoked ? '<button class="small" data-action="allow-relay" data-id="' + esc(relay.masterId) + '">อนุญาตอีกครั้ง</button>' : '<button class="danger small" data-action="revoke-relay" data-id="' + esc(relay.masterId) + '">ปิดการ merge</button>') + "</td></tr>").join("") +
+  return '<section class="surface"><div class="card-head"><div><h2>Masters that merged this host</h2><p>These Masters can control this Master’s target hosts through it</p></div></div><div class="table-wrap"><table><thead><tr><th>Master</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>' +
+    state.relays.map(relay => "<tr><td><strong>" + esc(relay.label) + "</strong><small><code>" + esc(relay.masterId) + "</code></small></td><td>" + esc(timestamp(relay.lastUsedAt)) + '</td><td><span class="badge ' + (relay.revoked ? "bad" : "good") + '">' + (relay.revoked ? "Merging disabled" : "Merged") + '</span></td><td class="actions">' +
+      (relay.revoked ? '<button class="small" data-action="allow-relay" data-id="' + esc(relay.masterId) + '">Allow again</button>' : '<button class="danger small" data-action="revoke-relay" data-id="' + esc(relay.masterId) + '">Disable merging</button>') + "</td></tr>").join("") +
     "</tbody></table></div></section>";
 }
 function copyRow(command) {
-  return '<div class="copy-row"><code>' + esc(command) + '</code><button class="icon-button" data-action="copy" data-copy="' + esc(command) + '" aria-label="คัดลอก ' + esc(command) + '" title="คัดลอก">' + icons.copy + "</button></div>";
+  return '<div class="copy-row"><code>' + esc(command) + '</code><button class="icon-button" data-action="copy" data-copy="' + esc(command) + '" aria-label="Copy ' + esc(command) + '" title="Copy">' + icons.copy + "</button></div>";
 }
 function linkBadge(status) {
   const styles = { connected: "good", pathMismatch: "pending", disconnected: "", missingClient: "" };
-  const labels = { connected: "เชื่อมแล้ว", pathMismatch: "path ไม่ตรง", disconnected: "ยังไม่เชื่อม", missingClient: "ไม่พบโปรแกรม" };
+  const labels = { connected: "Connected", pathMismatch: "Path mismatch", disconnected: "Not connected", missingClient: "Not installed" };
   return '<span class="badge ' + (styles[status] || "") + '">' + esc(labels[status] || status) + "</span>";
 }
 function renderClientLink(link) {
   const canConnect = link.detected && link.status === "disconnected";
   const canUpdate = link.detected && link.status === "pathMismatch";
   const actions =
-    (canConnect ? '<button class="primary small" data-action="connect-client" data-id="' + esc(link.id) + '">เชื่อม</button>' : "") +
-    (canUpdate ? '<button class="small" data-action="update-client-path" data-id="' + esc(link.id) + '">อัปเดต path</button>' : "") +
-    (link.status === "connected" ? '<span class="help">' + icons.check + "พร้อมใช้</span>" : "") +
-    (!link.detected ? '<button class="primary small" disabled title="ไม่พบโปรแกรมบนเครื่องนี้">เชื่อม</button>' : "");
+    (canConnect ? '<button class="primary small" data-action="connect-client" data-id="' + esc(link.id) + '">Connect</button>' : "") +
+    (canUpdate ? '<button class="small" data-action="update-client-path" data-id="' + esc(link.id) + '">Update path</button>' : "") +
+    (link.status === "connected" ? '<span class="help">' + icons.check + "Ready</span>" : "") +
+    (!link.detected ? '<button class="primary small" disabled title="Not installed on this host">Connect</button>' : "");
   return '<article class="client-link surface">' +
     '<div class="card-head"><div><h3>' + esc(link.label) + "</h3><p>" + esc(link.message) + "</p></div>" + linkBadge(link.status) + "</div>" +
     '<dl class="facts"><dt>Config</dt><dd><code>' + esc(link.configPath) + "</code></dd>" +
-    (link.command ? "<dt>Command ปัจจุบัน</dt><dd><code>" + esc(link.command) + "</code></dd>" : "") +
-    "<dt>Command ที่ต้องการ</dt><dd><code>" + esc(link.expectedCommand) + "</code></dd></dl>" +
+    (link.command ? "<dt>Current command</dt><dd><code>" + esc(link.command) + "</code></dd>" : "") +
+    "<dt>Expected command</dt><dd><code>" + esc(link.expectedCommand) + "</code></dd></dl>" +
     '<div class="form-actions">' + actions + "</div>" +
-    "<details><summary>คัดลอก snippet</summary><div>" + copyRow(link.snippet) + "</div></details>" +
+    "<details><summary>Copy snippet</summary><div>" + copyRow(link.snippet) + "</div></details>" +
     "</article>";
 }
 function renderClientLinks() {
   const body = state.clientLinksError
-    ? '<div class="callout bad">' + icons.alert + "<div><strong>อ่านสถานะการเชื่อม MCP ไม่ได้</strong><p>" + esc(state.clientLinksError) + "</p></div></div>"
+    ? '<div class="callout bad">' + icons.alert + "<div><strong>Could not read MCP client status</strong><p>" + esc(state.clientLinksError) + "</p></div></div>"
     : (state.clientLinks.length
       ? '<div class="client-link-grid">' + state.clientLinks.map(renderClientLink).join("") + "</div>"
-      : '<p class="help">กำลังตรวจ Cursor, Claude Code และ Codex…</p>');
-  return '<section class="section mt"><div class="section-heading"><div><h2>เชื่อม AI client</h2><p class="help">ลงทะเบียน MCP <code>ssh_control_center</code> ระดับผู้ใช้ · ใช้ local service เดียวกันผ่าน <code>sshcc mcp</code></p></div></div>' +
+      : '<p class="help">Checking Cursor, Claude Code and Codex…</p>');
+  return '<section class="section mt"><div class="section-heading"><div><h2>Connect AI clients</h2><p class="help">Registers the user-level MCP server <code>ssh_control_center</code> · uses the same local service through <code>sshcc mcp</code></p></div></div>' +
     body +
-    '<details class="mt"><summary>CLI ทั่วไป</summary><div><p class="help">ใช้ตรวจ service โดยตรงโดยไม่ผ่าน AI client</p>' +
+    '<details class="mt"><summary>General CLI</summary><div><p class="help">Check the service directly without an AI client</p>' +
     copyRow("sshcc request system.status") + copyRow("sshcc mcp") + "</div></details></section>";
 }
 function renderService() {
   const service = state.service;
-  const head = heading("Local service", "Service เริ่มตั้งแต่บูต และทำงานแยกจากหน้าต่างนี้", '<button data-action="refresh-service">' + icons.refresh + "ตรวจอีกครั้ง</button>");
+  const head = heading("Local service", "The service starts at boot and runs independently of this window", '<button data-action="refresh-service">' + icons.refresh + "Check again</button>");
   if (!service) {
-    return head + '<div class="callout bad">' + icons.alert + "<div><strong>ติดต่อ service ไม่ได้</strong><p>ตรวจว่าติดตั้ง SSH Control Center แล้ว และเปิด tray ด้วยบัญชี owner ที่เลือกตอนติดตั้ง</p><ul><li>Windows: ดู service ชื่อ SSHControlCenter ใน Services</li><li>Ubuntu: ตรวจด้วย <code>systemctl status sshcc</code></li></ul></div></div>" +
-      '<details><summary>ข้อความผิดพลาด</summary><div class="output light"><pre>' + esc(state.serviceError || "—") + "</pre></div></details>" +
+    return head + '<div class="callout bad">' + icons.alert + "<div><strong>Cannot reach the service</strong><p>Check that SSH Control Center is installed and the tray runs as the Owner chosen during install</p><ul><li>Windows: look for the SSHControlCenter service in Services</li><li>Linux: <code>systemctl status sshcc</code></li></ul></div></div>" +
+      '<details><summary>Error message</summary><div class="output light"><pre>' + esc(state.serviceError || "—") + "</pre></div></details>" +
       renderClientLinks();
   }
   return head + '<div class="stat-grid">' +
-    stat("สถานะ", '<span class="dot good"></span>พร้อมใช้งาน') +
-    stat("ชื่อเครื่อง", esc(service.label)) +
-    stat("บทบาท", esc(service.roles?.join(" + ") || "—")) +
-    stat("ทำงานต่อเนื่อง", esc(formatUptime(service.uptimeSeconds)), service.version ? "เวอร์ชัน " + service.version : "") +
+    stat("Status", '<span class="dot good"></span>Ready') +
+    stat("Host name", esc(service.label)) +
+    stat("Roles", esc(service.roles?.join(" + ") || "—")) +
+    stat("Uptime", esc(formatUptime(service.uptimeSeconds)), service.version ? "Version " + service.version : "") +
     "</div>" +
-    '<div class="disclosure-list"><details><summary>ข้อมูลเพิ่มเติม <small class="muted">Node ID, การเชื่อมต่อ</small></summary><div><dl class="facts"><dt>Node ID</dt><dd><code>' + esc(service.nodeId) + "</code></dd><dt>การเชื่อมต่อ</dt><dd>Local named pipe / Unix socket</dd><dt>หน้าต่างนี้</dt><dd>ปิดหน้าต่างเพื่อคืนหน่วยความจำ WebView หรือเลือกปิดไอคอน Tray เพื่อปิดเฉพาะ tray</dd></dl></div></details></div>" +
+    '<div class="disclosure-list"><details><summary>More details <small class="muted">Node ID, connection</small></summary><div><dl class="facts"><dt>Node ID</dt><dd><code>' + esc(service.nodeId) + "</code></dd><dt>Connection</dt><dd>Local named pipe / Unix socket</dd><dt>This window</dt><dd>Close the window to free WebView memory, or quit the tray icon to close only the tray</dd></dl></div></details></div>" +
     renderClientLinks();
 }
-async function selectTarget(id) {
-  state.selected = id; state.tab = "overview"; state.job = null; state.jobs = []; state.jobsError = "";
-  state.files = null; state.file = null; state.pendingJob = null; state.newJob = false;
+/* Inventory: optional Datacenters → Masters (current or merged) → optional folders → machines. Built from the same
+   targets/merges data as the graph; containers are fetched only for the opened machine. */
+const dcKey = item => item ? item.id : "local";
+function dcModel() {
+  const direct = state.targets.filter(item => !item.relayed), byNode = new Map(direct.map(item => [item.nodeId, item]));
+  const peers = state.merges.map(merge => ({ merge, peer: direct.find(item => item.id === merge.targetId) })).filter(entry => entry.peer);
+  const masters = [{ id: "local", label: state.service?.label || "This host", current: true, item: null, machines: direct.map(item => ({ item })) }];
+  for (const { merge, peer } of peers) {
+    const machines = (merge.children || []).map(child => byNode.has(child.nodeId)
+      ? { item: byNode.get(child.nodeId), alsoDirect: true }
+      : { item: state.targets.find(item => item.id === peer.id + "/" + child.id) }).filter(entry => entry.item);
+    masters.push({ id: peer.id, label: peer.label || peer.id, current: false, item: peer, merge, twoWay: isTwoWay(merge), machines });
+  }
+  const members = state.folders.members || {};
+  for (const master of masters) {
+    master.folders = (state.folders.folders || []).filter(folder => folder.master === master.id)
+      .map(folder => ({ ...folder, machines: master.machines.filter(entry => !entry.alsoDirect && members[entry.item.id] === folder.id) }));
+    const filed = new Set(master.folders.flatMap(folder => folder.machines.map(entry => entry.item.id)));
+    master.loose = master.machines.filter(entry => !filed.has(entry.item.id) || entry.alsoDirect);
+  }
+  return masters;
+}
+function dcLookup(node) {
+  const [kind, ...rest] = node.split(":"), masters = dcModel();
+  if (kind === "master") { const master = masters.find(row => row.id === rest.join(":")); return master && { kind, master, label: master.label }; }
+  if (kind === "site") { const site = (state.datacenters.datacenters || []).find(row => row.id === rest.join(":")); return site && { kind, site, label: site.name, masters: masters.filter(master => siteOf(master.id)?.id === site.id) }; }
+  if (kind === "folder") {
+    for (const master of masters) {
+      const folder = master.folders.find(row => row.id === rest.join(":"));
+      if (folder) return { kind, master, folder, label: folder.name };
+    }
+    return null;
+  }
+  if (kind === "node") { const item = state.targets.find(row => row.id === rest.join(":")); return item && { kind, item, label: item.label || item.id }; }
+  return null;
+}
+/** Master branch a machine belongs to for folders: "peer" for "peer/child", otherwise this Master. */
+const dcBranch = id => id.includes("/") ? id.split("/")[0] : "local";
+const siteOf = masterId => (state.datacenters.datacenters || []).find(site => site.id === (state.datacenters.members || {})[masterId]);
+const siteIcon = svg('<path d="M2.5 14V4.5l5-2.5v12M7.5 14V6.5l6 2V14M1.5 14h13M4.5 6h1M4.5 8.5h1M4.5 11h1M10 10h1M10 12h1"/>');
+const dcFolderOf = id => (state.folders.folders || []).find(folder => folder.id === (state.folders.members || {})[id]);
+const dcOnline = entries => entries.filter(entry => nodeState(entry.item) === "online").length;
+function dcPath(item, master) {
+  if (!item.relayed) return "SSH from " + (state.service?.label || "this Master");
+  return "Through " + (item.viaLabel || master?.label || item.via);
+}
+function dcMatches(item) {
+  const search = state.dc.query.toLowerCase();
+  return !search || [item.id, item.label, item.tenant, item.viaLabel, ...(item.routes || []).map(route => route.address)].some(value => String(value || "").toLowerCase().includes(search));
+}
+function dcRow(node, depth, content, options = {}) {
+  const selected = state.page === "datacenter" && state.dc.node === node;
+  const toggle = options.branch
+    ? '<button class="dc-toggle" data-action="dc-toggle" data-node="' + esc(node) + '" aria-label="' + (options.open ? "Collapse" : "Expand") + '" aria-expanded="' + options.open + '">' + icons.chevron + "</button>"
+    : '<span class="dc-toggle-space"></span>';
+  const drop = (options.drop ? ' data-drop="' + esc(options.drop) + '" data-drop-folder="' + esc(options.dropFolder || "") + '"' : "") +
+    (options.dropSite ? ' data-drop-site="' + esc(options.dropSite) + '"' : "");
+  const drag = options.drag ? ' draggable="true" data-drag="' + esc(options.drag) + '"' : options.dragMaster ? ' draggable="true" data-drag-master="' + esc(options.dragMaster) + '"' : "";
+  return '<li class="dc-row' + (selected ? " is-selected" : "") + (options.open ? " is-open" : "") + " depth-" + Math.min(depth, 5) + '"' + drop + ">" + toggle +
+    '<button class="dc-item" data-action="dc-select" data-node="' + esc(node) + '"' + drag + (selected ? ' aria-current="true"' : "") + ">" + content + "</button></li>";
+}
+function dcEditRow(depth, value, label, icon = icons.folder) {
+  return '<li class="dc-row is-editing depth-' + Math.min(depth, 5) + '"><span class="dc-toggle-space"></span><span class="dc-icon">' + icon +
+    '</span><input id="dc-edit" class="dc-edit" maxlength="64" aria-label="' + esc(label) + '" value="' + esc(value) + '" placeholder="' + esc(label) + '"></li>';
+}
+function dcMachineRow(entry, depth) {
+  const item = entry.item, isMaster = state.merges.some(merge => merge.targetId === item.id);
+  const cpu = sampledCpu(item.id), hot = isHot(item);
+  return dcRow("node:" + item.id, depth, '<span class="dot ' + (hot ? "hot" : stateStyles[nodeState(item)] || "") + '"></span><span class="dc-name">' + esc(item.label || item.id) + "</span>" +
+    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (entry.alsoDirect ? '<span class="dc-tag" title="Also connected directly from this Master">also direct</span>' : "") +
+    (cpu == null ? '<span class="dc-os">' + esc(osName(item.os)) + "</span>" : '<span class="dc-os' + (hot ? " is-hot" : "") + '" title="' + esc(osName(item.os)) + '">' + Math.round(cpu) + "%</span>"), { drag: entry.alsoDirect ? "" : item.id });
+}
+function dcMasterRows(master, depth, rows, open) {
+  const node = "master:" + master.id, editing = state.dc.editing;
+  if (state.dc.query && !master.machines.some(entry => dcMatches(entry.item))) return;
+  const tag = master.current ? '<span class="dc-tag is-current">current</span>' : "";
+  const status = master.current ? (state.service ? "good" : "bad") : stateStyles[nodeState(master.item)] || "";
+  rows.push(dcRow(node, depth, '<span class="dot ' + status + '"></span><span class="dc-name">' + esc(master.label) + "</span>" + tag + '<span class="dc-count">' + dcOnline(master.machines) + "/" + master.machines.length + "</span>",
+    { branch: true, open: open(node) || editing?.master === master.id, drop: master.id }));
+  if (!open(node) && editing?.master !== master.id) return;
+  if (editing?.mode === "new" && editing.master === master.id) rows.push(dcEditRow(depth + 1, "", "New folder name"));
+  for (const folder of master.folders) {
+    const folderNode = "folder:" + folder.id, machines = folder.machines.filter(entry => dcMatches(entry.item));
+    if (state.dc.query && !machines.length) continue;
+    if (editing?.mode === "rename" && editing.id === folder.id) rows.push(dcEditRow(depth + 1, folder.name, "Rename folder"));
+    else rows.push(dcRow(folderNode, depth + 1, '<span class="dc-icon">' + icons.folder + '</span><span class="dc-name">' + esc(folder.name) + '</span><span class="dc-count">' + dcOnline(folder.machines) + "/" + folder.machines.length + "</span>",
+      { branch: folder.machines.length > 0, open: open(folderNode), drop: master.id, dropFolder: folder.id }));
+    if (open(folderNode)) for (const entry of machines) rows.push(dcMachineRow(entry, depth + 2));
+  }
+  for (const entry of master.loose.filter(entry => dcMatches(entry.item))) rows.push(dcMachineRow(entry, depth + 1));
+}
+function renderDcTree() {
+  const rows = [], open = node => !state.dc.collapsed.has(node) || Boolean(state.dc.query);
+  for (const master of dcModel()) dcMasterRows(master, 0, rows, open);
+  return rows.length ? '<ul class="dc-list" role="tree">' + rows.join("") + "</ul>" : '<p class="help tree-empty">No hosts match</p>';
+}
+function dcTabs(tabs) {
+  if (!tabs.some(([id]) => id === state.dc.tab)) state.dc.tab = tabs[0][0];
+  return '<div class="tabs" role="tablist" aria-label="Sections">' + tabs.map(([id, label]) => '<button role="tab" aria-selected="' + (id === state.dc.tab) + '" class="tab ' + (id === state.dc.tab ? "active" : "") + '" data-action="dc-tab" data-tab="' + id + '">' + label + "</button>").join("") + "</div>";
+}
+/** Every host in a datacenter: each Master followed by its target hosts, each host once. */
+function siteHostTable(masters) {
+  const seen = new Set(), rows = [];
+  for (const master of masters) {
+    const key = master.item ? master.item.id : "local";
+    if (!seen.has(key)) { seen.add(key); rows.push(hostRow(master.item)); }
+    for (const { item } of master.machines) if (!seen.has(item.id)) { seen.add(item.id); rows.push(hostRow(item)); }
+  }
+  return '<div class="table-wrap"><table>' + HOST_HEAD + "<tbody>" + rows.join("") + "</tbody></table></div>";
+}
+function dcMachineTable(entries) {
+  if (!entries.length) return '<div class="empty-inline">No target hosts</div>';
+  return '<div class="table-wrap"><table>' + HOST_HEAD + "<tbody>" + entries.map(({ item }) => hostRow(item)).join("") + "</tbody></table></div>";
+}
+/** The engraved host-key seal; clicking it sweeps a light across once. */
+function foilSticker(item) {
+  const key = (item.hostKeys || [])[0];
+  if (!key) return "";
+  const type = String(key).split(/\s+/).find(part => /^(ssh-|ecdsa-|sk-)/.test(part)) || "ssh";
+  const short = type.replace(/^ssh-|^sk-/, "").replace(/^ecdsa-sha2-/, "").replace(/@.*$/, "").toUpperCase();
+  return '<div class="foil-sticker" data-egg="foil" tabindex="0" role="img" aria-label="Host key pinned · ' + esc(short) + '"><b>HOST KEY</b><span>Pinned</span><span>' + esc(short) + "</span></div>";
+}
+/** The header scene as a thin banner over the topology: its circle is the logo ring, its towers light up for hovered hosts. */
+function renderBanner() {
+  const lights = [0, 1, 2, 3, 4, 5].map(i => '<b class="scene-light t' + i + '" data-light="t' + i + '"></b>').join("") + [0, 1, 2, 3].map(i => '<b class="scene-light f' + i + '" data-light="f' + i + '"></b>').join("");
+  return '<div class="scene-banner"><div class="logo" data-egg="ring" tabindex="0" role="img" aria-label="SSH Control Center"><i class="header-scene" aria-hidden="true">' + lights +
+    '</i><i class="ring" aria-hidden="true"></i><span>SSH</span><span>CONTROL</span></div></div>';
+}
+/** One line instead of a stats strip: either all is well, or the hosts that need a look, each a link. */
+function renderSummaryLine() {
+  const problems = state.targets.filter(item => isHot(item) || ["offline", "unknown", "legacy"].includes(nodeState(item)));
+  const checking = state.targets.filter(item => nodeState(item) === "checking").length;
+  const when = state.healthError ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + "Status check failed</span>"
+    : '<span class="status-meta">' + (state.healthAt ? "Checked " + esc(timestamp(state.healthAt)) : "Checking…") + "</span>";
+  const why = item => isHot(item) ? "high load" : nodeState(item) === "legacy" ? "service not installed" : (stateLabels[nodeState(item)] || "").toLowerCase();
+  const body = problems.length
+    ? '<span class="summary-icon is-bad" aria-hidden="true">!</span><strong>' + problems.length + " of " + hostCount() + " hosts need a look</strong>" +
+      problems.map(item => '<button class="text-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + " · " + esc(why(item)) + "</button>").join("")
+    : checking ? '<span class="summary-icon" aria-hidden="true">…</span><strong>Checking ' + checking + " hosts</strong>"
+    : '<span class="summary-icon is-good" aria-hidden="true">✓</span><strong>All ' + hostCount() + " hosts online</strong>";
+  return '<div id="inv-summary" class="inv-summary" role="status">' + body + when + '<button class="icon-button" data-action="refresh-fleet" aria-label="Check every host again" title="Check every host over SSH again">' + icons.refresh + "</button></div>";
+}
+function renderDcPanel() {
+  if (state.dc.adding) return renderEnrollment(state.dc.adding);
+  const node = state.dc.node, found = node === "dc" ? null : dcLookup(node);
+  if (node !== "dc" && !found) { state.dc.node = "dc"; return renderDcPanel(); }
+  if (!found) {
+    state.view = "graph";
+    return renderBanner() + renderSummaryLine() + renderFleetTools();
+  }
+  if (found.kind === "master") {
+    const master = found.master, target = pageTarget();
+    const tabs = dcTabs(HOST_PAGE_TABS);
+    const actions = target ? terminalButton(target).replace('class="small"', 'class="primary"') : "";
+    const head = heading(master.label, (master.current ? "Current Master · this window operates from here" : "Merged Master · this window reaches its target hosts through it"), actions);
+    const needsSelf = '<div class="callout">' + icons.info + "<div><strong>Make this Master a target host of itself</strong><p>Jobs, files and the terminal run through the same secure target-host path as every other host. Pair this Master with itself once (address 127.0.0.1) to use them here</p>" +
+      '<div class="form-actions"><button class="primary" data-action="dc-add" data-self="1">Set up…</button></div></div></div>';
+    const body = state.dc.tab === "summary"
+      ? '<div class="stat-grid">' + stat("Role", master.current ? "Current Master" : "Merged Master") + stat("Target hosts", String(master.machines.length)) + stat("Online", String(dcOnline(master.machines))) + "</div>" +
+        '<section class="section mt"><div class="section-heading"><h2>Target hosts</h2></div>' + dcMachineTable(master.machines) + "</section>"
+      : state.dc.tab === "jobs" ? (target ? renderJobs(target) : needsSelf)
+      : state.dc.tab === "files" ? (target ? renderFiles(target) : needsSelf)
+      : state.dc.tab === "monitoring" ? renderMonitorTab(dcKey(master.item), master.label) : renderContainerTab(dcKey(master.item), master.label);
+    return head + tabs + body;
+  }
+  if (found.kind === "site") {
+    const { site, masters } = found, machines = masters.flatMap(master => master.machines);
+    return heading(site.name, "Datacenter · groups Masters for organizing only; drag Masters in or out in the tree",
+      '<button data-action="site-rename" data-id="' + esc(site.id) + '">Rename</button><button class="danger" data-action="site-delete" data-id="' + esc(site.id) + '">Delete datacenter</button>') +
+      '<div class="stat-grid">' + stat("Masters", String(masters.length)) + stat("Target hosts", String(machines.length)) + stat("Online", String(dcOnline(machines))) + "</div>" +
+      '<section class="section mt"><div class="section-heading"><h2>Hosts</h2></div>' + (masters.length ? siteHostTable(masters)
+        : '<div class="empty-inline">No Masters yet · drag a Master here from the tree</div>') + "</section>";
+  }
+  if (found.kind === "folder") {
+    const { folder, master } = found;
+    const actions = '<button data-action="folder-rename" data-id="' + esc(folder.id) + '">Rename</button><button class="danger" data-action="folder-delete" data-id="' + esc(folder.id) + '">Delete folder</button>';
+    return heading(folder.name, "Folder on " + master.label + " · for organizing only; drag machines in or out in the tree", actions) +
+      '<div class="stat-grid">' + stat("Master", esc(master.label)) + stat("Target hosts", String(folder.machines.length)) + stat("Online", String(dcOnline(folder.machines))) + "</div>" +
+      '<section class="section mt">' + (folder.machines.length ? dcMachineTable(folder.machines) : '<div class="empty-inline">Empty folder · drag target hosts here from the tree</div>') + "</section>";
+  }
+  const item = found.item;
+  const head = '<div class="page-heading"><div class="target-title"><span class="live-label">● ' + esc(dcPath(item)) + "</span><h1>" + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) + (item.os ? chip(osName(item.os)) : "") + "</div></div>" +
+    '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="Install the Target service first"' : "") + ">" + icons.shell + 'Open terminal</button><button data-action="diagnose">' + icons.pulse + "Check connection</button></div></div>" +
+    (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>Imported with a v1 registry</strong><p>Install the Target service and import a new registration to run jobs on this host</p></div></div>" : "");
+  const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs([["summary", "Summary"], ["jobs", "Jobs & logs"], ["files", "Files"], ["containers", "Containers"], ["monitoring", "Monitoring"]]);
+  const body = state.dc.tab === "summary" ? renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
+    : state.dc.tab === "monitoring" ? renderMonitorTab(item.id, item.label || item.id) : renderContainerTab(item.id, item.label || item.id);
+  return head + tabs + body;
+}
+function ctBadge(state) {
+  const styles = { running: "good", exited: "", created: "pending", paused: "pending", restarting: "running", dead: "bad", removing: "pending" };
+  return '<span class="badge ' + (styles[state] || "") + '">' + esc(state || "unknown") + "</span>";
+}
+function renderContainerTab(key, label) {
+  const entry = state.containers.get(key), data = entry?.data;
+  const view = '<div class="segmented" role="group" aria-label="Show">' + [["containers", "Containers"], ["images", "Images"]].map(([id, text]) => '<button data-action="ct-view" data-view="' + id + '" aria-pressed="' + (state.dc.ctView === id) + '">' + text + "</button>").join("") + "</div>";
+  const bar = '<div class="toolbar">' + view + (state.dc.ctView === "containers"
+    ? '<div class="segmented" role="group" aria-label="Filter containers">' + [["running", "Running"], ["all", "All"]].map(([id, text]) => '<button data-action="ct-filter" data-filter="' + id + '" aria-pressed="' + (state.dc.filter === id) + '">' + text + "</button>").join("") + "</div>"
+    : "") + (data?.runtime ? chip(data.runtime) : "") + '<span class="status-meta">' + (entry?.loading ? "Loading…" : entry?.at ? "Updated " + esc(timestamp(entry.at)) : "") + "</span>" +
+    '<button data-action="ct-refresh" data-key="' + esc(key) + '">' + icons.refresh + "Refresh</button></div>";
+  if (!entry || (entry.loading && !data)) return bar + '<div class="empty-inline">Reading containers on ' + esc(label) + "…</div>";
+  if (entry.error) return bar + '<div class="callout bad">' + icons.alert + "<div><strong>Could not read containers</strong><p>" + esc(entry.error) + "</p></div></div>";
+  if (!data.runtime) return bar + '<div class="callout">' + icons.info + "<div><strong>No container runtime</strong><p>Neither docker nor podman was found on " + esc(label) + ".</p></div></div>";
+  if (data.error) return bar + '<div class="callout bad">' + icons.alert + "<div><strong>" + esc(data.runtime) + " is not answering</strong><p>" + esc(data.error) + "</p></div></div>";
+  const note = data.truncated ? '<p class="help">Showing the first 500 entries.</p>' : "";
+  if (state.dc.ctView === "images") {
+    if (!data.images.length) return bar + '<div class="empty-inline">No images</div>';
+    return bar + '<div class="table-wrap"><table><thead><tr><th>Repository</th><th>Tag</th><th>Image ID</th><th>Size</th><th>Created</th></tr></thead><tbody>' +
+      data.images.map(image => "<tr><td><code>" + esc(image.repository) + "</code></td><td>" + chip(image.tag) + "</td><td><code>" + esc(String(image.id).replace(/^sha256:/, "").slice(0, 12)) + '</code></td><td class="num">' + esc(image.size || formatSize(image.sizeBytes)) + '</td><td class="muted">' + esc(image.created) + "</td></tr>").join("") +
+      "</tbody></table></div>" + note;
+  }
+  const running = data.containers.filter(row => row.state === "running").length;
+  const rows = state.dc.filter === "running" ? data.containers.filter(row => row.state === "running") : data.containers;
+  const summary = '<p class="info-line">' + running + " running · " + data.containers.length + " total · " + data.images.length + " images</p>";
+  const table = rows.length
+    ? '<div class="table-wrap"><table><thead><tr><th>Container</th><th>State</th><th>Status</th><th>Ports</th><th></th></tr></thead><tbody>' +
+      rows.map(row => {
+        const ref = esc(row.name || row.id), on = row.state === "running";
+        const act = (action, text, danger) => '<button class="small' + (danger ? " danger" : "") + '" data-action="ct-action" data-key="' + esc(key) + '" data-container="' + ref + '" data-verb="' + action + '">' + text + "</button>";
+        // Image sits under the name so long references never squeeze a column of their own.
+        return '<tr><td class="ct-name"><strong title="' + esc(row.name) + '">' + esc(row.name) + '</strong><small class="ct-image" title="' + esc(row.image) + '"><code>' + esc(row.image) + "</code></small><small><code>" + esc(String(row.id).slice(0, 12)) + "</code></small></td><td>" + ctBadge(row.state) + '</td><td class="muted ct-status">' + esc(row.status) + '</td><td class="wrap"><code>' + esc(row.ports || "—") + "</code></td>" +
+          '<td class="actions"><div class="target-actions"><button class="small" data-action="ct-logs" data-key="' + esc(key) + '" data-container="' + ref + '">Logs</button>' +
+          (on ? act("restart", "Restart") + act("stop", "Stop", true) : act("start", "Start")) + "</div></td></tr>";
+      }).join("") + "</tbody></table></div>"
+    : '<div class="empty-inline">' + (state.dc.filter === "running" ? "No running containers · switch to All to see stopped ones" : "No containers") + "</div>";
+  const logs = state.ctLogs?.key === key
+    ? '<div class="console mt"><div class="console-bar"><strong>Logs · ' + esc(state.ctLogs.container) + "</strong><small>last 200 lines</small>" +
+      '<button class="small" data-action="ct-logs" data-key="' + esc(key) + '" data-container="' + esc(state.ctLogs.container) + '">' + icons.refresh + 'Reload</button><button class="small" data-action="ct-logs-close">Close</button></div>' +
+      '<div class="output" tabindex="0" aria-label="Container logs"><pre>' + esc(state.ctLogs.loading ? "Loading…" : state.ctLogs.error || state.ctLogs.content || "No log output") + "</pre></div></div>"
+    : "";
+  return bar + summary + table + note + logs;
+}
+/* Monitoring: each poll is one bridge call returning counters; CPU % and network rates come from the
+   difference between consecutive samples. Polling runs only while this tab is on screen and focused. */
+const MONITOR_SAMPLES = 120;
+function visibleMonitorKey() {
+  if (state.page !== "datacenter" || state.dc.adding || state.dc.tab !== "monitoring") return null;
+  const found = state.dc.node === "dc" ? null : dcLookup(state.dc.node);
+  if (found?.kind === "master") return dcKey(found.master.item);
+  if (found?.kind === "node") return found.item.id;
+  return null;
+}
+function monitorSeries(samples) {
+  const rows = [];
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], b = samples[i], seconds = Math.max(0.001, (b.at - a.at) / 1000);
+    const total = b.cpu.total - a.cpu.total, idle = b.cpu.idle - a.cpu.idle;
+    rows.push({
+      at: b.at,
+      cpu: total > 0 ? Math.min(100, Math.max(0, 100 * (1 - idle / total))) : null,
+      memory: b.memory.total ? 100 * (1 - b.memory.available / b.memory.total) : null,
+      rx: a.net && b.net ? Math.max(0, (b.net.rx - a.net.rx) / seconds) : null,
+      tx: a.net && b.net ? Math.max(0, (b.net.tx - a.net.tx) / seconds) : null,
+      load: b.load?.length ? b.load[0] : null
+    });
+  }
+  return rows;
+}
+const formatRate = value => value == null ? "—" : formatSize(value) + "/s";
+const clock = at => new Date(at).toLocaleTimeString("en-GB");
+/** One-axis sparkline: thin line, faint area, endpoint marker, a native tooltip per sample. */
+function sparkline(rows, series, max) {
+  const w = 300, h = 56, n = rows.length;
+  if (n < 2) return '<div class="spark-empty">Collecting…</div>';
+  const top = max ?? Math.max(1, ...rows.flatMap(row => series.map(s => row[s.key] ?? 0)));
+  const x = i => (i / (n - 1)) * w, y = v => h - 2 - (Math.min(v, top) / top) * (h - 6);
+  const lines = series.map((s, index) => {
+    const cls = " series-" + (index + 1);
+    const points = rows.map((row, i) => row[s.key] == null ? null : [x(i), y(row[s.key])]).filter(Boolean);
+    if (points.length < 2) return "";
+    const d = points.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    const last = points[points.length - 1];
+    return (series.length === 1 ? '<path class="spark-area" d="' + d + " L" + last[0].toFixed(1) + " " + h + " L" + points[0][0].toFixed(1) + " " + h + ' Z"/>' : "") +
+      '<path class="spark-line' + cls + '" d="' + d + '"/><circle class="spark-dot' + cls + '" cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="3"/>';
+  }).join("");
+  const hits = rows.map((row, i) => '<rect class="spark-hit" x="' + (x(i) - w / (2 * (n - 1))).toFixed(1) + '" y="0" width="' + (w / (n - 1)).toFixed(1) + '" height="' + h + '"><title>' +
+    esc(clock(row.at) + " · " + series.map(s => s.label + " " + s.format(row[s.key])).join(" · ")) + "</title></rect>").join("");
+  return '<svg class="spark" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none" role="img" aria-label="' + esc(series.map(s => s.label).join(" and ")) + ' over time">' +
+    '<line class="spark-grid" x1="0" x2="' + w + '" y1="' + (h - 2) + '" y2="' + (h - 2) + '"/>' + lines + hits + "</svg>";
+}
+function meter(percent) {
+  const value = Math.min(100, Math.max(0, percent));
+  return '<svg class="meter" viewBox="0 0 100 10" preserveAspectRatio="none" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(value) + '"><rect class="meter-track" width="100" height="10"/><rect class="meter-fill' + (value >= HOT ? " is-hot" : "") + '" width="' + value.toFixed(1) + '" height="10"/></svg>';
+}
+function renderMonitorBody(key) {
+  const entry = state.monitor.get(key);
+  if (!entry || (!entry.samples.length && !entry.error)) return '<div class="empty-inline">Reading counters…</div>';
+  if (!entry.samples.length) return '<div class="callout bad">' + icons.alert + "<div><strong>Could not read utilization</strong><p>" + esc(entry.error) + "</p></div></div>";
+  const latest = entry.samples[entry.samples.length - 1], rows = monitorSeries(entry.samples), now = rows[rows.length - 1] || {};
+  const pct = value => value == null ? "—" : value.toFixed(value < 10 ? 1 : 0) + "%";
+  const memUsed = latest.memory.total - latest.memory.available;
+  const disk = latest.disk, diskUsed = disk ? disk.total - disk.free : 0;
+  // Six tiles of one shape (label · big value · one line · chart of one height), three by two, so the page reads evenly.
+  const tile = (title, value, sub, chart, hint = "") => '<section class="mon-tile"' + (hint ? ' title="' + esc(hint) + '"' : "") + '><span class="stat-label">' + title + (hint ? ' <span class="mon-hint" aria-hidden="true">?</span>' : "") + "</span>" +
+    '<span class="mon-value">' + value + '</span><small class="mon-sub">' + (sub || "&nbsp;") + '</small><div class="mon-chart">' + (chart || "") + "</div></section>";
+  const cores = latest.cpu.count, load = latest.load;
+  const net = (key, label) => latest.net ? sparkline(rows, [{ key, label, format: formatRate }]) : "";
+  const tiles = [
+    tile("CPU", pct(now.cpu), cores + " cores", sparkline(rows, [{ key: "cpu", label: "CPU", format: pct }], 100)),
+    tile("Memory", pct(now.memory ?? 100 * memUsed / latest.memory.total), esc(formatSize(memUsed) + " of " + formatSize(latest.memory.total)) + (latest.swap?.total ? " · swap " + esc(formatSize(latest.swap.total - latest.swap.free)) : ""),
+      sparkline(rows, [{ key: "memory", label: "Memory", format: pct }], 100)),
+    tile("Disk " + esc(disk?.path || ""), disk ? pct(100 * diskUsed / disk.total) : "—", disk ? esc(formatSize(diskUsed) + " of " + formatSize(disk.total) + " · " + formatSize(disk.free) + " free") : "Not reported", disk ? meter(100 * diskUsed / disk.total) : ""),
+    tile("↓ Download", latest.net ? esc(formatRate(now.rx)) : "—", latest.net ? "Received by this host · all interfaces" : "Not reported on this OS", net("rx", "Download")),
+    tile("↑ Upload", latest.net ? esc(formatRate(now.tx)) : "—", latest.net ? "Sent by this host · all interfaces" : "Not reported on this OS", net("tx", "Upload")),
+    tile("Load · 1 min", load?.length ? load[0].toFixed(2) : "—", load?.length ? "of " + cores + " cores · 5 min " + load[1].toFixed(2) + " · 15 min " + load[2].toFixed(2) : "Not reported on Windows",
+      load?.length ? sparkline(rows, [{ key: "load", label: "Load", format: v => v == null ? "—" : v.toFixed(2) }], Math.max(cores, ...rows.map(row => row.load ?? 0))) : "",
+      "Processes running or waiting for the CPU, averaged. Below the number of cores (" + cores + ") the CPU keeps up; above it, work queues.")
+  ];
+  return (entry.error ? '<div class="callout bad">' + icons.alert + "<div><strong>Last poll failed</strong><p>" + esc(entry.error) + "</p></div></div>" : "") + '<div class="mon-grid">' + tiles.join("") + "</div>";
+}
+function renderMonitorTab(key) {
+  const entry = state.monitor.get(key), seconds = state.dc.monInterval / 1000;
+  const history = entry?.samples.length > 1 ? " · history " + formatUptime((entry.samples[entry.samples.length - 1].at - entry.samples[0].at) / 1000) : "";
+  return '<div class="toolbar"><div class="segmented" role="group" aria-label="Update every">' + [2000, 5000, 10000].map(ms => '<button data-action="mon-interval" data-ms="' + ms + '" aria-pressed="' + (!state.dc.monPaused && state.dc.monInterval === ms) + '">' + ms / 1000 + " s</button>").join("") +
+    '</div><button data-action="mon-pause" aria-pressed="' + state.dc.monPaused + '">' + (state.dc.monPaused ? "Resume" : "Pause") + '</button><span class="status-meta" id="mon-meta">' +
+    (state.dc.monPaused ? "Paused" : "Every " + seconds + " s while this tab is open") + (entry?.samples.length ? " · updated " + esc(clock(entry.samples[entry.samples.length - 1].at)) : "") + history +
+    (entry?.samples.length ? " · up " + esc(formatUptime(entry.samples[entry.samples.length - 1].uptimeSeconds)) : "") + "</span></div>" +
+    '<div id="mon-body">' + renderMonitorBody(key) + "</div>";
+}
+function refreshMonitorView() {
+  const key = visibleMonitorKey();
+  if (key && $("#dc-panel")) $("#dc-panel").innerHTML = renderDcPanel();
+}
+async function loadStats(key) {
+  const entry = state.monitor.get(key) || { samples: [], loading: false, error: "" };
+  if (entry.loading) return;
+  entry.loading = true; state.monitor.set(key, entry);
+  try {
+    const sample = await rpc("monitor.stats", dcTargetParams(key));
+    // The window's clock times the samples so rates stay right even if the Target's clock is off.
+    entry.samples.push({ ...sample, at: Date.now() });
+    if (entry.samples.length > MONITOR_SAMPLES) entry.samples.splice(0, entry.samples.length - MONITOR_SAMPLES);
+    entry.error = "";
+  } catch (error) { entry.error = String(error?.message || error); }
+  finally { entry.loading = false; entry.polled = Date.now(); }
+  if (visibleMonitorKey() === key) {
+    $("#mon-body") && ($("#mon-body").innerHTML = renderMonitorBody(key));
+    const meta = $("#mon-meta");
+    const last = entry.samples[entry.samples.length - 1];
+    if (meta) meta.textContent = (state.dc.monPaused ? "Paused" : "Every " + state.dc.monInterval / 1000 + " s while this tab is open") + " · updated " + clock(Date.now()) + (last ? " · up " + formatUptime(last.uptimeSeconds) : "");
+  }
+}
+function dcTargetParams(key) { return key === "local" ? {} : { targetId: key }; }
+async function loadContainers(key) {
+  const previous = state.containers.get(key);
+  state.containers.set(key, { ...previous, loading: true });
+  if (state.page === "datacenter") $("#dc-panel").innerHTML = renderDcPanel();
+  try {
+    const data = await rpc("containers.list", dcTargetParams(key));
+    state.containers.set(key, { data, at: new Date(), loading: false });
+  } catch (error) {
+    state.containers.set(key, { error: String(error?.message || error), at: new Date(), loading: false });
+  }
+  if (state.page === "datacenter") $("#dc-panel").innerHTML = renderDcPanel();
+}
+/** Key of the machine whose Containers/Images tab is visible, or null. */
+function visibleContainerKey() {
+  if (state.page !== "datacenter" || state.dc.tab !== "containers") return null;
+  const found = state.dc.node === "dc" ? null : dcLookup(state.dc.node);
+  if (found?.kind === "master") return dcKey(found.master.item);
+  if (found?.kind === "node") return found.item.id;
+  return null;
+}
+async function loadContainersIfShown(force = false) {
+  const key = visibleContainerKey();
+  if (key && (force || !state.containers.has(key))) await loadContainers(key);
+}
+/** The machine page in the Datacenter shows `tab` ("jobs", "files", …). */
+const machineTab = tab => state.page === "datacenter" && !state.dc.adding && state.dc.tab === tab && Boolean(pageTarget());
+async function selectTarget(id, tab = "summary") {
+  state.page = "datacenter"; state.dc.node = "node:" + id; state.dc.tab = tab; state.dc.adding = null; state.ctLogs = null;
+  state.selected = id; state.job = null; state.jobs = []; state.jobsError = "";
+  state.files = null; state.filesError = ""; state.file = null; state.pendingJob = null; state.newJob = false;
   clearNotice(); render();
 }
 async function refreshJobs() {
@@ -626,7 +1126,7 @@ async function refreshJobs() {
     if (targetId !== state.selected) return;
     state.jobsError = String(error);
   }
-  if (state.page === "fleet" && state.tab === "jobs" && $("#job-list")) $("#job-list").innerHTML = renderJobRows();
+  if (machineTab("jobs") && $("#job-list")) $("#job-list").innerHTML = renderJobRows();
 }
 let logVersion = 0;
 async function refreshSelectedJob(reset = false) {
@@ -639,7 +1139,7 @@ async function refreshSelectedJob(reset = false) {
   if (version !== logVersion || targetId !== state.selected || jobId !== state.job?.id || stream !== state.stream) return;
   state.job = job; state.log = ((reset ? "" : state.log) + (logs.content || "")).slice(-500000);
   state.offset = logs.nextOffset; state.eof = logs.eof;
-  if (state.page === "fleet" && state.tab === "jobs" && $("#job-detail")) {
+  if (machineTab("jobs") && $("#job-detail")) {
     const oldLog = $("#log-output"), scroll = oldLog?.scrollTop || 0;
     const wasAtBottom = !oldLog || oldLog.scrollHeight - scroll - oldLog.clientHeight < 40;
     $("#job-detail").innerHTML = renderJobDetail();
@@ -648,17 +1148,105 @@ async function refreshSelectedJob(reset = false) {
 }
 async function importRegistration(registration) {
   const imported = await rpc("targets.import", { registration });
-  await refreshFleet(); state.selected = imported.id || registration.id; state.tab = "overview"; state.page = "fleet";
-  state.job = null; state.jobs = []; state.files = null; state.file = null;
-  render(); notify("นำเข้า Target แล้ว");
+  await refreshFleet(); await selectTarget(imported.id || registration.id); notify("Target imported");
 }
 async function browseFiles(path) {
   const targetId = state.selected;
   const result = await rpc("files.list", { targetId, path });
   if (targetId !== state.selected) return;
-  state.files = { path, entries: Array.isArray(result) ? result : result.entries || [] };
+  const resolved = Array.isArray(result) ? path : result.path || path;
+  state.files = { path: resolved, entries: Array.isArray(result) ? result : result.entries || [] }; state.filesError = "";
+  state.recentPaths = [resolved, ...(state.recentPaths || []).filter(row => row !== resolved)].slice(0, 6);
   state.file = null;
-  if (state.tab === "files" && state.page === "fleet") render();
+  if (machineTab("files")) render();
+}
+/** Opening the Files tab lists the system root right away instead of an empty path prompt. */
+async function loadFilesIfShown() {
+  if (!machineTab("files") || state.files || state.filesError) return;
+  try { await browseFiles("~"); }
+  catch (error) { state.filesError = friendlyError(error); if (machineTab("files")) render(); }
+}
+const UPLOAD_MAX = 2 * 1024 ** 3, UPLOAD_CHUNK = 1024 * 1024;
+const randomId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+/** Upload status above the file list: progress bar with a cancel ✕ at its end, or a Replace/Skip question. */
+function renderUploadStatus() {
+  const up = state.upload;
+  if (!up) return "";
+  const file = up.files[up.index], count = up.files.length > 1 ? " (" + (up.index + 1) + " of " + up.files.length + ")" : "";
+  if (up.ask) return '<div class="upload-status is-ask" role="alert"><p><code>' + esc(file.name) + "</code> already exists in this folder" + esc(count) + "</p>" +
+    '<div class="upload-ask"><button type="button" class="small" data-action="upload-answer" data-answer="replace">Replace</button><button type="button" class="small" data-action="upload-answer" data-answer="skip">Skip</button>' +
+    '<button type="button" class="small" data-action="upload-cancel">Cancel all</button></div></div>';
+  const percent = up.total ? Math.floor(up.sent / up.total * 100) : 0;
+  return '<div class="upload-status" role="status"><p><span>' + (up.cancelling ? "Cancelling…" : "Uploading <code>" + esc(file.name) + "</code>" + esc(count)) + '</span><span class="upload-numbers">' +
+    esc(formatSize(up.sent)) + " of " + esc(formatSize(up.total)) + " · " + percent + "%</span></p>" +
+    '<div class="upload-row"><div class="upload-bar" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '"><i></i></div>' +
+    '<button type="button" class="icon-button upload-cancel" data-action="upload-cancel" aria-label="Cancel upload" title="Cancel upload"' + (up.cancelling ? " disabled" : "") + ">" + icons.close + "</button></div></div>";
+}
+function paintUpload() {
+  const box = $("#upload-status");
+  if (!box) return;
+  box.innerHTML = renderUploadStatus();
+  const bar = box.querySelector(".upload-bar i");
+  if (bar) bar.style.width = (state.upload.total ? state.upload.sent / state.upload.total * 100 : 0) + "%";
+}
+/** Asks Replace / Skip / Cancel in the status bar (no confirm(): the desktop webview has none). */
+function askReplace() {
+  state.upload.ask = true; paintUpload();
+  return new Promise(resolve => { state.upload.answer = answer => { state.upload.ask = false; state.upload.answer = null; paintUpload(); resolve(answer); }; });
+}
+/** Upload files into the open folder in 1 MiB chunks (files.upload); a file appears only when complete and never replaces one without asking. */
+async function uploadFiles(files) {
+  const targetId = state.selected, folder = state.files?.path;
+  if (!folder) throw new Error("Open a folder first");
+  if (state.upload) { notify("Another upload is running · wait for it or cancel it first", true); return; }
+  const big = files.filter(file => file.size > UPLOAD_MAX);
+  if (big.length) notify(big.map(file => file.name).join(", ") + " is larger than 2 GiB · use a job or the CLI", true);
+  files = files.filter(file => file.size <= UPLOAD_MAX);
+  if (!files.length) return;
+  const up = state.upload = { files, index: 0, sent: 0, total: files.reduce((sum, file) => sum + file.size, 0), cancelled: false };
+  const names = new Set((state.files?.entries || []).map(entry => entry.name));
+  let done = 0, skipped = 0;
+  paintUpload();
+  try {
+    for (; up.index < files.length && !up.cancelled; up.index++) {
+      const file = files[up.index], path = joinPath(folder, file.name), uploadId = randomId(), base = up.sent;
+      let replace = false;
+      if (names.has(file.name)) {
+        const answer = await askReplace();
+        if (answer === "cancel") break;
+        if (answer === "skip") { up.total -= file.size; skipped++; paintUpload(); continue; }
+        replace = true;
+      }
+      let offset = 0;
+      try {
+        do {
+          const bytes = new Uint8Array(await file.slice(offset, offset + UPLOAD_CHUNK).arrayBuffer());
+          const last = offset + bytes.length >= file.size;
+          await rpc("files.upload", { targetId, path, uploadId, offset, contentBase64: bytesToBase64(bytes), ...(last ? { done: true, ...(replace ? {} : { expectedSha256: "" }) } : {}) });
+          offset += bytes.length; up.sent = base + offset; paintUpload();
+        } while (offset < file.size && !up.cancelled);
+        if (up.cancelled && offset < file.size) { await rpc("files.upload", { targetId, path, uploadId, abort: true }).catch(() => {}); break; }
+        done++;
+      } catch (error) {
+        // Created by someone else meanwhile: ask, then commit the finished part or discard it.
+        if (!/E_CONFLICT/.test(String(error?.message || error)) || offset + UPLOAD_CHUNK < file.size) { await rpc("files.upload", { targetId, path, uploadId, abort: true }).catch(() => {}); throw error; }
+        const answer = await askReplace();
+        if (answer === "replace") { await rpc("files.upload", { targetId, path, uploadId, offset: file.size, contentBase64: "", done: true }); up.sent = base + file.size; done++; }
+        else { await rpc("files.upload", { targetId, path, uploadId, abort: true }).catch(() => {}); if (answer === "cancel") break; skipped++; }
+      }
+    }
+  } finally {
+    const cancelled = up.cancelled;
+    state.upload = null; paintUpload();
+    if (targetId === state.selected && state.files?.path === folder) await browseFiles(folder).catch(() => {});
+    if (cancelled) notify("Upload cancelled · " + (done ? done + " file" + (done === 1 ? "" : "s") + " finished before that; " : "") + "the unfinished file was not saved");
+    else if (done) notify("Uploaded " + done + " file" + (done === 1 ? "" : "s") + " to " + folder + (skipped ? " · skipped " + skipped : ""));
+  }
+}
+/** Saves through the native dialog; the app fetches the bytes itself, so any size works. */
+async function downloadFile(path, name) {
+  const saved = await native("save_remote_file", { targetId: state.selected, path, name });
+  if (saved) notify("Downloaded " + name + " to " + saved);
 }
 async function readFile(path) {
   const targetId = state.selected;
@@ -667,22 +1255,74 @@ async function readFile(path) {
   const bytes = Uint8Array.from(atob(result.contentBase64), c => c.charCodeAt(0));
   let content, validUtf8 = true;
   try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-  catch { validUtf8 = false; content = "ไฟล์นี้มีข้อมูล binary หรือไม่ใช่ UTF-8"; }
-  if (content?.includes("\0")) { validUtf8 = false; content = "ไฟล์นี้มีข้อมูล binary"; }
+  catch { validUtf8 = false; content = "This file is binary or not UTF-8"; }
+  if (content?.includes("\0")) { validUtf8 = false; content = "This file contains binary data"; }
   state.file = { path, content, sha256: result.sha256, editable: validUtf8 && result.eof, size: result.size };
-  if (state.tab === "files" && state.page === "fleet") render();
+  if (machineTab("files")) render();
 }
-function encodeBase64(text) {
-  const bytes = new TextEncoder().encode(text);
+async function refreshFolders() { state.folders = await rpc("folders.list"); }
+async function refreshDatacenters() { state.datacenters = await rpc("datacenters.list"); }
+async function saveFolderEdit(input) {
+  const editing = state.dc.editing;
+  if (!editing || input.dataset.saving) return;
+  input.dataset.saving = "1";
+  const name = input.value.trim();
+  try {
+    if (name && editing.mode === "new-site") {
+      await rpc("datacenters.create", { name }); await refreshDatacenters(); notify("Datacenter " + name + " created · drag Masters into it");
+    } else if (name && editing.mode === "rename-site") {
+      await rpc("datacenters.rename", { id: editing.id, name }); await refreshDatacenters();
+    } else if (name && editing.mode === "new") {
+      const folder = await rpc("folders.create", { name, master: editing.master });
+      state.dc.collapsed.delete("master:" + editing.master);
+      await refreshFolders(); notify("Folder " + folder.name + " created · drag machines into it");
+    } else if (name && editing.mode === "rename") {
+      await rpc("folders.rename", { id: editing.id, name }); await refreshFolders();
+    }
+  } catch (error) { notify(error?.message || error, true); }
+  state.dc.editing = null; render();
+}
+async function runDiagnose(targetId) {
+  // Only the result slot is redrawn, so an open file editor or job form keeps its contents.
+  const paint = () => { const slot = $("#check-slot"); if (slot && state.selected === targetId) slot.innerHTML = renderCheckPanel(state.targets.find(item => item.id === targetId)); };
+  state.checking = targetId; (state.checkHidden ||= new Set()).delete(targetId); paint();
+  try {
+    const result = await rpc("targets.doctor", { targetId });
+    state.diagnostics.set(targetId, { ...result, checkedAt: new Date().toISOString() });
+  } finally { state.checking = null; paint(); }
+}
+async function removeTarget(targetId) {
+  if (!confirm("Remove Target " + targetId + " from this Master’s registry?")) return;
+  await rpc("targets.remove", { targetId });
+  if (state.selected === targetId) { state.selected = null; state.dc.node = "dc"; state.dc.tab = "summary"; }
+  await refreshFleet(); render(); notify("Target removed from the registry");
+}
+const encodeBase64 = text => bytesToBase64(new TextEncoder().encode(text));
+function bytesToBase64(bytes) {
   let raw = "";
   for (let i = 0; i < bytes.length; i += 8192) raw += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(raw);
 }
+function playEgg(host) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const element = host.dataset.egg === "ring" ? host.querySelector(".ring") : host;
+  if (!element) return;
+  element.classList.remove("is-playing");
+  void element.offsetWidth;
+  element.classList.add("is-playing");
+}
+document.addEventListener("animationend", event => event.target.classList?.remove("is-playing"));
+document.addEventListener("keydown", event => {
+  if ((event.key === "Enter" || event.key === " ") && event.target.dataset?.egg) { event.preventDefault(); playEgg(event.target); }
+});
 document.addEventListener("click", event => {
   if (event.target.closest("#notice-close")) { clearNotice(); return; }
+  const egg = event.target.closest("[data-egg]");
+  if (egg && !event.target.closest(".marker")) { playEgg(egg); return; }
   const nav = event.target.closest("[data-page]");
-  if (nav) { void navigate(nav.dataset.page); return; }
+  if (nav) { if (nav.dataset.page === "datacenter") { state.dc.node = "dc"; state.dc.adding = null; } void navigate(nav.dataset.page); return; }
   const button = event.target.closest("[data-action]");
+  if (button?.closest("#dc-menu")) closeDcMenu();
   if (!button) return;
   void busy(button, async () => {
     const action = button.dataset.action;
@@ -696,8 +1336,8 @@ document.addEventListener("click", event => {
       dialog.showModal(); return;
     }
     if (action === "copy") return copyText(button.dataset.copy);
-    if (action === "copy-log") return copyText(state.log, "คัดลอก log แล้ว");
-    if (action === "copy-diagnostics") return copyText(pretty(state.diagnostics.get(state.selected)), "คัดลอกผลตรวจแล้ว");
+    if (action === "copy-log") return copyText(state.log, "Log copied");
+    if (action === "copy-diagnostics") return copyText(pretty(state.diagnostics.get(state.selected)), "Check result copied");
     if (action === "add") return navigate("enroll");
     if (action === "new-pairing") { state.pairing = null; state.setupSaved = null; render(); }
     if (action === "refresh-pairings") { await refreshPairings(); render(); }
@@ -705,10 +1345,72 @@ document.addEventListener("click", event => {
     if (action === "save-setup") {
       if (!state.pairing) return;
       const saved = await native("save_setup", { requestId: state.pairing.requestId });
-      if (saved) { state.setupSaved = saved; render(); notify("บันทึกชุดติดตั้งแล้ว ส่งไฟล์นี้ไปเครื่องใหม่ได้เลย"); }
+      if (saved) { state.setupSaved = saved; render(); notify("Installer saved. Send this file to the new host"); }
     }
-    if (action === "open-paired-target") { state.page = "fleet"; await refreshFleet(); await selectTarget(button.dataset.id); }
-    if (action === "back-fleet") { state.selected = null; render(); }
+    if (action === "open-paired-target") { state.pairing = null; state.setupSaved = null; await refreshFleet(); await selectTarget(button.dataset.id); }
+    if (action === "back-fleet") { state.page = "datacenter"; state.dc.node = "dc"; state.selected = null; render(); }
+    if (action === "tree-toggle") { state.dc.treeHidden = state.dc.treeHidden !== true; renderHeader(); return; }
+    if (action === "add-menu") {
+      const box = button.getBoundingClientRect();
+      openMenu([{ label: "Target host…", action: "dc-add", data: {} }, { label: "Master host…", action: "dc-add", data: { kind: "master" } }], box.left, box.bottom + 6);
+      return;
+    }
+    if (action === "dc-add") {
+      state.page = "datacenter"; state.dc.adding = { folder: button.dataset.folder || "", kind: button.dataset.kind || "target", site: button.dataset.site || "", self: Boolean(button.dataset.self) };
+      state.pairing = null; state.setupSaved = null; state.pairedMaster = null; render();
+      try { await refreshPairings(); render(); } catch (error) { notify(pairingError(error), true); }
+      $('#create-pairing [name="label"]')?.focus();
+    }
+    if (action === "enroll-close") {
+      state.pairing = null; state.setupSaved = null;
+      if (state.page === "datacenter") { state.dc.adding = null; render(); } else await navigate("datacenter");
+    }
+    if (action === "pairing-back") { state.pairing = null; state.setupSaved = null; render(); }
+    if (action === "pairing-cancel") {
+      const requestId = button.dataset.id;
+      if (!confirm("Cancel this setup request? An installer already sent for it will no longer pair.")) return;
+      await rpc("pairing.cancel", { requestId });
+      if (state.pairing?.requestId === requestId) { state.pairing = null; state.setupSaved = null; }
+      await refreshPairings(); render(); notify("Setup request cancelled");
+    }
+    if (action === "dc-goto") {
+      const node = button.dataset.node;
+      if (button.dataset.view) state.dc.ctView = button.dataset.view;
+      if (node.startsWith("node:")) await selectTarget(node.slice(5), button.dataset.tab || "summary");
+      else { state.page = "datacenter"; state.dc.node = node; state.dc.tab = button.dataset.tab || "summary"; state.dc.adding = null; resetHostState(pageTarget()?.id); render(); }
+      if (state.dc.tab === "jobs") await refreshJobs();
+      await loadContainersIfShown(); await loadFilesIfShown();
+      if (visibleMonitorKey()) await loadStats(visibleMonitorKey());
+    }
+    if (action === "ctx-diagnose") { await selectTarget(button.dataset.id); await runDiagnose(button.dataset.id); }
+    if (action === "ctx-remove") await removeTarget(button.dataset.id);
+    if (action === "folder-new") {
+      state.dc.editing = { mode: "new", master: button.dataset.master };
+      $("#dc-tree").innerHTML = renderDcTree(); $("#dc-edit")?.focus();
+    }
+    if (action === "folder-rename") {
+      const folder = (state.folders.folders || []).find(row => row.id === button.dataset.id);
+      state.dc.editing = { mode: "rename", id: button.dataset.id, master: folder?.master };
+      $("#dc-tree").innerHTML = renderDcTree(); $("#dc-edit")?.select();
+    }
+    if (action === "folder-delete") {
+      const folder = (state.folders.folders || []).find(row => row.id === button.dataset.id);
+      if (!confirm("Delete folder " + (folder?.name || "") + "? Its target hosts stay and move back under the Master.")) return;
+      await rpc("folders.delete", { id: button.dataset.id });
+      if (state.dc.node === "folder:" + button.dataset.id) state.dc.node = "master:" + (folder?.master || "local");
+      await refreshFolders(); render(); notify("Folder deleted");
+    }
+    if (action === "site-new") { state.dc.editing = { mode: "new-site" }; state.dc.collapsed.delete("dc"); $("#dc-tree").innerHTML = renderDcTree(); $("#dc-edit")?.focus(); }
+    if (action === "site-rename") { state.dc.editing = { mode: "rename-site", id: button.dataset.id }; $("#dc-tree").innerHTML = renderDcTree(); $("#dc-edit")?.select(); }
+    if (action === "site-delete") {
+      const site = (state.datacenters.datacenters || []).find(row => row.id === button.dataset.id);
+      if (!confirm("Delete datacenter " + (site?.name || "") + "? Its Masters and target hosts stay and move back under Inventory.")) return;
+      await rpc("datacenters.delete", { id: button.dataset.id });
+      if (state.dc.node === "site:" + button.dataset.id) state.dc.node = "dc";
+      await refreshDatacenters(); render(); notify("Datacenter deleted");
+    }
+    if (action === "site-unassign") { await rpc("datacenters.assign", { master: button.dataset.master, datacenterId: null }); await refreshDatacenters(); render(); }
+    if (action === "folder-unfile") { await rpc("folders.assign", { targetId: button.dataset.id, folderId: null }); await refreshFolders(); render(); }
     if (action === "clear-filter") { state.query = ""; state.group = ""; state.status = ""; render(); }
     if (action === "status-filter") { state.status = button.dataset.status; $("#fleet-table").innerHTML = renderFleetView(); }
     if (action === "refresh-fleet") { await refreshFleet(); render(); await refreshHealth(true); }
@@ -718,26 +1420,58 @@ document.addEventListener("click", event => {
       $("#fleet-table").innerHTML = renderFleetView();
     }
     if (action === "manage-merge") return navigate("masters");
+    if (action === "dc-select") {
+      if (state.page !== "datacenter") state.page = "datacenter";
+      state.dc.node = button.dataset.node; state.dc.adding = null; state.ctLogs = null;
+      if (state.dc.node.startsWith("node:")) await selectTarget(state.dc.node.slice(5), ["summary", "jobs", "files", "containers", "monitoring"].includes(state.dc.tab) ? state.dc.tab : "summary");
+      else { resetHostState(pageTarget()?.id); render(); }
+      if (machineTab("jobs")) await refreshJobs();
+      await loadContainersIfShown(); await loadFilesIfShown();
+    }
+    if (action === "dc-toggle") {
+      const node = button.dataset.node;
+      if (state.dc.collapsed.has(node)) state.dc.collapsed.delete(node); else state.dc.collapsed.add(node);
+      $("#dc-tree").innerHTML = renderDcTree();
+    }
+    if (action === "dc-tab") {
+      state.dc.tab = button.dataset.tab; state.ctLogs = null; $("#dc-panel").innerHTML = renderDcPanel();
+      if (machineTab("jobs")) await refreshJobs();
+      await loadContainersIfShown(); await loadFilesIfShown();
+      if (visibleMonitorKey()) await loadStats(visibleMonitorKey());
+    }
+    if (action === "ct-view") { state.dc.ctView = button.dataset.view; $("#dc-panel").innerHTML = renderDcPanel(); }
+    if (action === "mon-interval") {
+      state.dc.monInterval = Number(button.dataset.ms); state.dc.monPaused = false;
+      try { localStorage.setItem("sshcc.monitorInterval", String(state.dc.monInterval)); } catch {}
+      refreshMonitorView();
+    }
+    if (action === "mon-pause") { state.dc.monPaused = !state.dc.monPaused; refreshMonitorView(); }
+    if (action === "ct-filter") { state.dc.filter = button.dataset.filter; $("#dc-panel").innerHTML = renderDcPanel(); }
+    if (action === "ct-refresh") await loadContainers(button.dataset.key);
+    if (action === "ct-logs-close") { state.ctLogs = null; $("#dc-panel").innerHTML = renderDcPanel(); }
+    if (action === "ct-logs") {
+      const key = button.dataset.key, container = button.dataset.container;
+      state.ctLogs = { key, container, loading: true }; $("#dc-panel").innerHTML = renderDcPanel();
+      try {
+        const result = await rpc("containers.logs", { ...dcTargetParams(key), container, tail: 200 });
+        if (state.ctLogs?.key === key && state.ctLogs.container === container) state.ctLogs = { key, container, content: result.content };
+      } catch (error) {
+        if (state.ctLogs?.key === key) state.ctLogs = { key, container, error: String(error?.message || error) };
+      }
+      if (state.page === "datacenter") $("#dc-panel").innerHTML = renderDcPanel();
+    }
+    if (action === "ct-action") {
+      const key = button.dataset.key, container = button.dataset.container, verb = button.dataset.verb;
+      if (verb !== "start" && !confirm(verb[0].toUpperCase() + verb.slice(1) + " container " + container + "?")) return;
+      await rpc("containers.action", { ...dcTargetParams(key), container, action: verb });
+      notify(container + ": " + verb + " done");
+      await loadContainers(key);
+    }
     if (action === "select-target") await selectTarget(button.dataset.id);
-    if (action === "target-tab") {
-      state.tab = button.dataset.tab; render();
-      if (state.tab === "jobs") await refreshJobs();
-    }
     if (action === "toggle-new-job") { state.newJob = !state.newJob; render(); if (state.newJob) $('#start-job [name="cwd"]')?.focus(); }
-    if (action === "diagnose") {
-      const targetId = state.selected;
-      const result = await rpc("targets.doctor", { targetId });
-      state.diagnostics.set(targetId, { ...result, checkedAt: new Date().toISOString() });
-      if (state.selected === targetId) { state.tab = "overview"; render(); }
-      const selected = result?.result?.executor?.selected;
-      const sessionNote = selected?.ownerSessionId ? " (session " + selected.ownerSessionId + ")" : "";
-      notify(result.ok ? "เชื่อมต่อ Target service สำเร็จ" + sessionNote : "ตรวจพบปัญหา ดูรายละเอียดในผลตรวจการเชื่อมต่อ", !result.ok);
-    }
-    if (action === "remove-target") {
-      const targetId = state.selected;
-      if (!confirm("นำ Target " + targetId + " ออกจากทะเบียนของ Master นี้?")) return;
-      await rpc("targets.remove", { targetId }); await refreshFleet(); render(); notify("นำ Target ออกจากทะเบียนแล้ว");
-    }
+    if (action === "diagnose") await runDiagnose(state.selected);
+    if (action === "check-close") { (state.checkHidden ||= new Set()).add(state.selected); $("#check-slot") && ($("#check-slot").innerHTML = ""); return; }
+    if (action === "remove-target") await removeTarget(state.selected);
     if (action === "import-registration") {
       const registration = await native("open_json");
       if (registration) await importRegistration(registration);
@@ -746,61 +1480,68 @@ document.addEventListener("click", event => {
       const document = await native("open_json");
       if (document) {
         const result = await rpc("targets.import_legacy", { document });
-        await refreshFleet(); notify("นำเข้า v1 registry แล้ว: " + pretty(result));
+        await refreshFleet(); notify("v1 registry imported: " + pretty(result));
       }
     }
     if (action === "save-enrollment") {
       const path = await native("save_json", { document: state.export });
-      if (path) notify("บันทึก enrollment แล้ว: " + path);
+      if (path) notify("Enrollment saved: " + path);
     }
     if (action === "refresh-masters") { await refreshMasters(); render(); }
     if (action === "revoke-master") {
-      if (!confirm("ถอนสิทธิ์ Master " + button.dataset.id + " จากเครื่องนี้?")) return;
-      await rpc("masters.revoke", { masterId: button.dataset.id }); await refreshMasters(); render(); notify("ถอนสิทธิ์ Master แล้ว");
+      if (!confirm("Revoke Master " + button.dataset.id + " on this host?")) return;
+      await rpc("masters.revoke", { masterId: button.dataset.id }); await refreshMasters(); render(); notify("Master revoked");
     }
     if (action === "discover-masters") {
-      state.discovered = await rpc("merges.discover"); render();
+      state.discovered = await rpc("merges.discover");
+      for (const row of state.discovered) if (!row.error) state.masterCheck.set(row.targetId, row.isMaster);
+      render();
       const found = state.discovered.filter(row => row.isMaster).length;
-      notify(found ? "พบ Master " + found + " เครื่อง กด Merge เพื่อสั่งเครื่องลูกของเครื่องนั้น" : "ไม่พบเครื่องที่เป็น Master ในเครื่องที่เชื่อมต่อ");
+      notify(found ? "Found " + found + " Master(s). Press Merge to control their machines" : "None of the target hosts is a Master");
     }
-    if (action === "merge-master" || action === "sync-merge") {
+    if (action === "ctx-merge") {
+      const [row] = await rpc("merges.discover", { targetId: button.dataset.id });
+      if (row && !row.error) state.masterCheck.set(row.targetId, row.isMaster);
+      if (!row?.isMaster) { notify((row?.label || button.dataset.id) + (row?.error ? " could not be checked: " + row.error : " is not a Master, so there is nothing to merge"), Boolean(row?.error)); return; }
+    }
+    if (action === "merge-master" || action === "sync-merge" || action === "ctx-merge") {
       const targetId = button.dataset.id;
       state.merging.add(targetId); render();
       try {
-        const merge = await rpc(action === "merge-master" ? "merges.add" : "merges.sync", { targetId });
-        notify("Merge " + (merge.label || targetId) + " แล้ว · สั่งได้ " + merge.children.length + " เครื่อง");
+        const merge = await rpc(action === "sync-merge" ? "merges.sync" : "merges.add", { targetId });
+        notify("Merged " + (merge.label || targetId) + " · " + merge.children.length + " target hosts added to the tree");
       } finally {
         state.merging.delete(targetId);
         await refreshMasters(); await refreshFleet(); render();
       }
     }
     if (action === "remove-merge") {
-      if (!confirm("ยกเลิก merge กับ " + button.dataset.id + "? เครื่องลูกจะหายจากรายการของ Master นี้")) return;
-      await rpc("merges.remove", { targetId: button.dataset.id }); await refreshMasters(); await refreshFleet(); render(); notify("ยกเลิก merge แล้ว");
+      if (!confirm("Remove the merge with " + button.dataset.id + "? Its target hosts will disappear from this Master")) return;
+      await rpc("merges.remove", { targetId: button.dataset.id }); await refreshMasters(); await refreshFleet(); render(); notify("Merge removed");
     }
     if (action === "revoke-relay" || action === "allow-relay") {
       const revoke = action === "revoke-relay";
-      if (revoke && !confirm("ปิดการ merge ของ Master นี้? Master นั้นจะสั่งเครื่องลูกผ่านเครื่องนี้ไม่ได้จนกว่าจะอนุญาตอีกครั้ง")) return;
+      if (revoke && !confirm("Disable merging for this Master? It cannot control target hosts through this Master until allowed again")) return;
       await rpc(revoke ? "relays.revoke" : "relays.allow", { masterId: button.dataset.id }); await refreshMasters(); render();
-      notify(revoke ? "ปิดการ merge แล้ว" : "อนุญาตการ merge อีกครั้งแล้ว");
+      notify(revoke ? "Merging disabled" : "Merging allowed again");
     }
     if (action === "accept-enrollment") {
       const bundle = await native("open_json");
       if (!bundle) return;
-      if (!confirm("อนุญาต Master " + (bundle.master?.label || bundle.master?.id || "") + " ให้สั่งงานด้วยสิทธิ์ระบบบนเครื่องนี้?")) return;
+      if (!confirm("Allow Master " + (bundle.master?.label || bundle.master?.id || "") + " to run work with system rights on this host?")) return;
       await rpc("enrollment.accept", { bundle }); await refreshMasters(); render();
-      notify("เพิ่ม Master แล้ว หากยังไม่มี SSH key ของ Master ใน authorized_keys ให้รัน installer ด้วย bundle นี้");
+      notify("Master added. If its SSH key is not in authorized_keys yet, run the installer with this bundle");
     }
     if (action === "refresh-service") { await refreshLocal(); render(); }
     if (action === "connect-client") {
       await native("client_connect", { client: button.dataset.id });
       await refreshLocal(); render();
-      notify("เชื่อม " + (state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id) + " แล้ว · เปิด session ใหม่ของ client นั้นเพื่อโหลด tools");
+      notify("Connected " + (state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id) + " · start a new session in that client to load the tools");
     }
     if (action === "update-client-path") {
       await native("client_update_path", { client: button.dataset.id });
       await refreshLocal(); render();
-      notify("อัปเดต path ของ " + (state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id) + " แล้ว · เปิด session ใหม่เพื่อโหลด tools");
+      notify("Updated the path for " + (state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id) + " · start a new session to load the tools");
     }
     if (action === "refresh-jobs") { await refreshJobs(); await refreshSelectedJob(); }
     if (action === "select-job") {
@@ -817,32 +1558,50 @@ document.addEventListener("click", event => {
     if (action === "read-logs") await refreshSelectedJob();
     if (action === "cancel-job") {
       const targetId = state.selected, jobId = state.job.id;
-      if (!confirm("ยกเลิกงาน " + jobId + " และ process ลูก?")) return;
+      if (!confirm("Cancel job " + jobId + " and its child processes?")) return;
       const job = await rpc("jobs.cancel", { targetId, jobId });
       if (targetId !== state.selected || jobId !== state.job?.id) return;
       state.job = job;
-      await refreshJobs(); await refreshSelectedJob(); notify("ส่งคำสั่งยกเลิกแล้ว");
+      await refreshJobs(); await refreshSelectedJob(); notify("Cancel request sent");
     }
+    if (action === "upload-cancel") { if (state.upload) { state.upload.cancelled = state.upload.cancelling = true; state.upload.answer?.("cancel"); paintUpload(); } return; }
+    if (action === "upload-answer") { state.upload?.answer?.(button.dataset.answer); return; }
+    if (action === "upload-pick") { $("#upload-input")?.click(); return; }
+    if (action === "path-menu") {
+      const box = button.getBoundingClientRect(), chain = [];
+      for (let path = state.files?.path; path && !chain.includes(path); path = parentPath(path)) chain.unshift(path);
+      const items = [{ label: "~  Home", action: "open-folder", data: { path: "~" }, mono: true }, "-",
+        ...chain.map((path, depth) => ({ label: depth ? path.split(/[\\/]/).filter(Boolean).pop() : path, action: "open-folder", data: { path }, indent: depth, mono: true }))];
+      const recent = (state.recentPaths || []).filter(path => !chain.includes(path));
+      if (recent.length) items.push("-", ...recent.map(path => ({ label: path, action: "open-folder", data: { path }, mono: true })));
+      openMenu(items, box.right - 320, box.bottom + 6);
+      return;
+    }
+    if (action === "file-more") { const box = button.getBoundingClientRect(); openFileMenu(button.closest("tr[data-file]"), box.right - 200, box.bottom + 4, box.top); return; }
+    if (action === "file-download") { await downloadFile(button.dataset.path, button.dataset.name); return; }
+    if (action === "file-delete") { openDeleteDialog(button.dataset.path, button.dataset.name, button.dataset.dir === "1"); return; }
+    if (action === "close-delete") { $("#delete-dialog").close(); return; }
     if (action === "parent-folder") await browseFiles(parentPath($("#file-path").value));
-    if (action === "read-file") await readFile($("#file-path").value);
     if (action === "open-file") await readFile(button.dataset.path);
     if (action === "open-folder") await browseFiles(button.dataset.path);
     if (action === "mkdir") {
-      const path = $("#file-path").value, targetId = state.selected;
-      await rpc("files.mkdir", { targetId, path });
-      if (targetId === state.selected) { await browseFiles(path); notify("สร้างโฟลเดอร์แล้ว"); }
-    }
-    if (action === "remove-file") {
-      const path = button.dataset.path, targetId = state.selected, directory = state.files.path;
-      if (!confirm("ลบ " + path + "? โฟลเดอร์ต้องว่าง")) return;
-      await rpc("files.remove", { targetId, path });
-      if (targetId === state.selected) { await browseFiles(directory); notify("ลบแล้ว"); }
+      const folder = state.files?.path, targetId = state.selected;
+      const name = (prompt("New folder name in " + folder) || "").trim();
+      if (!name) return;
+      if (/[\\/]/.test(name) || name === "." || name === "..") throw new Error("Use a plain folder name without / or \\");
+      await rpc("files.mkdir", { targetId, path: joinPath(folder, name) });
+      if (targetId === state.selected) { await browseFiles(folder); notify("Folder " + name + " created"); }
     }
     if (action === "close-file") { state.file = null; $("#file-editor").innerHTML = ""; }
   });
 });
 document.addEventListener("input", event => {
+  if (event.target.closest?.("#confirm-delete")) { const form = $("#confirm-delete"); form.querySelector('[type="submit"]').disabled = event.target.value !== form.dataset.name; }
   if (event.target.id === "fleet-search") { state.query = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
+  if (event.target.id === "dc-search") {
+    state.dc.query = state.query = event.target.value; $("#dc-tree").innerHTML = renderDcTree();
+    if ($("#fleet-table")) $("#fleet-table").innerHTML = renderFleetView();
+  }
 });
 document.addEventListener("change", event => {
   if (event.target.id === "group-filter") { state.group = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
@@ -860,12 +1619,12 @@ document.addEventListener("submit", event => {
     if (form.id === "confirm-two-way") {
       $("#two-way-dialog").close();
       const targetId = values.targetId;
-      state.twoWay.set(targetId, { step: "request", message: "กำลังเริ่ม" }); render();
+      state.twoWay.set(targetId, { step: "request", message: "Starting" }); render();
       try {
         const result = await native("merge_two_way", { targetId });
         const label = state.merges.find(row => row.targetId === targetId)?.label || targetId;
-        if (result.status === "two-way") notify("เปิดสองทางกับ " + label + " แล้ว · เครื่องนั้นสั่งเครื่องลูกของเครื่องนี้ได้ " + result.children + " เครื่อง");
-        else notify("ลงทะเบียนกับ " + label + " แล้ว แต่ merge กลับยังไม่สำเร็จ: " + (result.error || result.status), true);
+        if (result.status === "two-way") notify("Two-way enabled with " + label + " · it can now control " + result.children + " of this Master’s target hosts");
+        else notify("Enrolled with " + label + ", but the merge back failed: " + (result.error || result.status), true);
       } finally {
         state.twoWay.delete(targetId);
         await refreshMasters(); await refreshFleet(); render();
@@ -876,13 +1635,19 @@ document.addEventListener("submit", event => {
       if (values.targetId.trim()) params.targetId = values.targetId.trim();
       if (values.routeKind) params.routeKind = values.routeKind;
       if (values.routes.trim()) params.routes = JSON.parse(values.routes);
+      let folderId = values.folder === "__new__" ? "" : values.folder;
+      if (values.folder === "__new__" && values.newFolder.trim()) folderId = (await rpc("folders.create", { name: values.newFolder.trim() })).id;
       state.pairing = await rpc("pairing.create", params);
-      await refreshPairings(); render(); notify("คำขอพร้อมแล้ว บันทึกชุดติดตั้งเพื่อส่งไปเครื่องใหม่");
+      // The Target ID is known now, so the machine lands in its folder as soon as it pairs.
+      if (folderId) await rpc("folders.assign", { targetId: state.pairing.targetId, folderId });
+      if (folderId) state.folders = await rpc("folders.list");
+      await refreshPairings(); render(); notify("Request ready. Save the installer to send to the new host");
     }
     if (form.id === "complete-pairing") {
       state.pairing = await rpc("pairing.complete", { code: values.code.trim() });
+      await checkPairedMaster(state.pairing);
       await refreshPairings(); await refreshFleet(); render();
-      notify(state.pairing.state === "ready" ? "จับคู่สำเร็จ เครื่องพร้อมให้ agent ใช้งาน" : "ติดตั้งแล้ว แต่ยังเชื่อมต่อไม่ได้ ตรวจที่อยู่เครื่องแล้วลองอีกครั้ง", state.pairing.state !== "ready");
+      notify(state.pairing.state === "ready" ? "Paired. The machine is ready for agents" : "Installed, but not reachable yet. Check the address and try again", state.pairing.state !== "ready");
     }
     if (form.id === "retry-pairing") {
       if (!submittedPairing) return;
@@ -891,28 +1656,29 @@ document.addEventListener("submit", event => {
       const routes = (registered?.routes || submittedPairing.envelope.bundle.routes).map((route, i) => i === 0 ? { ...route, address: values.address.trim() } : route);
       const result = await rpc("pairing.status", { requestId: submittedPairing.requestId, retry: true, routes });
       if (state.pairing?.requestId === submittedPairing.requestId) state.pairing = result;
-      await refreshPairings(); await refreshFleet(); render(); notify(result.state === "ready" ? "พร้อมใช้งานแล้ว" : "ยังตรวจไม่ผ่าน ดูรายละเอียดด้านบน", result.state !== "ready");
+      await checkPairedMaster(result);
+      await refreshPairings(); await refreshFleet(); render(); notify(result.state === "ready" ? "Ready" : "Still failing. See the details above", result.state !== "ready");
     }
     if (form.id === "edit-target") {
       const routes = JSON.parse(values.routes);
-      if (!Array.isArray(routes) || !routes.length) throw new Error("Routes ต้องเป็น array ที่มีอย่างน้อยหนึ่งเส้นทาง");
+      if (!Array.isArray(routes) || !routes.length) throw new Error("Routes must be an array with at least one route");
       await rpc("targets.update", { target: { ...target(), label: values.label, routes } });
-      await refreshFleet(); render(); notify("บันทึก Target แล้ว");
+      await refreshFleet(); render(); notify("Target saved");
     }
     if (form.id === "paste-registration") await importRegistration(JSON.parse(values.document));
     if (form.id === "export-enrollment") {
       const routes = values.routes.trim() ? JSON.parse(values.routes) : [{ kind: values.kind, address: values.address, port: Number(values.port) }];
-      if (!Array.isArray(routes) || !routes.length) throw new Error("Routes ต้องเป็น array ที่มีอย่างน้อยหนึ่งเส้นทาง");
+      if (!Array.isArray(routes) || !routes.length) throw new Error("Routes must be an array with at least one route");
       state.export = await rpc("enrollment.export", { targetId: values.targetId, label: values.label || values.targetId, tenant: values.tenant, os: values.os, user: values.user, routes });
       if (state.page === "enroll") {
         $("#enrollment-result").innerHTML = renderEnrollmentResult();
         $("#enrollment-result").scrollIntoView({ block: "nearest" });
       }
-      notify("สร้าง public enrollment แล้ว");
+      notify("Public enrollment created");
     }
     if (form.id === "start-job") {
       const env = JSON.parse(values.env || "{}");
-      if (!env || Array.isArray(env) || typeof env !== "object" || Object.values(env).some(value => typeof value !== "string")) throw new Error("Environment ต้องเป็น JSON object ที่มีค่าเป็น string");
+      if (!env || Array.isArray(env) || typeof env !== "object" || Object.values(env).some(value => typeof value !== "string")) throw new Error("Environment must be a JSON object with string values");
       const params = { targetId: state.selected, script: values.script, cwd: values.cwd, shell: values.shell, env };
       if(values.ownerSessionId) params.ownerSessionId=values.ownerSessionId;
       if(values.asAdmin === 'on') params.asAdmin=true;
@@ -921,33 +1687,41 @@ document.addEventListener("submit", event => {
       const jobId = state.pendingJob.jobId;
       let job;
       try { job = await rpc("jobs.start", { ...params, jobId }); }
-      catch (error) { throw new Error(String(error) + "\nJob ID: " + jobId + " — ส่งคำสั่งเดิมซ้ำเพื่อเช็ก/รับงานเดิมโดยไม่รันซ้ำ"); }
+      catch (error) { throw new Error(String(error) + "\nJob ID: " + jobId + " — resend the same command to check or reattach without running it again"); }
       state.pendingJob = null;
       if (params.targetId !== state.selected) return;
       state.job = job; state.log = ""; state.offset = 0; state.eof = true; state.stream = "stdout"; state.newJob = false;
-      render(); await refreshJobs(); await refreshSelectedJob(true); notify("เริ่มงาน " + job.id + " แล้ว");
+      render(); await refreshJobs(); await refreshSelectedJob(true); notify("Started job " + job.id);
     }
-    if (form.id === "browse-files") await browseFiles(values.path);
+    if (form.id === "browse-files") await browseFiles(values.path.trim());
+    if (form.id === "confirm-delete") {
+      const { path, name } = form.dataset, targetId = state.selected, folder = state.files?.path;
+      if (values.confirm !== name) return;
+      $("#delete-dialog").close();
+      await rpc("files.remove", { targetId, path });
+      if (targetId === state.selected) { await browseFiles(folder); notify("Deleted " + name); }
+    }
     if (form.id === "save-file") {
       if (!state.file?.editable) return;
       const path = state.file.path, targetId = state.selected;
       await rpc("files.write", { targetId, path, contentBase64: encodeBase64(values.content), expectedSha256: state.file.sha256 });
-      if (targetId === state.selected) { await readFile(path); notify("บันทึกไฟล์แล้ว"); }
+      if (targetId === state.selected) { await readFile(path); notify("File saved"); }
     }
   });
 });
 $("#refresh-all").addEventListener("click", event => void busy(event.currentTarget, async () => {
   await refreshLocal();
-  if (state.page === "fleet") await refreshFleet();
+  if (state.page === "datacenter") await refreshFleet();
+  if (state.page === "datacenter") await loadContainersIfShown(true);
   if (state.page === "masters") await refreshMasters();
   if (state.page === "enroll") await refreshPairings();
   render();
 }));
 setInterval(async () => {
-  if (document.hidden || state.polling || state.page !== "fleet" || state.tab !== "jobs" || !target()?.runnerInstalled) return;
+  if (document.hidden || state.polling || !machineTab("jobs") || !target()?.runnerInstalled) return;
   state.polling = true;
   try { await refreshJobs(); await refreshSelectedJob(); }
-  catch (error) { notify("อัปเดตงานไม่ได้: " + error, true); }
+  catch (error) { notify("Could not update jobs: " + error, true); }
   finally { state.polling = false; }
 }, 5000);
 setInterval(() => {
@@ -955,6 +1729,209 @@ setInterval(() => {
   void refreshLocal();
   refreshHealthIfDue();
 }, 30000);
+/* Folder name editing in the tree: Enter or leaving the field saves, Escape cancels. */
+document.addEventListener("keydown", event => {
+  if (event.target.id !== "dc-edit") return;
+  if (event.key === "Enter") { event.preventDefault(); void saveFolderEdit(event.target); }
+  if (event.key === "Escape") { event.stopPropagation(); state.dc.editing = null; $("#dc-tree").innerHTML = renderDcTree(); }
+}, true);
+document.addEventListener("focusout", event => { if (event.target.id === "dc-edit" && state.dc.editing) void saveFolderEdit(event.target); });
+document.addEventListener("change", event => {
+  if (event.target.id === "upload-input" && event.target.files?.length) { const files = [...event.target.files]; event.target.value = ""; void busy(null, () => uploadFiles(files)); return; }
+  if (event.target.id === "pairing-folder") { const input = $("#pairing-new-folder"); input.hidden = event.target.value !== "__new__"; if (!input.hidden) input.focus(); }
+});
+/* The header scene is a map: hovering or focusing a host row lights that host's window. Direct target hosts
+   take the near towers, hosts behind another Master the far group; the current Master is the logo itself. */
+function sceneLight(item) {
+  const group = state.targets.filter(row => Boolean(row.relayed) === Boolean(item.relayed)), index = group.indexOf(item);
+  return index < 0 ? null : (item.relayed ? "f" + index % 4 : "t" + index % 6);
+}
+function lightScene(row) {
+  document.querySelectorAll(".scene-light.is-lit").forEach(light => light.classList.remove("is-lit"));
+  const item = row && state.targets.find(target => target.id === row.dataset.host), id = item && sceneLight(item);
+  const light = id && document.querySelector('.scene-light[data-light="' + id + '"]');
+  if (!light) return;
+  const status = isHot(item) ? "is-high" : ({ online: "", offline: "is-off" })[nodeState(item)] ?? "is-unknown";
+  light.classList.remove("is-high", "is-off", "is-unknown");
+  if (status) light.classList.add(status);
+  light.classList.add("is-lit");
+}
+document.addEventListener("mouseover", event => { const row = event.target.closest?.("[data-host]"); if (row !== lightScene.row) { lightScene.row = row; lightScene(row); } });
+document.addEventListener("focusin", event => { const row = event.target.closest?.("[data-host]"); lightScene.row = row; lightScene(row); });
+/* Files tab: drop files from this computer to upload them into the open folder. */
+const draggingFiles = event => [...(event.dataTransfer?.types || [])].includes("Files");
+document.addEventListener("dragover", event => {
+  const zone = event.target.closest?.(".file-drop");
+  if (!zone || !draggingFiles(event) || !state.files) return;
+  event.preventDefault(); event.dataTransfer.dropEffect = "copy"; zone.classList.add("is-drop");
+});
+document.addEventListener("dragleave", event => { const zone = event.target.closest?.(".file-drop"); if (zone && !zone.contains(event.relatedTarget)) zone.classList.remove("is-drop"); });
+document.addEventListener("drop", event => {
+  const zone = event.target.closest?.(".file-drop");
+  if (!zone || !draggingFiles(event)) return;
+  event.preventDefault(); zone.classList.remove("is-drop");
+  const files = [...event.dataTransfer.files];
+  if (files.length) void busy(null, () => uploadFiles(files));
+});
+/* Drag a machine onto a folder to file it, or onto its Master to unfile it (same Master only). */
+document.addEventListener("dragstart", event => {
+  const master = event.target.closest?.("[data-drag-master]");
+  if (master) {
+    event.dataTransfer.setData("text/plain", "master:" + master.dataset.dragMaster);
+    event.dataTransfer.effectAllowed = "move";
+    state.dc.draggingMaster = master.dataset.dragMaster; state.dc.dragging = null;
+    return;
+  }
+  const source = event.target.closest?.("[data-drag]");
+  if (!source?.dataset.drag) return;
+  state.dc.draggingMaster = null;
+  event.dataTransfer.setData("text/plain", source.dataset.drag);
+  event.dataTransfer.effectAllowed = "move";
+  state.dc.dragging = source.dataset.drag;
+});
+document.addEventListener("dragend", () => { state.dc.dragging = null; state.dc.draggingMaster = null; document.querySelectorAll(".dc-row.is-drop").forEach(row => row.classList.remove("is-drop")); });
+document.addEventListener("dragover", event => {
+  if (state.dc.draggingMaster) {
+    const site = event.target.closest?.("[data-drop-site]");
+    if (!site) return;
+    event.preventDefault(); event.dataTransfer.dropEffect = "move";
+    document.querySelectorAll(".dc-row.is-drop").forEach(other => { if (other !== site) other.classList.remove("is-drop"); });
+    site.classList.add("is-drop");
+    return;
+  }
+  const row = event.target.closest?.("[data-drop]");
+  if (!row || !state.dc.dragging || dcBranch(state.dc.dragging) !== row.dataset.drop) return;
+  event.preventDefault(); event.dataTransfer.dropEffect = "move";
+  document.querySelectorAll(".dc-row.is-drop").forEach(other => { if (other !== row) other.classList.remove("is-drop"); });
+  row.classList.add("is-drop");
+});
+document.addEventListener("dragleave", event => { const row = event.target.closest?.("[data-drop]"); if (row && !row.contains(event.relatedTarget)) row.classList.remove("is-drop"); });
+document.addEventListener("drop", event => {
+  const site = event.target.closest?.("[data-drop-site]"), payload = event.dataTransfer.getData("text/plain");
+  if (site && payload.startsWith("master:")) {
+    event.preventDefault(); site.classList.remove("is-drop");
+    const master = payload.slice(7), datacenterId = site.dataset.dropSite === "-" ? null : site.dataset.dropSite;
+    if (((state.datacenters.members || {})[master] || null) === datacenterId) return;
+    void busy(null, async () => {
+      await rpc("datacenters.assign", { master, datacenterId });
+      if (datacenterId) state.dc.collapsed.delete("site:" + datacenterId);
+      await refreshDatacenters(); render();
+    });
+    return;
+  }
+  const row = event.target.closest?.("[data-drop]"), targetId = payload;
+  if (targetId.startsWith("master:")) return;
+  if (!row || !targetId || dcBranch(targetId) !== row.dataset.drop) return;
+  event.preventDefault(); row.classList.remove("is-drop");
+  const folderId = row.dataset.dropFolder || null;
+  if ((state.folders.members || {})[targetId] === (folderId || undefined)) return;
+  void busy(null, async () => {
+    await rpc("folders.assign", { targetId, folderId });
+    if (folderId) state.dc.collapsed.delete("folder:" + folderId);
+    await refreshFolders(); $("#dc-tree").innerHTML = renderDcTree();
+    if (state.dc.node.startsWith("folder:") || state.dc.node.startsWith("master:")) $("#dc-panel").innerHTML = renderDcPanel();
+  });
+});
+/* vCenter-style context menu for tree rows: right-click, the Menu key or Shift+F10. */
+function dcMenuItems(node) {
+  const found = node === "dc" ? { kind: "dc" } : dcLookup(node);
+  if (!found) return [];
+  const item = (label, action, data = {}, extra = {}) => ({ label, action, data, ...extra });
+  const local = found.kind === "dc" || found.master?.current;
+  const remoteNote = found.master && !found.master.current ? "Add target hosts on " + found.master.label + "; this Master reaches them through it" : "";
+  if (found.kind === "site") return [item("Add Master host…", "dc-add", { kind: "master", site: found.site.id }), "-", item("Rename", "site-rename", { id: found.site.id }), item("Delete datacenter", "site-delete", { id: found.site.id }, { danger: true })];
+  if (found.kind === "dc") return [item("Add target host…", "dc-add"), item("Add Master host…", "dc-add", { kind: "master" }), "-", item("Topology", "dc-goto", { node: "dc" }), "-", item("Refresh", "refresh-fleet")];
+  if (found.kind === "master") return [
+    item("Add target host…", "dc-add", {}, { disabled: !local, title: remoteNote }),
+    item("New folder", "folder-new", { master: found.master.id }),
+    "-",
+    item("Open terminal", "open-shell", { id: found.master.item?.id || "" }, found.master.current ? { disabled: true, title: "This is the computer you are using; open its own terminal" } : { disabled: !found.master.item?.runnerInstalled }),
+    item("Containers", "dc-goto", { node, tab: "containers", view: "containers" }), item("Monitoring", "dc-goto", { node, tab: "monitoring" }),
+    ...(local ? [] : ["-", item("Manage merge", "manage-merge")]), "-", item("Refresh", "refresh-fleet"),
+    ...(local ? [] : ["-", item("Remove merge…", "remove-merge", { id: found.master.id }, { danger: true })])];
+  if (found.kind === "folder") return [
+    item("Add target host here…", "dc-add", { folder: found.folder.id }, { disabled: !local, title: remoteNote }),
+    "-", item("Rename", "folder-rename", { id: found.folder.id }), item("Delete folder", "folder-delete", { id: found.folder.id }, { danger: true })];
+  const target = found.item;
+  return [
+    item("Open terminal", "open-shell", { id: target.id }, { disabled: !target.runnerInstalled }),
+    item("Check connection", "ctx-diagnose", { id: target.id }),
+    "-",
+    item("Jobs & logs", "dc-goto", { node, tab: "jobs" }), item("Files", "dc-goto", { node, tab: "files" }),
+    item("Containers", "dc-goto", { node, tab: "containers", view: "containers" }), item("Images", "dc-goto", { node, tab: "containers", view: "images" }),
+    item("Monitoring", "dc-goto", { node, tab: "monitoring" }),
+    // Health only reads the SSH banner, so whether a machine is a Master is asked on click (one SSH call).
+    ...(!target.relayed && state.masterCheck.get(target.id) !== false && !state.merges.some(merge => merge.targetId === target.id) ? ["-", item("Merge its target hosts (if a Master)", "ctx-merge", { id: target.id })] : []),
+    ...(dcFolderOf(target.id) ? ["-", item("Remove from folder " + dcFolderOf(target.id).name, "folder-unfile", { id: target.id })] : []),
+    ...(target.relayed ? [] : ["-", item("Remove from this Master…", "ctx-remove", { id: target.id }, { danger: true })])];
+}
+function closeDcMenu() { $("#dc-menu")?.remove(); }
+function openDcMenu(node, x, y) { openMenu(dcMenuItems(node), x, y); }
+/** Small popup menu at (x, y); items are {label, action, data, danger, disabled, title, indent} or "-".
+ *  With `above` (the top of the button that opened it), a menu that does not fit below opens above instead of covering the button. */
+function openMenu(items, x, y, above) {
+  closeDcMenu();
+  if (!items.length) return;
+  const menu = document.createElement("div");
+  menu.id = "dc-menu"; menu.className = "ctx-menu"; menu.setAttribute("role", "menu");
+  menu.innerHTML = items.map(entry => entry === "-" ? '<div class="ctx-sep" role="separator"></div>'
+    : '<button role="menuitem" class="ctx-item' + (entry.danger ? " danger" : "") + (entry.indent ? " indent-" + Math.min(entry.indent, 8) : "") + '" data-action="' + entry.action + '"' +
+      Object.entries(entry.data).map(([key, value]) => " data-" + key + '="' + esc(value) + '"').join("") +
+      (entry.disabled ? " disabled" : "") + (entry.title ? ' title="' + esc(entry.title) + '"' : "") + ">" + esc(entry.label) + "</button>").join("");
+  if (items.some(entry => entry.mono)) menu.classList.add("is-mono");
+  document.body.append(menu);
+  const box = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, innerWidth - box.width - 4)) + "px";
+  const top = above !== undefined && y + box.height > innerHeight - 4 ? above - box.height - 4 : y;
+  menu.style.top = Math.max(4, Math.min(top, innerHeight - box.height - 4)) + "px";
+  menu.querySelector(".ctx-item:not(:disabled)")?.focus();
+}
+/** One menu for a file row, from its ⋮ button or a right-click. */
+function openFileMenu(row, x, y, above) {
+  const { file: path, name, dir } = row.dataset;
+  openMenu([{ label: dir ? "Open folder" : "Open", action: dir ? "open-folder" : "open-file", data: { path } },
+    ...(dir ? [] : [{ label: "Download…", action: "file-download", data: { path, name } }]), "-",
+    { label: "Delete…", action: "file-delete", data: { path, name, dir }, danger: true }], x, y, above);
+}
+document.addEventListener("contextmenu", event => {
+  const file = event.target.closest("tr[data-file]");
+  if (file) { event.preventDefault(); openFileMenu(file, event.clientX, event.clientY); return; }
+  const row = event.target.closest(".dc-row .dc-item");
+  if (!row) return;
+  event.preventDefault();
+  openDcMenu(row.dataset.node, event.clientX, event.clientY);
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") { closeDcMenu(); return; }
+  const menu = $("#dc-menu");
+  if (menu && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+    const items = [...menu.querySelectorAll(".ctx-item:not(:disabled)")], index = items.indexOf(document.activeElement);
+    items[(index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    event.preventDefault(); return;
+  }
+  const row = event.target.closest?.(".dc-item");
+  if (row && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+    event.preventDefault();
+    const box = row.getBoundingClientRect();
+    openDcMenu(row.dataset.node, box.left + 24, box.bottom);
+  }
+});
+document.addEventListener("pointerdown", event => { if (!event.target.closest("#dc-menu")) closeDcMenu(); }, true);
+window.addEventListener("blur", closeDcMenu);
+window.addEventListener("resize", closeDcMenu);
+// Monitoring polls only while its tab is on screen, the window has focus and it is not paused.
+setInterval(() => {
+  const key = visibleMonitorKey();
+  if (!key || state.dc.monPaused || document.hidden || !document.hasFocus()) return;
+  const entry = state.monitor.get(key);
+  if (!entry?.loading && Date.now() - (entry?.polled || 0) >= state.dc.monInterval - 250) void loadStats(key);
+}, 1000);
+// Containers refresh only while their tab is on screen and the window has focus.
+setInterval(() => {
+  if (document.hidden || !document.hasFocus() || state.dc.tab !== "containers") return;
+  const key = visibleContainerKey();
+  if (key && !state.containers.get(key)?.loading) void loadContainers(key);
+}, 15000);
 window.addEventListener("focus", refreshHealthIfDue);
 window.__TAURI__?.event?.listen("merge-two-way", ({ payload }) => {
   if (!state.twoWay.has(payload.targetId) || payload.step === "done") return;
@@ -963,8 +1940,8 @@ window.__TAURI__?.event?.listen("merge-two-way", ({ payload }) => {
 });
 window.__TAURI__?.event?.listen("management-window-shown", async () => {
   await refreshLocal();
-  if (state.page !== "fleet" || target()) return;
-  try { await refreshFleet(); if (state.page === "fleet" && !target()) render(); } catch (error) { notify(error, true); }
+  if (state.page !== "datacenter") return;
+  try { await refreshFleet(); if (state.page === "datacenter" && !holdsForm() && !state.dc.adding) render(); } catch (error) { notify(error, true); }
   void refreshHealth();
 });
 await refreshLocal();

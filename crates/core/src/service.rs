@@ -1,7 +1,8 @@
 use crate::{
     config::{self, Config},
+    containers,
     executor::Executor,
-    files, fleet, ipc,
+    files, fleet, folders, ipc,
     jobs::Jobs,
     pairing,
     protocol::{self, Request, Response},
@@ -208,6 +209,7 @@ impl Service {
                 "fs.search",
                 "fs.grep",
                 "fs.write",
+                "fs.upload",
                 "fs.mkdir",
                 "fs.remove",
                 "pty.open",
@@ -218,6 +220,10 @@ impl Service {
                 "pty.close",
                 "pty.attach",
                 "pty.detach",
+                "ct.list",
+                "ct.logs",
+                "ct.action",
+                "sys.stats",
             ];
             if !allowed.contains(&inner.method.as_str()) {
                 bail!("E_PERMISSION: method is not available over bridge");
@@ -244,6 +250,9 @@ impl Service {
             }
         }
         if let Some(value) = pairing::handle(&self.state, &self.config, req)? {
+            return Ok(value);
+        }
+        if let Some(value) = folders::handle(&self.state, &self.config, req)? {
             return Ok(value);
         }
         if let Some(value) = fleet::handle(&self.state, &self.config, req)? {
@@ -352,7 +361,7 @@ impl Service {
             }
             name if name.starts_with("fs.") => {
                 self.target()?;
-                let _mutation = if matches!(name, "fs.write" | "fs.mkdir" | "fs.remove") {
+                let _mutation = if matches!(name, "fs.write" | "fs.upload" | "fs.mkdir" | "fs.remove") {
                     Some(self.file_mutation.lock().unwrap())
                 } else {
                     None
@@ -363,6 +372,9 @@ impl Service {
                     files::handle(name, &req.params)
                 }
             }
+            // Containers belong to the machine, not a role: a Master lists its own too.
+            name if name.starts_with("ct.") => containers::handle(name, &req.params),
+            name if name.starts_with("sys.") => crate::monitor::handle(name, &req.params),
             name if name.starts_with("pty.") => {
                 self.target()?;
                 let guard = self.installing.lock().unwrap();

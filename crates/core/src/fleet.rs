@@ -504,7 +504,7 @@ fn masters(state: &Path) -> Result<Value> {
 fn key_path(state: &Path, tenant: &str) -> PathBuf {
     state.join("keys").join(format!("{tenant}.ed25519"))
 }
-fn quiet_command(name: &str) -> Command {
+pub(crate) fn quiet_command(name: &str) -> Command {
     let mut command = Command::new(name);
     #[cfg(windows)]
     {
@@ -755,6 +755,7 @@ fn dispatch(state: &Path, config: &Config, request: &Request) -> Result<Value> {
         "files.search" => "fs.search",
         "files.grep" => "fs.grep",
         "files.write" => "fs.write",
+        "files.upload" => "fs.upload",
         "files.mkdir" => "fs.mkdir",
         "files.remove" => "fs.remove",
         "terminal.open" => "pty.open",
@@ -763,6 +764,10 @@ fn dispatch(state: &Path, config: &Config, request: &Request) -> Result<Value> {
         "terminal.status" => "pty.status",
         "terminal.resize" => "pty.resize",
         "terminal.close" => "pty.close",
+        "containers.list" => "ct.list",
+        "containers.logs" => "ct.logs",
+        "containers.action" => "ct.action",
+        "monitor.stats" => "sys.stats",
         _ => bail!("unsupported fleet dispatch"),
     };
     if method == "runner.start" {
@@ -900,6 +905,7 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
             let id = str_arg(&req.params, "targetId")?;
             let changed = database(state)?.execute("DELETE FROM targets WHERE id=?1", [id])?;
             ensure!(changed > 0, "unknown target");
+            crate::folders::forget(state, id)?;
             json!({"id":id,"removed":true})
         }
         "targets.doctor" => {
@@ -913,12 +919,23 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
             }
         }
         "jobs.start" | "jobs.list" | "jobs.status" | "jobs.logs" | "jobs.cancel" | "files.list"
-        | "files.read" | "files.search" | "files.grep" | "files.write" | "files.mkdir"
+        | "files.read" | "files.search" | "files.grep" | "files.write" | "files.upload" | "files.mkdir"
         | "files.remove" | "terminal.open"
         | "terminal.read" | "terminal.write" | "terminal.status" | "terminal.resize"
         | "terminal.close" => {
             role(config, "master")?;
             dispatch(state, config, req)?
+        }
+        "containers.list" | "containers.logs" | "containers.action" | "monitor.stats" => {
+            if req.params.get("targetId").and_then(Value::as_str).is_some() {
+                role(config, "master")?;
+                dispatch(state, config, req)?
+            } else if req.method == "monitor.stats" {
+                crate::monitor::handle("sys.stats", &req.params)?
+            } else {
+                // No targetId: the machine this service runs on, e.g. the current Master.
+                crate::containers::handle(&req.method.replacen("containers.", "ct.", 1), &req.params)?
+            }
         }
         _ => return merge::handle_local(state, config, req),
     };

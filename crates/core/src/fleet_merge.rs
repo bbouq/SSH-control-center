@@ -46,6 +46,7 @@ const RELAY_METHODS: &[&str] = &[
     "files.search",
     "files.grep",
     "files.write",
+    "files.upload",
     "files.mkdir",
     "files.remove",
     "terminal.open",
@@ -54,6 +55,10 @@ const RELAY_METHODS: &[&str] = &[
     "terminal.status",
     "terminal.resize",
     "terminal.close",
+    "containers.list",
+    "containers.logs",
+    "containers.action",
+    "monitor.stats",
 ];
 
 fn now() -> String {
@@ -627,8 +632,12 @@ fn is_master(status: &Value) -> bool {
         .is_some_and(|roles| roles.iter().any(|r| r == "master" || r == "both"))
 }
 
-fn discover(state: &Path, config: &Config) -> Result<Value> {
-    let targets = installed_targets(&database(state)?)?;
+/// Reports which Targets are Masters. `only` probes a single Target (used right after pairing).
+fn discover(state: &Path, config: &Config, only: Option<&str>) -> Result<Value> {
+    let mut targets = installed_targets(&database(state)?)?;
+    if let Some(id) = only {
+        targets.retain(|t| t.id == id);
+    }
     let rows: Vec<Value> = probe(state, config, &targets)
         .into_iter()
         .zip(&targets)
@@ -897,7 +906,7 @@ pub(super) fn handle_local(state: &Path, config: &Config, req: &Request) -> Resu
         }
         "merges.discover" => {
             role(config, "master")?;
-            discover(state, config)?
+            discover(state, config, req.params["targetId"].as_str())?
         }
         "fleet.health" => {
             role(config, "master")?;
