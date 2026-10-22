@@ -37,8 +37,10 @@ const sha = () => crypto.createHash("sha256").update(content).digest("hex");
 const slug = text => String(text || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "host";
 const need = (value, name) => { if (value === undefined || value === null || value === "") throw new Error("E_ARGUMENT: missing " + name); return value; };
 const pairingView = p => ({ requestId: p.requestId, targetId: p.targetId, label: p.label, tenant: p.tenant, os: p.os, state: p.state, createdAt: p.createdAt, updatedAt: p.updatedAt,
-  envelope: { requestId: p.requestId, targetLabel: p.label, bundle: { targetId: p.targetId, tenant: p.tenant, os: p.os, user: p.user, routes: p.routes, master: { id: MASTER_ID, label: MASTER_LABEL } } }, diagnostics: p.diagnostics || null });
-const pairing = id => s.pairings.find(p => p.requestId === id) || (() => { throw new Error("E_PAIRING_REQUEST: unknown setup request"); })();
+  envelope: { requestId: p.requestId, targetLabel: p.label, bundle: { targetId: p.targetId, tenant: p.tenant, os: p.os, user: p.user, routes: p.routes, master: { id: MASTER_ID, label: MASTER_LABEL } } }, diagnostics: p.diagnostics || null, sibling: p.sibling || null });
+// Like the Master: a request cancelled because its sibling was answered first says so.
+const pairing = id => s.pairings.find(p => p.requestId === id) || (() => { throw new Error(s.pairings.some(p => p.sibling === id && p.state !== "awaiting_approval")
+  ? "E_PAIRING_REPLACED: unknown setup request on this Master; the other installer of the pair was used first" : "E_PAIRING_REQUEST: unknown setup request"); })();
 const isMasterHost = id => s.masterHosts.has(id);
 const children = id => [1, 2, 3].map(n => ({ id: id + "/child-" + n, label: "Child " + n + " of " + id, tenant: "lab", os: n === 1 ? "windows" : "linux", nodeId: crypto.randomUUID() }));
 const healthRow = t => ({ targetId: t.id, online: true, checkedAt: now(), error: null, failures: 0, isMaster: isMasterHost(t.id), version: "test" });
@@ -54,6 +56,7 @@ function completePairing({ code }) {
   const target = { schemaVersion: 2, id: p.targetId, nodeId: crypto.randomUUID(), label: p.label, tenant: p.tenant, os: p.os, user: p.user, routes: p.routes, hostKeys: ["ssh-ed25519 FIXTURE-" + p.targetId], bridgePath: p.os === "windows" ? "C:\\Program Files\\SSHCC\\sshcc.exe" : "/usr/bin/sshcc", runnerInstalled: true };
   s.targets = s.targets.filter(t => t.id !== p.targetId).concat(target);
   if (flags.has("new-host-master")) s.masterHosts.add(p.targetId);
+  if (p.sibling) s.pairings = s.pairings.filter(row => !(row.requestId === p.sibling && row.state === "awaiting_approval"));
   Object.assign(p, { state: "ready", updatedAt: now(), diagnostics: { targetId: p.targetId, ok: true, stages: [{ name: "fixture", ok: true, message: "Isolated UI test only" }] } });
   return pairingView(p);
 }
@@ -69,10 +72,11 @@ function mergeAdd(targetId) {
 // (a fresh Windows machine). SLOW_ADDRESS answers after 1.5 s, to test that late answers are ignored.
 const BANNERS = { "192.0.2.33": "SSH-2.0-OpenSSH_for_Windows_9.5", "192.0.2.32": "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5", "192.0.2.99": "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5" };
 const SLOW_ADDRESS = "192.0.2.99";
-async function checkAddress(address, port) {
+async function checkAddress(address, port, own) {
   if (address === SLOW_ADDRESS) await new Promise(done => setTimeout(done, 1500));
   const same = r => r.address.toLowerCase() === address.toLowerCase() && Number(r.port || 22) === port;
-  const target = s.targets.find(t => t.routes.some(same)), request = !target && s.pairings.find(p => p.state === "awaiting_approval" && p.routes.some(same));
+  const mine = p => own && (p.requestId === own || p.sibling === own); // a request's own sibling is not "already added"
+  const target = s.targets.find(t => t.routes.some(same)), request = !target && s.pairings.find(p => !mine(p) && p.state === "awaiting_approval" && p.routes.some(same));
   const banner = port === 22 && BANNERS[address] || null;
   return { address, port, reachable: Boolean(banner), banner, os: banner ? (banner.includes("Windows") ? "windows" : "linux") : null,
     alreadyAs: target?.label || request?.label || null, alreadyTargetId: target?.id || null, alreadyRequestId: request?.requestId || null };
@@ -105,15 +109,18 @@ function rpc(method, p = {}) {
       const label = need(p.label, "label"), address = need(p.address, "address"), port = Number(p.port || 22);
       const targetId = p.targetId || slug(label) + "-" + crypto.randomBytes(2).toString("hex");
       const routes = p.routes || [{ kind: p.routeKind || "lan", address, port }];
-      const row = { requestId: crypto.randomUUID(), targetId, label, tenant: p.tenant || "lab", os: need(p.os, "os"), user: p.user || "sshcc-bridge", routes, state: "awaiting_approval", createdAt: now(), updatedAt: now() };
-      s.pairings.unshift(row); return pairingView(row);
+      const make = os => ({ requestId: crypto.randomUUID(), targetId, label, tenant: p.tenant || "lab", os, user: p.user || "sshcc-bridge", routes, state: "awaiting_approval", createdAt: now(), updatedAt: now() });
+      if (need(p.os, "os") !== "unknown") { const row = make(p.os); s.pairings.unshift(row); return pairingView(row); }
+      // Unknown OS: a Windows and an Ubuntu request for the same host, linked as siblings.
+      const pair = [make("windows"), make("linux")]; pair[0].sibling = pair[1].requestId; pair[1].sibling = pair[0].requestId;
+      s.pairings.unshift(...pair); return pair.map(pairingView);
     }
     case "pairing.status":
       if (!p.requestId) return s.pairings.map(pairingView);
       if (p.routes) { const row = pairing(p.requestId), t = s.targets.find(item => item.id === row.targetId); if (t) t.routes = p.routes; row.routes = p.routes; row.state = "ready"; row.updatedAt = now(); }
       return pairingView(pairing(p.requestId));
     case "pairing.complete": return completePairing(p);
-    case "pairing.check": return checkAddress(need(p.address, "address").trim(), Number(p.port || 22));
+    case "pairing.check": return checkAddress(need(p.address, "address").trim(), Number(p.port || 22), p.requestId);
     case "pairing.cancel": { const row = pairing(need(p.requestId, "requestId")); s.pairings = s.pairings.filter(item => item !== row); return { requestId: row.requestId, cancelled: true }; }
     // Folders and datacenters (tree organisation only).
     case "folders.list": return { folders: s.folders, members: s.folderMembers };
@@ -148,9 +155,13 @@ function command(name, args) {
     : { opened: true, pid: 999, targetId: args.targetId, ownerSessionId: args.ownerSessionId || "3" };
   if (name === "open_json" || name === "save_json") return null;
   // Stands in for the native save dialog: always "saves" to a fixed folder, never writes a file.
+  // A sibling pair asks for a folder once and "writes" both installers there.
   if (name === "save_setup") {
-    const row = pairing(need(args.requestId, "requestId")), ext = row.os === "windows" ? "exe" : "deb";
-    return { path: "/fixture/Downloads/sshcc-client-" + row.targetId + "." + ext, sha256: "0".repeat(64), size: 1, requestId: row.requestId, os: row.os };
+    const row = pairing(need(args.requestId, "requestId")), folder = "/fixture/Downloads";
+    const file = r => ({ path: folder + "/sshcc-client-" + r.targetId + "." + (r.os === "windows" ? "exe" : "deb"), sha256: "0".repeat(64), size: 1, requestId: r.requestId, os: r.os });
+    if (!row.sibling) return file(row);
+    const files = [row, pairing(row.sibling)].sort((a, b) => (a.os === "windows" ? -1 : 1) - (b.os === "windows" ? -1 : 1)).map(file);
+    return { folder, paths: files.map(f => f.path), files };
   }
   if (name === "rpc") return rpc(args.method, args.params || {});
   throw new Error("Unsupported fixture command: " + name);

@@ -47,6 +47,10 @@ struct Pending {
     receipt_digest: Option<String>,
     #[serde(default)]
     diagnostics: Option<Value>,
+    /// The other request of a pair made for an unknown OS (Windows + Ubuntu). Absent on older
+    /// requests and on single ones.
+    #[serde(default)]
+    sibling: Option<String>,
 }
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -285,9 +289,24 @@ fn read_pending(db: &Connection, id: &str) -> Result<Pending> {
             [id],
             |row| row.get::<_, String>(0),
         )
-        .optional()?
-        .context("E_PAIRING_REQUEST: unknown setup request on this Master")?;
+        .optional()?;
+    let Some(document) = document else {
+        // Its sibling was answered first, which cancelled this one.
+        let replaced = all_pending(db)?
+            .iter()
+            .any(|p| p.sibling.as_deref() == Some(id) && p.receipt_digest.is_some());
+        if replaced {
+            bail!("E_PAIRING_REPLACED: unknown setup request on this Master; the other installer of the pair was used first");
+        }
+        bail!("E_PAIRING_REQUEST: unknown setup request on this Master");
+    };
     Ok(serde_json::from_str(&document)?)
+}
+/// Every stored request, newest first.
+fn all_pending(db: &Connection) -> Result<Vec<Pending>> {
+    let mut stmt = db.prepare("SELECT document FROM pairing_requests ORDER BY rowid DESC")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
 }
 fn write_pending(db: &Connection, pending: &Pending) -> Result<()> {
     db.execute("INSERT INTO pairing_requests(id,document) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET document=excluded.document", params![pending.envelope.request_id, serde_json::to_string(pending)?])?;
@@ -309,7 +328,7 @@ fn cancel(state: &Path, p: &Value) -> Result<Value> {
 fn view(pending: &Pending) -> Result<Value> {
     let requested = bundle(&pending.envelope)?;
     Ok(
-        json!({"requestId":pending.envelope.request_id,"targetId":requested.target_id,"label":pending.envelope.target_label,"tenant":requested.tenant,"os":requested.os,"state":pending.state,"createdAt":pending.created_at,"updatedAt":pending.updated_at,"envelope":pending.envelope,"diagnostics":pending.diagnostics}),
+        json!({"requestId":pending.envelope.request_id,"targetId":requested.target_id,"label":pending.envelope.target_label,"tenant":requested.tenant,"os":requested.os,"state":pending.state,"createdAt":pending.created_at,"updatedAt":pending.updated_at,"envelope":pending.envelope,"diagnostics":pending.diagnostics,"sibling":pending.sibling}),
     )
 }
 fn string<'a>(params: &'a Value, name: &str) -> Result<&'a str> {
@@ -373,33 +392,51 @@ fn create(state: &Path, config: &Config, p: &Value) -> Result<Value> {
         let address = string(p, "address")?;
         json!([{"kind":p.get("routeKind").and_then(Value::as_str).unwrap_or_else(|| route_kind(address)),"address":address,"port":p.get("port").cloned().unwrap_or(json!(22))}])
     };
-    let bundle = fleet::enrollment_export(
-        state,
-        config,
-        &json!({"targetId":id,"tenant":string(p,"tenant")?,"os":string(p,"os")?,"user":p.get("user").and_then(Value::as_str).unwrap_or("sshcc-bridge"),"routes":routes}),
-    )?;
-    let envelope = Envelope {
-        schema_version: 1,
-        request_id: Uuid::new_v4().to_string(),
-        master_id: config.node_id.clone(),
-        bundle_digest: digest(&canonical(&bundle)?),
-        target_label: label.into(),
-        bundle,
+    let os = string(p, "os")?;
+    // An unknown OS (no SSH banner yet) gets one request per installer, Windows and Ubuntu, for the
+    // same host; whichever is answered first wins and cancels the other.
+    let systems: &[&str] = if os == "unknown" {
+        &["windows", "linux"]
+    } else {
+        &[os]
     };
-    validate_envelope(&envelope)?;
-    ensure!(
-        canonical(&envelope)?.len() <= MAX_CODE_BYTES,
-        "E_PAIRING_SIZE: setup request exceeds 64 KiB"
-    );
     let now = Utc::now().to_rfc3339();
-    let pending = Pending {
-        envelope,
-        state: "awaiting_approval".into(),
-        created_at: now.clone(),
-        updated_at: now,
-        receipt_digest: None,
-        diagnostics: None,
-    };
+    let mut requests = systems
+        .iter()
+        .map(|os| -> Result<Pending> {
+            let bundle = fleet::enrollment_export(
+                state,
+                config,
+                &json!({"targetId":id,"tenant":string(p,"tenant")?,"os":os,"user":p.get("user").and_then(Value::as_str).unwrap_or("sshcc-bridge"),"routes":routes}),
+            )?;
+            let envelope = Envelope {
+                schema_version: 1,
+                request_id: Uuid::new_v4().to_string(),
+                master_id: config.node_id.clone(),
+                bundle_digest: digest(&canonical(&bundle)?),
+                target_label: label.into(),
+                bundle,
+            };
+            validate_envelope(&envelope)?;
+            ensure!(
+                canonical(&envelope)?.len() <= MAX_CODE_BYTES,
+                "E_PAIRING_SIZE: setup request exceeds 64 KiB"
+            );
+            Ok(Pending {
+                envelope,
+                state: "awaiting_approval".into(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                receipt_digest: None,
+                diagnostics: None,
+                sibling: None,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if let [windows, linux] = &mut requests[..] {
+        windows.sibling = Some(linux.envelope.request_id.clone());
+        linux.sibling = Some(windows.envelope.request_id.clone());
+    }
     let mut db = database(state)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let targets = fleet::list_targets(&tx)?;
@@ -407,9 +444,14 @@ fn create(state: &Path, config: &Config, p: &Value) -> Result<Value> {
         targets.len() < fleet::MAX_TARGETS || targets.iter().any(|t| t.id == id),
         "Master supports at most 50 targets"
     );
-    write_pending(&tx, &pending)?;
+    for pending in &requests {
+        write_pending(&tx, pending)?;
+    }
     tx.commit()?;
-    view(&pending)
+    match &requests[..] {
+        [single] => view(single),
+        pair => Ok(Value::Array(pair.iter().map(view).collect::<Result<_>>()?)),
+    }
 }
 fn diagnose(state: &Path, config: &Config, id: &str) -> Result<Value> {
     let db = database(state)?;
@@ -488,6 +530,12 @@ fn complete(state: &Path, config: &Config, p: &Value) -> Result<Value> {
     pending.state = "needs_attention".into();
     pending.updated_at = Utc::now().to_rfc3339();
     write_pending(&tx, &pending)?;
+    // The other installer of an unknown-OS pair is no longer needed.
+    if let Some(sibling) = &pending.sibling {
+        if read_pending(&tx, sibling).is_ok_and(|other| other.state == "awaiting_approval") {
+            tx.execute("DELETE FROM pairing_requests WHERE id=?1", [sibling])?;
+        }
+    }
     tx.commit()?;
     diagnose(state, config, &pending.envelope.request_id)
 }
@@ -498,10 +546,9 @@ fn status(state: &Path, config: &Config, p: &Value) -> Result<Value> {
             p.get("routes").is_none() && p.get("retry").and_then(Value::as_bool) != Some(true),
             "E_ARGUMENT: requestId required for retry or address changes"
         );
-        let mut stmt = db.prepare("SELECT document FROM pairing_requests ORDER BY rowid DESC")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        return Ok(json!(rows
-            .map(|row| view(&serde_json::from_str::<Pending>(&row?)?))
+        return Ok(json!(all_pending(&db)?
+            .iter()
+            .map(view)
             .collect::<Result<Vec<_>>>()?));
     };
     if let Some(routes) = p.get("routes") {
@@ -569,11 +616,14 @@ fn check(state: &Path, p: &Value) -> Result<Value> {
             already_as = Some(target.label);
             target_id = Some(target.id);
         } else {
-            let mut stmt =
-                db.prepare("SELECT document FROM pairing_requests ORDER BY rowid DESC")?;
-            for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
-                let pending: Pending = serde_json::from_str(&row?)?;
-                if pending.state == "awaiting_approval"
+            // Checked for an open request (`requestId`): it and its sibling are not "already added".
+            let own = p.get("requestId").and_then(Value::as_str);
+            for pending in all_pending(&db)? {
+                let mine = own.is_some()
+                    && (Some(pending.envelope.request_id.as_str()) == own
+                        || pending.sibling.as_deref() == own);
+                if !mine
+                    && pending.state == "awaiting_approval"
                     && bundle(&pending.envelope)?.routes.iter().any(same)
                 {
                     already_as = Some(pending.envelope.target_label.clone());
