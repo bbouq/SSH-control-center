@@ -12,7 +12,7 @@ The management UI (`desktop/ui`) can be exercised in a plain browser against an 
 - folders and datacenters: `folders.list`, `folders.create`, `folders.rename`, `folders.delete`, `folders.assign`, `datacenters.list`, `datacenters.create`, `datacenters.assign`
 - Merges and relays: `merges.list`, `merges.discover`, `merges.add`, `merges.sync`, `merges.remove`, `relays.list`, `relays.allow`, `relays.revoke`
 - allowed Masters: `masters.list`, `masters.revoke`, `enrollment.accept`
-- native commands: shell open, `open_json` / `save_json` (always cancelled), and `save_setup` ("save installer"; it returns a fixed path and writes nothing)
+- native commands: shell open, `open_json` / `save_json` (always cancelled), `save_setup` ("save installer"; it returns a fixed path and writes nothing) and `merge_two_way` (marks the Merge two-way and adds the other Master as a relay); `targets.list` also lists each Merge's hosts as `<master>/<child>` (relayed)
 
 Test-only endpoints:
 
@@ -24,6 +24,7 @@ Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scena
 
 - `empty`: an empty Master: no hosts, folders, Merges, relays or allowed Masters.
 - `new-host-master`: every host paired through the fixture is itself a Master, so `merges.discover` and `fleet.health` report `isMaster` and `merges.add` returns three merged hosts.
+- `merge-fails`: `merges.add` / `merges.sync` fail as if the other Master did not answer.
 - `needs-attention`: completing a pairing fails the connection check (`needs_attention` with one failed stage); an address retry (`pairing.status` with `routes`) then passes.
 - `masters-page`: adds two hosts that are Masters (`branch-master`, already merged, and `hq-master`, not merged), an allowed Master `peer-both` that is also a relay, and a relay-only Master `peer-relay` with merging disabled.
 
@@ -51,7 +52,7 @@ Fixture behaviors that the checks rely on:
 
 It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, which is git-ignored.
 
-`desktop/tests/add-host.cjs` walks the one-column add flow ("+ Add host": address, Save installer…, paste the code) from an empty Master (plain Chromium) and fails if adding one host takes more than 2 decisions. It checks: one sidebar button with no dropdown; exactly one current step (`aria-current="step"`, acid only on its number) and focus on its main control; the review card in step 4 (fingerprint shown, no `pairing.complete` and no host in the tree before Finish; a name and folder changed on the card are what get saved; "Open this host" opens the host's page); the empty name sent as the address and the host shown in the tree after Finish; the `needs-attention` path (failures listed, address-only retry, no second installer); a code from another Master and a damaged code each shown as a plain sentence in place, with no submit button, one `pairing.preview` per distinct pasted value and no `pairing.complete`; an unfinished request listed with Resume / Cancel; "Add host here…" on a folder pre-selecting and applying it; the `new-host-master` scenario; no motion under reduced motion; and no on-screen "target". It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. Run it in the Playwright image:
+`desktop/tests/add-host.cjs` walks the one-column add flow ("+ Add host": address, Save installer…, paste the code) from an empty Master (plain Chromium) and fails if adding one host takes more than 2 decisions. It checks: one sidebar button with no dropdown; exactly one current step (`aria-current="step"`, acid only on its number) and focus on its main control; the review card in step 4 (fingerprint shown, no `pairing.complete` and no host in the tree before Finish; a name and folder changed on the card are what get saved; "Open this host" opens the host's page); the empty name sent as the address and the host shown in the tree after Finish; the `needs-attention` path (failures listed, address-only retry, no second installer); a code from another Master and a damaged code each shown as a plain sentence in place, with no submit button, one `pairing.preview` per distinct pasted value and no `pairing.complete`; an unfinished request listed with Resume / Cancel; "Add host here…" on a folder pre-selecting and applying it; the `new-host-master` scenario (Merged with no click: "This host is a Master · n hosts merged", only the new host asked by `merges.discover`, its hosts in the tree, Two-way from the card); opened from a datacenter, a Master filed under it and a non-Master left unfiled with no message; `merge-fails` (plain failure line, host kept, Merge offered on the Masters page); no motion under reduced motion; and no on-screen "target". It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. Run it in the Playwright image:
 
     docker run --rm -v "$PWD":/src -v <node_modules with playwright>:/pw/node_modules:ro -e NODE_PATH=/pw/node_modules -w /src mcr.microsoft.com/playwright:v1.48.2-jammy node desktop/tests/add-host.cjs
 

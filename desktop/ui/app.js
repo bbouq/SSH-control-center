@@ -569,10 +569,10 @@ const addText = {
   unfinished: "Unfinished", refresh: "Refresh", host: "Host", status: "Status", resume: "Resume",
   states: { awaiting_approval: "Waiting for Approve on the new host", needs_attention: "Installed · connection check failed", ready: "Ready" }, preparing: "Preparing",
   cancelConfirm: "Cancel this request? An installer already sent for it will no longer work.", cancelled: "Request cancelled",
-  notMasterTitle: "Added, but it is not a Master", notMasterText: site => "So it was not filed under datacenter " + site + ". Only Masters are filed under a datacenter",
-  merged: n => "Merged · " + n + " hosts added to the tree", mergedThrough: name => "This Master reaches them through " + name,
-  alsoMaster: name => name + " is also a Master", mergeGloss: "Merge it to see and control its hosts from here. Requests go through it; nothing changes on its hosts", merge: "Merge",
-  addedMaster: (name, n) => "Added Master " + name + " · " + n + " hosts merged into the tree",
+  isMaster: n => "This host is a Master · " + n + " hosts merged", isMasterMerging: "This host is a Master · merging…",
+  mergeGloss: "Merged: see and control its hosts from here. Its hosts are in the tree now; nothing changes on them",
+  mergeFailed: "This host is a Master, but it could not be merged", mergeFailedText: "The host is added. Merge it later on the Masters page (Merge: see and control its hosts from here)",
+  mergeReason: "Reason:", openMasters: "Open Masters", twoWay: "Two-way", twoWayHelp: "Optional · lets that Master control this Master’s hosts too",
   admin: "For administrators (import from a file)",
   // Plain sentences for errors people can act on; the first matching code wins, anything else is shown as is.
   errors: [
@@ -730,9 +730,9 @@ function addResult(item) {
   const routes = registered?.routes || item.envelope?.bundle?.routes || [];
   const failed = (item.diagnostics?.stages || []).filter(stage => !stage.ok);
   if (item.state === "ready") {
-    const offer = pairedMasterOffer(item);
+    const offer = addMasterLine(item);
     return '<div class="callout good">' + icons.check + '<div><strong class="ready-message">' + addText.readyTitle + "</strong><p>" + addText.readyText + "</p></div></div>" + offer +
-      '<div class="form-actions"><button class="' + (offer ? "" : "primary") + '" data-action="open-paired-target" data-id="' + esc(item.targetId) + '" data-focus>' + addText.openHost + '</button><button data-action="new-pairing">' + icons.plus + addText.another + '</button><button data-action="enroll-close">' + addText.done + "</button></div>";
+      '<div class="form-actions"><button class="primary" data-action="open-paired-target" data-id="' + esc(item.targetId) + '" data-focus>' + addText.openHost + '</button><button data-action="new-pairing">' + icons.plus + addText.another + '</button><button data-action="enroll-close">' + addText.done + "</button></div>";
   }
   return '<div class="callout pending">' + icons.alert + "<div><strong>" + addText.attentionTitle + "</strong><p>" + addText.attentionText + "</p>" + (failed.length ? "<ul>" + failed.map(stage => "<li>" + esc(pairingError(stage.message)) + "</li>").join("") + "</ul>" : "") + "</div></div>" +
     '<form id="retry-pairing"><label>' + addText.address + '<input name="address" required value="' + esc(routes[0]?.address || "") + '" data-focus><small>' + addText.retryHelp + '</small></label><div class="form-actions"><button type="submit" class="primary">' + addText.retry + '</button><button type="button" data-action="pairing-back">' + icons.back + addText.back + "</button></div></form>";
@@ -753,33 +753,38 @@ function focusAddStep() {
   if (state.add.focused === key && document.activeElement && document.activeElement !== document.body) return;
   state.add.focused = key; now.querySelector("[data-focus]")?.focus();
 }
-/** A newly paired host that is itself a Master: one click merges its hosts into this tree. */
-function pairedMasterOffer(item) {
-  const site = state.dc.adding?.site && (state.datacenters.datacenters || []).find(row => row.id === state.dc.adding.site);
-  if (site && state.masterCheck.get(item.targetId) === false && state.pairedMaster?.targetId !== item.targetId)
-    return '<div class="callout">' + icons.info + "<div><strong>" + addText.notMasterTitle + "</strong><p>" + esc(addText.notMasterText(site.name)) + "</p></div></div>";
-  if (state.pairedMaster?.targetId !== item.targetId) return "";
-  const merge = state.merges.find(row => row.targetId === item.targetId), name = item.label || item.targetId;
-  if (merge) return '<div class="callout good">' + icons.check + "<div><strong>" + esc(addText.merged((merge.children || []).length)) + "</strong><p>" + esc(addText.mergedThrough(name)) + "</p></div></div>";
-  return '<div class="callout">' + icons.info + "<div><strong>" + esc(addText.alsoMaster(name)) + "</strong><p>" + addText.mergeGloss + "</p>" +
-    '<div class="form-actions"><button class="primary" data-action="merge-master" data-id="' + esc(item.targetId) + '"' + (state.merging.has(item.targetId) ? " disabled" : "") + ">" + addText.merge + "</button></div></div></div>";
+/** The Master line in the result card: merging, merged (host count, Merge gloss, optional Two-way) or failed. */
+function addMasterLine(item) {
+  const found = state.pairedMaster;
+  if (found?.targetId !== item.targetId) return "";
+  if (found.status === "merging") return '<div class="callout add-master">' + icons.info + "<div><strong>" + addText.isMasterMerging + "</strong><p>" + addText.mergeGloss + "</p></div></div>";
+  const merge = state.merges.find(row => row.targetId === item.targetId);
+  if (!merge) return '<div class="callout pending add-master">' + icons.alert + "<div><strong>" + addText.mergeFailed + "</strong><p>" + addText.mergeFailedText + "</p>" +
+    (found.error ? '<p class="help wrap">' + addText.mergeReason + " " + esc(found.error) + "</p>" : "") + '<div class="form-actions"><button data-page="masters">' + addText.openMasters + "</button></div></div></div>";
+  const two = twoWayButton(merge, addText.twoWay, ""), running = state.twoWay.has(merge.targetId) || merge.reverse;
+  return '<div class="callout good add-master">' + icons.check + "<div><strong>" + esc(addText.isMaster((merge.children || []).length)) + "</strong><p>" + addText.mergeGloss + "</p>" +
+    (running ? '<p class="add-two-way">' + reverseStatus(merge) + "</p>" : "") + (two ? '<div class="form-actions">' + two + '</div><p class="help">' + addText.twoWayHelp + "</p>" : "") + "</div></div>";
 }
-/** After pairing: ask only the new host whether it is a Master (no fleet-wide probe). */
+/** After a ready pairing: ask only the new host whether it is a Master (no fleet-wide probe). A Master is Merged at
+ *  once with no click, and filed under the datacenter the flow was opened from. A non-Master is left alone. */
 async function checkPairedMaster(pairing) {
   state.pairedMaster = null;
   if (pairing?.state !== "ready" || !state.service?.roles?.includes("master")) return;
+  const targetId = pairing.targetId, site = state.dc.adding?.site;
   try {
-    const [row] = await rpc("merges.discover", { targetId: pairing.targetId });
+    const [row] = await rpc("merges.discover", { targetId });
     if (row && !row.error) state.masterCheck.set(row.targetId, row.isMaster);
-    if (row?.isMaster) state.pairedMaster = { targetId: pairing.targetId };
-  } catch { /* the offer is optional; the Masters page can still merge */ }
-  // Opened from a datacenter: a Master is merged right away and filed under it.
-  const adding = state.dc.adding;
-  if (!adding?.site || state.pairedMaster?.targetId !== pairing.targetId) return;
-  const merge = await rpc("merges.add", { targetId: pairing.targetId });
-  await rpc("datacenters.assign", { master: pairing.targetId, datacenterId: adding.site }); await refreshDatacenters();
-  await refreshMasters();
-  notify(addText.addedMaster(merge.label || pairing.targetId, (merge.children || []).length));
+    if (!row?.isMaster) return;
+  } catch { return; /* not knowing is not an error; the Masters page can still merge */ }
+  state.pairedMaster = { targetId, status: "merging" }; render();
+  if (site) await rpc("datacenters.assign", { master: targetId, datacenterId: site }).then(refreshDatacenters).catch(error => notify(error, true));
+  try {
+    if (!state.merges.some(row => row.targetId === targetId)) await rpc("merges.add", { targetId });
+    state.pairedMaster = { targetId, status: "merged" };
+  } catch (error) {
+    state.pairedMaster = { targetId, status: "failed", error: String(error?.message || error).replace(/^E_[A-Z_]+:\s*/, "") };
+  }
+  await refreshMasters().catch(() => {});
 }
 function renderMasters() {
   return heading("Masters", "Merge another Master to see and control its hosts from here, and choose which Masters may control this one", '<button data-action="refresh-masters">' + icons.refresh + "Refresh</button>") +
@@ -806,17 +811,24 @@ function reverseStatus(merge) {
   const [style, text] = labels[reverse?.status] || ["", "One-way"];
   return '<span class="badge ' + style + '">' + text + "</span>" + (reverse?.error ? '<small class="wrap">' + esc(reverse.error) + "</small>" : !reverse ? "<small>This Master controls that Master’s hosts one way only</small>" : "");
 }
-/** Outgoing: every Merge, plus every host whose health says it is a Master and that is not merged yet. */
+/** Today's rule for offering two-way: merged, not two-way yet, and merging not disabled here after a two-way;
+ *  Windows Masters only. Used by the Masters page and the add flow's result card. */
+function twoWayButton(merge, text, style = "primary small") {
+  const id = merge.targetId, peer = state.targets.find(item => item.id === id);
+  if (merge.status !== "merged" || isTwoWay(merge) || (merge.reverse?.status === "two-way" && state.relays.some(row => row.masterId === peer?.nodeId && row.revoked))) return "";
+  const busyRow = state.merging.has(id) || state.twoWay.has(id);
+  return '<button class="' + style + '" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="Currently supported only on Windows Masters"' : "") + ">" + text + "</button>";
+}
+/** Outgoing: every Merge, plus every host whose health (or the add flow's check) says it is a Master and that is not merged yet. */
 function renderMerges() {
-  const unmerged = state.targets.filter(item => !item.relayed && state.health.get(item.id)?.isMaster && !state.merges.some(merge => merge.targetId === item.id));
+  const unmerged = state.targets.filter(item => !item.relayed && (state.health.get(item.id)?.isMaster || state.masterCheck.get(item.id)) && !state.merges.some(merge => merge.targetId === item.id));
   const ids = [...state.merges.map(row => row.targetId), ...unmerged.map(item => item.id)];
   const name = id => state.merges.find(row => row.targetId === id)?.label || state.targets.find(row => row.id === id)?.label || id;
   return '<section class="surface"><div class="card-head"><div><h2>Controlled from here</h2><p>Masters merged into this one · Merge: see and control its hosts from here</p></div></div>' +
     (ids.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Status</th><th>Direction</th><th></th></tr></thead><tbody>' +
       ids.map(id => {
         const merge = state.merges.find(row => row.targetId === id), busyRow = state.merging.has(id) || state.twoWay.has(id);
-        const canPair = merge?.status === "merged" && !isTwoWay(merge) && !(merge.reverse?.status === "two-way" && state.relays.some(row => row.masterId === state.targets.find(item => item.id === id)?.nodeId && row.revoked));
-        const pair = canPair ? '<button class="primary small" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="Currently supported only on Windows Masters"' : "") + ">" + (merge.reverse ? "Try again" : "Enable two-way") + "</button>" : "";
+        const pair = merge ? twoWayButton(merge, merge.reverse ? "Try again" : "Enable two-way") : "";
         const actions = merge ? pair + '<button class="small" data-action="sync-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + '>Sync</button><button class="danger small" data-action="remove-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Remove merge</button>" : '<button class="primary small" data-action="merge-master" data-id="' + esc(id) + '" title="See and control its hosts from here"' + (busyRow ? " disabled" : "") + ">Merge</button>";
         return "<tr><td><strong>" + esc(name(id)) + "</strong><small><code>" + esc(id) + "</code></small></td><td>" + mergeStatus(id) + "</td><td>" + (merge ? reverseStatus(merge) : '<span class="muted">—</span>') + '</td><td class="actions"><div class="target-actions">' + actions + "</div></td></tr>";
       }).join("") + "</tbody></table></div>"

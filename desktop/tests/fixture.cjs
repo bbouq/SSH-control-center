@@ -2,6 +2,7 @@
 // Scenario flags (comma-separated, env SSHCC_FIXTURE_SCENARIO or POST /scenario {"flags":[…]}):
 //   empty            start as a Master with no hosts, folders, Merges or relays
 //   new-host-master  every host paired through the fixture is itself a Master (merges.discover/fleet.health say so)
+//   merge-fails      merges.add / merges.sync fail (the remote Master does not answer)
 //   needs-attention  completing a pairing fails the connection check; an address retry (pairing.status routes) passes
 //   masters-page     adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
 //                    directly and through a Merge, plus one that only merged this Master (merging disabled)
@@ -41,7 +42,9 @@ const pairingView = p => ({ requestId: p.requestId, targetId: p.targetId, label:
   envelope: { requestId: p.requestId, targetLabel: p.label, bundle: { targetId: p.targetId, tenant: p.tenant, os: p.os, user: p.user, routes: p.routes, master: { id: MASTER_ID, label: MASTER_LABEL } } }, diagnostics: p.diagnostics || null });
 const pairing = id => s.pairings.find(p => p.requestId === id) || (() => { throw new Error("E_PAIRING_REQUEST: unknown setup request"); })();
 const isMasterHost = id => s.masterHosts.has(id);
-const children = id => [1, 2, 3].map(n => ({ id: id + "/child-" + n, label: "Child " + n + " of " + id, tenant: "lab", os: n === 1 ? "windows" : "linux", nodeId: crypto.randomUUID() }));
+const children = id => [1, 2, 3].map(n => ({ id: "child-" + n, label: "Child " + n + " of " + id, tenant: "lab", os: n === 1 ? "windows" : "linux", nodeId: crypto.randomUUID() }));
+/** A Merge's hosts, listed by targets.list as `<master>/<child>` (as the real Master does). */
+const relayedTargets = () => s.merges.flatMap(m => (m.children || []).map(c => ({ schemaVersion: 2, id: m.targetId + "/" + c.id, nodeId: c.nodeId, label: c.label, tenant: c.tenant, os: c.os, relayed: true, via: m.targetId, viaLabel: m.label, routes: [], hostKeys: [], runnerInstalled: true })));
 const healthRow = t => ({ targetId: t.id, online: true, checkedAt: now(), error: null, failures: 0, isMaster: isMasterHost(t.id), version: "test" });
 // After the helpers: the masters-page scenario uses `now` and `children`.
 reset((process.env.SSHCC_FIXTURE_SCENARIO || "").split(","));
@@ -76,6 +79,7 @@ function completePairing({ code, label }) {
 function mergeAdd(targetId) {
   const t = s.targets.find(row => row.id === targetId) || (() => { throw new Error("E_TARGET: unknown target " + targetId); })();
   if (!isMasterHost(targetId)) throw new Error("E_MERGE: " + targetId + " is not a Master");
+  if (flags.has("merge-fails")) throw new Error("E_MERGE: remote Master " + targetId + " did not answer");
   const previous = s.merges.find(row => row.targetId === targetId);
   const merge = { targetId, label: t.label, status: "merged", error: null, syncedAt: now(), children: previous?.children || children(targetId), reverse: previous?.reverse || null };
   s.merges = s.merges.filter(row => row.targetId !== targetId).concat(merge);
@@ -96,7 +100,7 @@ async function checkAddress(address, port) {
 function rpc(method, p = {}) {
   switch (method) {
     case "system.status": return { label: "UI fixture (no real service)", nodeId: "fixture", roles: ["master", "target"], version: "test", uptimeSeconds: 120 };
-    case "targets.list": return s.targets;
+    case "targets.list": return [...s.targets, ...relayedTargets()];
     case "targets.doctor": return { targetId: p.targetId, ok: true, stages: [{ name: "fixture", ok: true, message: "Isolated UI test only" }] };
     case "targets.update": { const t = s.targets.find(row => row.id === p.target?.id); Object.assign(t, p.target); return t; }
     case "jobs.list": return s.jobs;
@@ -168,6 +172,13 @@ function command(name, args) {
   if (name === "save_setup") {
     const row = pairing(need(args.requestId, "requestId")), ext = row.os === "windows" ? "exe" : "deb";
     return { path: "/fixture/Downloads/sshcc-client-" + row.targetId + "." + ext, sha256: "0".repeat(64), size: 1, requestId: row.requestId, os: row.os };
+  }
+  // Two-way: the other Master enrolls this one and merges it back; it shows as a relay here.
+  if (name === "merge_two_way") {
+    const merge = s.merges.find(row => row.targetId === need(args.targetId, "targetId")), t = s.targets.find(row => row.id === args.targetId);
+    merge.reverse = { status: "two-way", error: null };
+    s.relays = s.relays.filter(row => row.masterId !== t.nodeId).concat({ masterId: t.nodeId, label: t.label, lastUsedAt: now(), revoked: false });
+    return { status: "two-way", children: s.targets.length };
   }
   if (name === "rpc") return rpc(args.method, args.params || {});
   throw new Error("Unsupported fixture command: " + name);

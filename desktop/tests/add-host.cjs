@@ -57,6 +57,9 @@ async function addOneHost(page, url, d, { folderId } = {}) {
   assert.equal((await rpcCall(page, url, "targets.list")).filter(t => t.routes[0].address === ADDRESS).length, 0, "no host saved before Finish");
 }
 const rpcCall = async (page, url, method, params = {}) => (await (await page.request.post(url + "/rpc", { data: { command: "rpc", args: { method, params } } })).json());
+const newHostId = async (page, url) => (await rpcCall(page, url, "targets.list")).find(t => t.routes[0]?.address === ADDRESS)?.id;
+/** Stands in for "Add host…" on a datacenter (same action and data as that menu item). */
+const addFromSite = (page, site) => page.evaluate(id => { const b = document.createElement("button"); b.dataset.action = "dc-add"; b.dataset.site = id; document.body.append(b); b.click(); b.remove(); }, site);
 /** Step 4: Finish completes the pairing; the result shows in the same card. */
 async function finish(page, result = ".ready-message") {
   await step(page, 4).getByRole("button", { name: "Finish" }).click();
@@ -130,12 +133,71 @@ const checks = {
     assert.equal(rpcCalls(sent, "pairing.status").filter(c => c.params.routes?.[0]?.address === "192.0.2.32").length, 1);
     assert.equal(sent.filter(c => c.command === "save_setup").length, 1, "no new installer");
   },
-  /** The new host is a Master: today's offer card shows until the review card (ticket 04/05). */
+  /** The new host is a Master: Merged with no extra click; its hosts show in the tree; Two-way works from the card. */
   async "empty+new-host-master"(page, url, d) {
+    // Two-way is offered only on Windows Masters today.
+    await page.addInitScript(() => Object.defineProperty(navigator, "userAgent", { get: () => "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }));
     await page.goto(url); await page.locator('[data-action="add-host"]').click();
     await addOneHost(page, url, d);
     await finish(page);
-    await page.locator(".callout").filter({ hasText: "is also a Master" }).waitFor();
+    const card = step(page, 4), master = card.locator(".add-master");
+    await master.filter({ hasText: "This host is a Master · 3 hosts merged" }).waitFor();
+    assert.match(await master.innerText(), /see and control its hosts from here/, "Merge gloss");
+    assert.doesNotMatch(await column(page).innerText(), /is also a Master/, "no old offer");
+    assert.equal(await card.locator('[data-action="merge-master"]').count(), 0, "no Merge click needed");
+    const sent = await calls(page, url), id = await newHostId(page, url);
+    assert.deepEqual(rpcCalls(sent, "merges.discover").map(c => c.params), [{ targetId: id }], "only the new host is asked");
+    assert.deepEqual(rpcCalls(sent, "merges.add").map(c => c.params), [{ targetId: id }]);
+    assert.equal(rpcCalls(sent, "datacenters.assign").length, 0, "not filed anywhere");
+    // Its hosts are in the tree.
+    await page.locator('[data-action="dc-toggle"][data-node="master:' + id + '"]').click();
+    await page.locator("#dc-tree .dc-item").filter({ hasText: "Child 1 of " + id }).waitFor();
+    await shots(page, "master-merged");
+    // Two-way is optional and goes through today's confirm dialog.
+    await master.getByRole("button", { name: "Two-way" }).click();
+    await page.locator("#two-way-dialog[open]").waitFor();
+    await page.locator("#two-way-dialog").getByRole("button", { name: "Install and enable two-way" }).click();
+    await master.locator(".badge", { hasText: /^Two-way$/ }).waitFor();
+    assert.equal((await calls(page, url)).filter(c => c.command === "merge_two_way" && c.targetId === id).length, 1);
+    assert.equal(await master.getByRole("button", { name: "Two-way" }).count(), 0, "no Two-way once enabled");
+  },
+  /** Opened from a datacenter: a Master is filed under it. */
+  async "datacenter+new-host-master"(page, url, d) {
+    const site = await rpcCall(page, url, "datacenters.create", { name: "Bangkok" });
+    await page.goto(url); await addFromSite(page, site.id);
+    await addOneHost(page, url, d);
+    await finish(page);
+    await step(page, 4).locator(".add-master").filter({ hasText: "hosts merged" }).waitFor();
+    const id = await newHostId(page, url);
+    assert.deepEqual(rpcCalls(await calls(page, url), "datacenters.assign").map(c => c.params), [{ master: id, datacenterId: site.id }]);
+  },
+  /** Opened from a datacenter, but the new host is not a Master: not filed, no error, no extra message. */
+  async "datacenter-not-master"(page, url, d) {
+    const site = await rpcCall(page, url, "datacenters.create", { name: "Bangkok" });
+    await page.goto(url); await addFromSite(page, site.id);
+    await addOneHost(page, url, d);
+    await finish(page);
+    await page.waitForTimeout(300);
+    const sent = await calls(page, url);
+    assert.equal(rpcCalls(sent, "merges.discover").length, 1);
+    assert.equal(rpcCalls(sent, "merges.add").length, 0);
+    assert.equal(rpcCalls(sent, "datacenters.assign").length, 0, "a non-Master is not filed");
+    assert.equal(await step(page, 4).locator(".add-master, .callout.bad").count(), 0, "no Master line, no error");
+    assert.doesNotMatch(await step(page, 4).innerText(), /not a Master/);
+  },
+  /** The Merge fails: plain words in the card, the host stays added, Merge is offered on the Masters page. */
+  async "merge-fails"(page, url, d) {
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    await addOneHost(page, url, d);
+    await finish(page);
+    const master = step(page, 4).locator(".add-master");
+    await master.filter({ hasText: "This host is a Master, but it could not be merged" }).waitFor();
+    assert.doesNotMatch(await master.innerText(), /E_MERGE/, "plain words, no error code");
+    await shots(page, "merge-failed");
+    assert.ok(await newHostId(page, url), "the host stays added");
+    await master.getByRole("button", { name: "Open Masters" }).click();
+    const outgoing = page.locator("section", { has: page.locator("h2", { hasText: /^Controlled from here$/ }) });
+    await outgoing.locator("tr", { hasText: ADDRESS }).locator('[data-action="merge-master"]').waitFor();
   },
   /** Wrong codes: a plain sentence in place, the code stays, one request per distinct value. */
   async "wrong-codes"(page, url) {
@@ -241,7 +303,7 @@ const checks = {
     assert.equal(motion, 0, "nothing animates");
   },
 };
-const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "reduced-motion": ["empty"] };
+const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "datacenter+new-host-master": ["empty", "new-host-master"], "datacenter-not-master": ["empty"], "merge-fails": ["empty", "new-host-master", "merge-fails"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "reduced-motion": ["empty"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];
