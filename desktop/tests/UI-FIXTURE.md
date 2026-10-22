@@ -49,7 +49,7 @@ Fixture behaviors that the checks rely on:
 
 It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, which is git-ignored.
 
-`desktop/tests/add-host.cjs` adds one host from an empty Master through the add flow (plain Chromium), once with a normal host and once with the `new-host-master` scenario, and prints the decision count. It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. It does not gate on the count yet; today's flow is the baseline (4 decisions: kind of host, name, address, Pairing code). Run it in the Playwright image:
+`desktop/tests/add-host.cjs` walks the one-column add flow ("+ Add host": address, Save installer…, paste the code) from an empty Master (plain Chromium) and fails if adding one host takes more than 2 decisions. It checks: one sidebar button with no dropdown; exactly one current step (`aria-current="step"`, acid only on its number) and focus on its main control; the empty name sent as the address and the host shown in the tree; a code from another Master and a damaged code each shown as a plain sentence in place, with no submit button and one `pairing.complete` per distinct pasted value; an unfinished request listed with Resume / Cancel; "Add host here…" on a folder pre-selecting and applying it; the `new-host-master` scenario; no motion under reduced motion; and no on-screen "target". It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. Run it in the Playwright image:
 
     docker run --rm -v "$PWD":/src -v <node_modules with playwright>:/pw/node_modules:ro -e NODE_PATH=/pw/node_modules -w /src mcr.microsoft.com/playwright:v1.48.2-jammy node desktop/tests/add-host.cjs
 
