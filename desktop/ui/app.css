@@ -612,10 +612,14 @@ td .text-button.danger { font-size: 19px; }
 .add-column { max-width: 760px; }
 .add-step { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 16px; border-top: 1px solid var(--rule); padding: 16px 0 22px; }
 .add-step.is-now { border-top: 3px solid var(--acid); }
-.add-step.is-done { opacity: .6; }
-.add-step.is-later { opacity: .35; }
-.add-n { font-family: var(--display); font-size: 48px; font-weight: 700; line-height: 1; color: var(--lilac-2); }
+/* Current step in acid; done steps in muted --lilac; later steps fainter only through non-text marks (soft rule,
+   hollow number) so every word stays at --lilac contrast or better (DESIGN.md rule 8). */
+.add-n { font-family: var(--display); font-size: 48px; font-weight: 700; line-height: 1; color: var(--lilac); }
 .add-step.is-now .add-n, .add-step.is-now h2 { color: var(--acid); }
+.add-step.is-done .add-body, .add-step.is-done .add-body :is(h2, p, dd, strong) { color: var(--lilac); }
+.add-step.is-later { border-top-color: var(--rule-soft); }
+.add-step.is-later h2 { color: var(--lilac); }
+.add-step.is-later .add-n { color: transparent; -webkit-text-stroke: 1px var(--lilac); }
 .add-body { display: grid; gap: 12px; min-width: 0; align-content: start; }
 .add-body h2 { margin: 0; font-size: 22px; }
 .add-body p { margin: 0; }
@@ -624,7 +628,7 @@ td .text-button.danger { font-size: 19px; }
 .add-where label { display: grid; gap: 4px; }
 .add-big { font-size: 24px; min-height: 56px; border-color: var(--white); }
 .add-check { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--lilac); min-height: 1.5em; }
-.add-check.good { color: var(--acid); }
+.add-check.good { color: var(--white); }
 .add-check.bad { color: var(--rose); }
 .add-unfinished { max-width: 760px; margin-top: 28px; }
 @media (max-width: 900px) { .add-step { grid-template-columns: 40px minmax(0, 1fr); gap: 12px; } .add-n { font-size: 36px; } }

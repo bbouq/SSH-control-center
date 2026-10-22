@@ -394,6 +394,12 @@ pub fn relay_pair(state: &Path, config: &Config, master_id: &str, p: &Value) -> 
     role(config, "master")?;
     let db = database(state)?;
     grant(&db, master_id, false)?;
+    // "unknown" (two requests, one per installer) is for the local add flow only.
+    let os = str_arg(p, "os")?;
+    ensure!(
+        matches!(os, "windows" | "linux"),
+        "E_ARGUMENT: os must be windows or linux"
+    );
     if let Some(existing) = requester_target(&db, master_id)? {
         return Ok(json!({"existingTargetId":existing.id}));
     }
@@ -408,7 +414,7 @@ pub fn relay_pair(state: &Path, config: &Config, master_id: &str, p: &Value) -> 
         config,
         &Request {
             method: "pairing.create".into(),
-            params: json!({"label":label,"tenant":MASTERS_TENANT,"os":str_arg(p, "os")?,
+            params: json!({"label":label,"tenant":MASTERS_TENANT,"os":os,
                 "routes":p.get("routes").context("E_ARGUMENT: routes required")?}),
         },
     )?

@@ -22,6 +22,9 @@ async function assertCurrent(page, n) {
   const acid = await page.evaluate(() => { const probe = document.createElement("i"); probe.style.color = "var(--acid)"; document.body.append(probe); const c = getComputedStyle(probe).color; probe.remove(); return c; });
   const colors = await column(page).locator(".add-step .add-n").evaluateAll(els => els.map(el => getComputedStyle(el).color));
   assert.deepEqual(colors.map(c => c === acid), [1, 2, 3, 4].map(i => i === n), "acid only on step " + n);
+  // DESIGN.md rule 8: done/later steps are dimmed with colour tokens, never opacity (text stays ≥ --lilac contrast).
+  const faded = await column(page).locator(".add-step, .add-step *").evaluateAll(els => els.filter(el => !el.matches(":disabled") && parseFloat(getComputedStyle(el).opacity) < 1).length);
+  assert.equal(faded, 0, "no step dimmed with opacity");
 }
 async function assertNoTargetNoun(page, where) {
   const text = await column(page).innerText();
@@ -312,6 +315,27 @@ const checks = {
     assert.equal(rpcCalls(sent, "pairing.create")[0].params.os, "linux");
     assert.equal((await rpcCall(page, url, "pairing.status")).length, 1, "one request");
   },
+  /** Save installer… pressed before the (slow) check answered: the check runs first and its OS is used. */
+  async "save-before-check"(page, url) {
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    await page.locator("#add-address").fill("192.0.2.99");
+    await page.getByRole("button", { name: "Save installer…" }).click();
+    await assertCurrent(page, 3);
+    assert.equal(rpcCalls(await calls(page, url), "pairing.create")[0].params.os, "linux", "the detected OS is used");
+    assert.equal((await rpcCall(page, url, "pairing.status")).length, 1, "one request");
+  },
+  /** Save installer… pressed before the (slow) check answered for a duplicate: still refused. */
+  async "save-before-check-duplicate"(page, url) {
+    await rpcCall(page, url, "pairing.create", { label: "Lab box", tenant: "lab", os: "linux", address: "192.0.2.99", port: 22 });
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    await page.locator("#add-address").fill("192.0.2.99");
+    const save = page.getByRole("button", { name: "Save installer…" });
+    await save.click();
+    await page.locator("#add-address-check").filter({ hasText: "Already added as Lab box" }).waitFor();
+    assert.equal(rpcCalls(await calls(page, url), "pairing.create").length, 1, "no second request");
+    assert.ok(await save.isDisabled(), "Save installer stays disabled");
+    await assertCurrent(page, 1);
+  },
   /** The other installer was used first: its code says so in plain words, in place. */
   async "replaced"(page, url) {
     await page.goto(url); await page.locator('[data-action="add-host"]').click();
@@ -337,7 +361,7 @@ const checks = {
     assert.equal(motion, 0, "nothing animates");
   },
 };
-const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "datacenter+new-host-master": ["empty", "new-host-master"], "datacenter-not-master": ["empty"], "merge-fails": ["empty", "new-host-master", "merge-fails"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "detected-os": ["empty"], "replaced": ["empty"], "reduced-motion": ["empty"] };
+const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "datacenter+new-host-master": ["empty", "new-host-master"], "datacenter-not-master": ["empty"], "merge-fails": ["empty", "new-host-master", "merge-fails"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "detected-os": ["empty"], "save-before-check": ["empty"], "save-before-check-duplicate": ["empty"], "replaced": ["empty"], "reduced-motion": ["empty"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

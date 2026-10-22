@@ -103,7 +103,7 @@ async function busy(button, work) {
   clearNotice();
   try { return await work(); }
   catch (error) { notify(state.page === "enroll" || state.dc.adding ? pairingError(error) : friendlyError(error), true); }
-  finally { if (button?.isConnected) button.disabled = false; }
+  finally { if (button?.isConnected) button.disabled = button.hasAttribute("data-blocked"); }
 }
 function renderHeader() {
   $("#fleet-count").textContent = String(hostCount());
@@ -548,9 +548,9 @@ const addText = {
   inFolder: name => "Folder " + name, inSite: name => "Datacenter " + name + " · used if the new host is a Master",
   steps: ["Where is the new host?", "Install on the new host", "Paste the code", "Check and finish"],
   address: "IP or host name", addressPlaceholder: "e.g. 192.0.2.20 or a Tailscale name", addressHelp: "An address this Master can reach · with Tailscale, sign in on the new host first",
-  checking: "Checking the address…", sshAnswers: os => "SSH answers" + (os ? " · " + os : ""), osNames: { windows: "Windows", linux: "Ubuntu or Debian" },
+  checking: "Checking the address…", sshAnswers: os => "SSH answers" + (os ? " · " + os : ""), bannerOs: { windows: "Windows", linux: "Ubuntu or Debian" }, // what a banner can tell
   noSsh: "No SSH answer yet. That is normal for a new Windows machine: the installer turns SSH on", alreadyAs: "Already added as", openIt: "Open it", resumeIt: "Resume it",
-  os: "Operating system", osDetect: "Detect from the address (both installers if unknown)", osWindows: "Windows / Windows Server", osLinux: "Ubuntu 24.04 — Desktop or Server",
+  os: "Operating system", osDetect: "Detect from the address (both installers if unknown)", osNames: { windows: "Windows / Windows Server", linux: "Ubuntu 24.04 — Desktop or Server" },
   optional: "Optional", name: "Name", namePlaceholder: "Shown as its address if left empty", folder: "Folder", none: "None", newFolder: "+ New folder…", newFolderName: "New folder name",
   advanced: "Advanced", group: "Key group", groupHelp: "Hosts in the same key group share one SSH key on this Master. Keep the default unless you separate keys per group or team",
   hostId: "Host ID", generated: "Generated automatically", port: "SSH port", network: "Network type", detect: "Detect from address", lan: "LAN", tailscale: "Tailscale", publicIp: "Public IP",
@@ -620,11 +620,23 @@ function renderAddHost(options = {}) {
     addUnfinished(requests) + "</div>" +
     '<details class="mt"><summary>' + addText.admin + '</summary><div><p class="help">Import a registration or a v1 registry; host keys are still checked as usual</p><div class="page-actions"><button data-action="import-registration">Import registration file…</button><button data-action="import-v1-registry">Import v1 registry…</button></div><form id="paste-registration" class="mt"><label>Registration JSON<textarea name="document" class="mono" rows="4" required spellcheck="false"></textarea></label><div class="form-actions"><button type="submit">Import</button></div></form></div></details>';
 }
+/** The address a pairing request was made for (its first route). */
+const requestAddress = request => (request?.envelope?.bundle?.routes || [])[0]?.address || "";
+/** Folder choice for step 1 and the review card; "+ New folder…" shows a name box (see the change handler). */
+function folderSelect(folders, selected = "") {
+  const option = (value, text) => '<option value="' + esc(value) + '"' + (value === (selected || "") ? " selected" : "") + ">" + esc(text) + "</option>";
+  return '<label>' + addText.folder + '<select name="folder" data-new-folder>' + option("", addText.none) + folders.map(row => option(row.id, row.name)).join("") + option("__new__", addText.newFolder) +
+    '</select><input name="newFolder" maxlength="64" placeholder="' + addText.newFolderName + '" hidden></label>';
+}
+/** The folder picked in a form with `folderSelect`, creating it first for "+ New folder…" ("" = none). */
+async function chosenFolder(values) {
+  if (values.folder !== "__new__") return values.folder;
+  return values.newFolder.trim() ? (await rpc("folders.create", { name: values.newFolder.trim() })).id : "";
+}
 /** Step 1: the address up front; name and folder under "Optional"; today's fields under "Advanced". */
 function addWhere(request, now, options, folders) {
   if (request) {
-    const address = (request.envelope?.bundle?.routes || [])[0]?.address || "";
-    return '<dl class="facts"><dt>' + addText.address + "</dt><dd>" + esc(address) + "</dd><dt>" + addText.name + "</dt><dd>" + esc(request.label || request.targetId) + "</dd></dl>" +
+    return '<dl class="facts"><dt>' + addText.address + "</dt><dd>" + esc(requestAddress(request)) + "</dd><dt>" + addText.name + "</dt><dd>" + esc(request.label || request.targetId) + "</dd></dl>" +
       (now.phase === "save" ? '<div class="form-actions"><button class="primary" data-action="save-setup" data-focus>' + addText.save + '</button><button data-action="add-skip-save">' + addText.haveInstaller + '</button><button class="danger" data-action="pairing-cancel" data-id="' + esc(request.requestId) + '">' + addText.cancelRequest + "</button></div>" : "");
   }
   const groups = [...new Set(state.targets.map(item => item.tenant).filter(Boolean))], tenant = groups[0] || "lab";
@@ -633,10 +645,9 @@ function addWhere(request, now, options, folders) {
     '<label>' + addText.address + '<input id="add-address" class="add-big" name="address" required autocomplete="off" spellcheck="false" placeholder="' + addText.addressPlaceholder + '" value="' + (options.self ? "127.0.0.1" : "") + '" data-focus><small>' + addText.addressHelp + "</small></label>" +
     '<p class="add-check" id="add-address-check" aria-live="polite"></p>' +
     "<details><summary>" + addText.optional + '</summary><div class="form-grid"><label>' + addText.name + '<input name="label" maxlength="256" placeholder="' + addText.namePlaceholder + '" value="' + (options.self ? esc(state.service?.label || "") : "") + '"></label>' +
-    '<label>' + addText.folder + '<select name="folder" id="pairing-folder">' + option("", addText.none) + folders.map(row => option(row.id, row.name, options.folder === row.id)).join("") + option("__new__", addText.newFolder) +
-    '</select><input name="newFolder" id="pairing-new-folder" maxlength="64" placeholder="' + addText.newFolderName + '" hidden></label></div></details>' +
+    folderSelect(folders, options.folder) + "</div></details>" +
     "<details><summary>" + addText.advanced + '</summary><div class="form-grid">' +
-    '<label>' + addText.os + '<select name="os">' + option("", addText.osDetect) + option("windows", addText.osWindows) + option("linux", addText.osLinux) + "</select></label>" +
+    '<label>' + addText.os + '<select name="os">' + option("", addText.osDetect) + Object.entries(addText.osNames).map(([value, text]) => option(value, text)).join("") + "</select></label>" +
     '<label>' + addText.group + '<input name="tenant" required value="' + esc(tenant) + '" list="pairing-groups" pattern="[A-Za-z0-9_\\-]+" maxlength="64"><datalist id="pairing-groups">' + groups.map(group => '<option value="' + esc(group) + '"></option>').join("") + "</datalist><small>" + addText.groupHelp + "</small></label>" +
     '<label>' + addText.hostId + '<input name="targetId" pattern="[A-Za-z0-9_\\-]+" maxlength="64" placeholder="' + addText.generated + '"></label><label>' + addText.port + '<input name="port" type="number" value="22" min="1" max="65535" required></label>' +
     '<label>' + addText.network + '<select name="routeKind">' + option("", addText.detect) + option("lan", addText.lan) + option("tailscale", addText.tailscale) + option("public", addText.publicIp) + "</select></label>" +
@@ -651,9 +662,10 @@ function onWhereInput(form) {
   if (form.address.value.trim()) whereTimer = setTimeout(() => void checkWhere(form), 400);
 }
 function setWhereCheck(form, html, tone = "", duplicate = false) {
-  const line = $("#add-address-check", form);
+  const line = $("#add-address-check", form), save = $('button[type="submit"]', form);
   line.innerHTML = html; line.className = "add-check" + (tone ? " " + tone : "");
-  $('button[type="submit"]', form).disabled = duplicate;
+  save.disabled = duplicate; save.toggleAttribute("data-blocked", duplicate); // `busy` leaves a blocked button disabled
+  form.dataset.duplicate = duplicate ? "1" : "";
 }
 async function checkWhere(form) {
   const key = whereKey(form), address = form.address.value.trim(), port = Number(form.port.value) || 22;
@@ -671,7 +683,7 @@ async function checkWhere(form) {
     return setWhereCheck(form, icons.alert + "<span>" + addText.alreadyAs + " <strong>" + esc(result.alreadyAs) + "</strong></span>" + link, "bad", true);
   }
   if (!result.reachable) return setWhereCheck(form, icons.info + "<span>" + esc(addText.noSsh) + "</span>");
-  setWhereCheck(form, icons.check + "<span>" + esc(addText.sshAnswers(addText.osNames[result.os])) + "</span>", "good");
+  setWhereCheck(form, '<span class="dot good"></span><span>' + esc(addText.sshAnswers(addText.bannerOs[result.os])) + "</span>", "good");
 }
 /** Step 2: one line; done as soon as the installer is saved. The Ubuntu Server command is folded under it. */
 function addInstall(request, saved) {
@@ -724,13 +736,10 @@ async function checkCode(code) {
 }
 /** Step 4 review: facts read from the code, with name and folder editable; Finish saves. */
 function addReview(preview, folders) {
-  const current = state.folders.members?.[preview.targetId] || "", address = (state.pairing?.envelope?.bundle?.routes || [])[0]?.address || "";
-  const option = (value, text) => '<option value="' + esc(value) + '"' + (value === current ? " selected" : "") + ">" + esc(text) + "</option>";
-  return '<form id="finish-pairing" class="add-where"><dl class="facts"><dt>' + addText.hostName + "</dt><dd>" + esc(preview.hostName || "—") + "</dd><dt>" + addText.address + "</dt><dd>" + esc(address) +
-    "</dd><dt>" + addText.osName + "</dt><dd>" + esc({ windows: addText.osWindows, linux: addText.osLinux }[preview.os] || preview.os) + "</dd><dt>" + addText.hostKey + '</dt><dd><code class="wrap">' + esc(preview.hostKeySha256) + "</code></dd></dl>" +
+  return '<form id="finish-pairing" class="add-where"><dl class="facts"><dt>' + addText.hostName + "</dt><dd>" + esc(preview.hostName || "—") + "</dd><dt>" + addText.address + "</dt><dd>" + esc(requestAddress(state.pairing)) +
+    "</dd><dt>" + addText.osName + "</dt><dd>" + esc(addText.osNames[preview.os] || preview.os) + "</dd><dt>" + addText.hostKey + '</dt><dd><code class="wrap">' + esc(preview.hostKeySha256) + "</code></dd></dl>" +
     '<div class="form-grid"><label>' + addText.shownAs + '<input name="label" maxlength="256" required value="' + esc(preview.label) + '"></label>' +
-    '<label>' + addText.folder + '<select name="folder" id="pairing-folder">' + option("", addText.none) + folders.map(row => option(row.id, row.name)).join("") + option("__new__", addText.newFolder) +
-    '</select><input name="newFolder" id="pairing-new-folder" maxlength="64" placeholder="' + addText.newFolderName + '" hidden></label></div>' +
+    folderSelect(folders, state.folders.members?.[preview.targetId]) + "</div>" +
     '<div class="form-actions"><button type="submit" class="primary" data-focus>' + addText.finish + '</button></div><p class="help">' + addText.reviewHelp + "</p></form>";
 }
 /** Step 4 result after Finish: ready / needs-attention, in the same card. */
@@ -746,12 +755,15 @@ function addResult(item) {
   return '<div class="callout pending">' + icons.alert + "<div><strong>" + addText.attentionTitle + "</strong><p>" + addText.attentionText + "</p>" + (failed.length ? "<ul>" + failed.map(stage => "<li>" + esc(pairingError(stage.message)) + "</li>").join("") + "</ul>" : "") + "</div></div>" +
     '<form id="retry-pairing"><label>' + addText.address + '<input name="address" required value="' + esc(routes[0]?.address || "") + '" data-focus><small>' + addText.retryHelp + '</small></label><div class="form-actions"><button type="submit" class="primary">' + addText.retry + '</button><button type="button" data-action="pairing-back">' + icons.back + addText.back + "</button></div></form>";
 }
+/** A sibling pair (unknown OS) is one row: the Windows request stands for both, so its listed partner is hidden. */
+const pairPartner = (item, all) => item.sibling ? all.find(row => row.requestId === item.sibling) : undefined;
+const standsForPair = (item, all) => !(pairPartner(item, all) && item.os !== "windows");
 function addUnfinished(all) {
-  // A sibling pair (unknown OS) is one row: the Windows request stands for both; Cancel cancels both.
-  const requests = all.filter(item => !(item.sibling && item.os !== "windows" && all.some(row => row.requestId === item.sibling)));
+  // Cancel on the row cancels both requests of a pair.
+  const requests = all.filter(item => standsForPair(item, all));
   if (!requests.length) return "";
   return '<section class="section add-unfinished"><div class="section-heading"><h2>' + addText.unfinished + '</h2><button class="small" data-action="refresh-pairings">' + icons.refresh + addText.refresh + "</button></div>" +
-    '<div class="table-wrap"><table><thead><tr><th>' + addText.host + "</th><th>" + addText.status + "</th><th></th></tr></thead><tbody>" + requests.map(item => "<tr><td><strong>" + esc(item.label || item.targetId) + "</strong><small>" + esc((all.some(row => row.requestId === item.sibling) ? addText.eitherOs + " · " : "") + timestamp(item.createdAt)) + "</small></td>" +
+    '<div class="table-wrap"><table><thead><tr><th>' + addText.host + "</th><th>" + addText.status + "</th><th></th></tr></thead><tbody>" + requests.map(item => "<tr><td><strong>" + esc(item.label || item.targetId) + "</strong><small>" + esc((pairPartner(item, all) ? addText.eitherOs + " · " : "") + timestamp(item.createdAt)) + "</small></td>" +
       '<td><span class="badge pending">' + esc(pairingState(item)) + '</span></td><td class="actions"><div class="target-actions"><button class="small" data-action="resume-pairing" data-id="' + esc(item.requestId) + '">' + addText.resume + "</button>" +
       (item.state === "awaiting_approval" ? '<button class="small danger" data-action="pairing-cancel" data-id="' + esc(item.requestId) + '">' + addText.cancel + "</button>" : "") + "</div></td></tr>").join("") + "</tbody></table></div></section>";
 }
@@ -797,30 +809,63 @@ async function checkPairedMaster(pairing) {
   }
   await refreshMasters().catch(() => {});
 }
+/* Masters page (Merges both ways) and its notifications: every on-screen string in one place for the language switch
+   (roadmap entry 2), like `addText`. */
+const mastersText = {
+  title: "Masters", lead: "Merge another Master to see and control its hosts from here, and choose which Masters may control this one", refresh: "Refresh",
+  outTitle: "Controlled from here", outLead: "Masters merged into this one · Merge: see and control its hosts from here",
+  master: "Master", status: "Status", direction: "Direction", none: "—",
+  sync: "Sync", removeMerge: "Remove merge", merge: "Merge", mergeTitle: "See and control its hosts from here", tryAgain: "Try again", enableTwoWay: "Enable two-way",
+  outEmpty: "No Masters yet · a host you add that is itself a Master shows up here",
+  howTitle: "How merging works", how: "Merged hosts appear under All hosts with IDs like <code>master/machine</code> · Commands go through that Master with its rights<br>Enable two-way so that Master can also control this Master’s hosts",
+  merging: "Merging…", notMerged: "Not merged",
+  mergeStates: { merged: n => "Merged · " + n + " hosts", outdated: "Remote Master needs an upgrade", "not-master": "Not a Master", disabled: "Remote Master disabled merging", error: "Error" },
+  lastSync: when => "Last sync " + when, previousList: n => " · still using the previous list of " + n,
+  enablingTwoWay: "Enabling two-way…", twoWay: "Two-way", canControl: name => name + " can control this Master’s hosts",
+  oneWay: "One-way", mergingDisabledHere: "Merging is disabled on this host", oneWayOnly: "This Master controls that Master’s hosts one way only",
+  reverseStates: { "two-way": "Waiting for merge back", "needs-attention": "Paired, but merge back failed", error: "Two-way setup failed", pending: "Unfinished" },
+  windowsOnly: "Currently supported only on Windows Masters",
+  inTitle: "This Master is controlled by", inLead: "Masters that reach this one directly, or through a Merge (they see and control its hosts from there)",
+  allowAnother: "Allow another Master…", allowTitle: "Choose a public enrollment bundle from another Master", reaches: "Reaches this Master",
+  direct: "Direct", throughMerge: "Through merge", revoked: "Revoked", mergingDisabled: "Merging disabled", lastUsed: when => "Last used " + when,
+  revoke: "Revoke", allowAgain: "Allow again", disableMerging: "Disable merging", inEmpty: "No other Master controls this one",
+  inHelp: "Revoke and Disable merging affect new requests; cancel running jobs separately from the Jobs tab",
+  // Confirmations and notifications.
+  revokeConfirm: id => "Revoke Master " + id + " on this host?", revokedNote: "Master revoked",
+  notChecked: (name, error) => name + " could not be checked: " + error, notMaster: name => name + " is not a Master, so there is nothing to merge",
+  mergedNote: (name, n) => "Merged " + name + " · " + n + " hosts added to the tree",
+  removeConfirm: id => "Remove the merge with " + id + "? Its hosts will disappear from this Master", removedNote: "Merge removed",
+  disableConfirm: "Disable merging for this Master? It cannot control hosts through this Master until allowed again", disabledNote: "Merging disabled", allowedNote: "Merging allowed again",
+  allowConfirm: name => "Allow Master " + name + " to run work with system rights on this host?", allowedMaster: "Master added. If its SSH key is not in authorized_keys yet, run the installer with this bundle",
+  twoWayOn: (name, n) => "Two-way enabled with " + name + " · it can now control " + n + " of this Master’s hosts",
+  twoWayFailed: (name, reason) => "Enrolled with " + name + ", but the merge back failed: " + reason,
+};
 function renderMasters() {
-  return heading("Masters", "Merge another Master to see and control its hosts from here, and choose which Masters may control this one", '<button data-action="refresh-masters">' + icons.refresh + "Refresh</button>") +
+  const t = mastersText;
+  return heading(t.title, t.lead, '<button data-action="refresh-masters">' + icons.refresh + t.refresh + "</button>") +
     '<div class="stack">' + (state.service?.roles?.includes("master") ? renderMerges() : "") + renderRelays() + "</div>";
 }
 function mergeStatus(targetId) {
-  if (state.merging.has(targetId)) return '<span class="badge running">Merging…</span>';
+  const t = mastersText;
+  if (state.merging.has(targetId)) return '<span class="badge running">' + t.merging + "</span>";
   const merge = state.merges.find(row => row.targetId === targetId);
-  if (!merge) return '<span class="badge">Not merged</span>';
-  const count = (merge.children || []).length;
-  const labels = { merged: ["good", "Merged · " + count + " hosts"], outdated: ["bad", "Remote Master needs an upgrade"], "not-master": ["bad", "Not a Master"], disabled: ["bad", "Remote Master disabled merging"], error: ["bad", "Error"] };
-  const [style, text] = labels[merge.status] || ["bad", merge.status];
-  const detail = merge.status === "merged" ? "Last sync " + timestamp(merge.syncedAt) : (merge.error || "") + (count ? " · still using the previous list of " + count : "");
+  if (!merge) return '<span class="badge">' + t.notMerged + "</span>";
+  const count = (merge.children || []).length, label = t.mergeStates[merge.status];
+  const style = merge.status === "merged" ? "good" : "bad", text = typeof label === "function" ? label(count) : label || merge.status;
+  const detail = merge.status === "merged" ? t.lastSync(timestamp(merge.syncedAt)) : (merge.error || "") + (count ? t.previousList(count) : "");
   return '<span class="badge ' + style + '">' + esc(text) + '</span><small class="wrap">' + esc(detail) + "</small>";
 }
 function reverseStatus(merge) {
   const running = state.twoWay.get(merge.targetId);
-  if (running) return '<span class="badge running">Enabling two-way…</span><small class="wrap">' + esc(running.message) + "</small>";
+  const t = mastersText;
+  if (running) return '<span class="badge running">' + t.enablingTwoWay + '</span><small class="wrap">' + esc(running.message) + "</small>";
   const reverse = merge.reverse, peer = state.targets.find(item => item.id === merge.targetId);
   const relay = state.relays.find(row => row.masterId === peer?.nodeId);
-  if (isTwoWay(merge)) return '<span class="badge good">Two-way</span><small>' + esc(merge.label || merge.targetId) + " can control this Master’s hosts</small>";
-  if (reverse?.status === "two-way" && relay?.revoked) return '<span class="badge">One-way</span><small>Merging is disabled on this host</small>';
-  const labels = { "two-way": ["pending", "Waiting for merge back"], "needs-attention": ["bad", "Paired, but merge back failed"], error: ["bad", "Two-way setup failed"], pending: ["pending", "Unfinished"] };
-  const [style, text] = labels[reverse?.status] || ["", "One-way"];
-  return '<span class="badge ' + style + '">' + text + "</span>" + (reverse?.error ? '<small class="wrap">' + esc(reverse.error) + "</small>" : !reverse ? "<small>This Master controls that Master’s hosts one way only</small>" : "");
+  if (isTwoWay(merge)) return '<span class="badge good">' + t.twoWay + "</span><small>" + esc(t.canControl(merge.label || merge.targetId)) + "</small>";
+  if (reverse?.status === "two-way" && relay?.revoked) return '<span class="badge">' + t.oneWay + "</span><small>" + t.mergingDisabledHere + "</small>";
+  const styles = { "two-way": "pending", "needs-attention": "bad", error: "bad", pending: "pending" };
+  const style = styles[reverse?.status] || "", text = t.reverseStates[reverse?.status] || t.oneWay;
+  return '<span class="badge ' + style + '">' + text + "</span>" + (reverse?.error ? '<small class="wrap">' + esc(reverse.error) + "</small>" : !reverse ? "<small>" + t.oneWayOnly + "</small>" : "");
 }
 /** Today's rule for offering two-way: merged, not two-way yet, and merging not disabled here after a two-way;
  *  Windows Masters only. Used by the Masters page and the add flow's result card. */
@@ -828,39 +873,39 @@ function twoWayButton(merge, text, style = "primary small") {
   const id = merge.targetId, peer = state.targets.find(item => item.id === id);
   if (merge.status !== "merged" || isTwoWay(merge) || (merge.reverse?.status === "two-way" && state.relays.some(row => row.masterId === peer?.nodeId && row.revoked))) return "";
   const busyRow = state.merging.has(id) || state.twoWay.has(id);
-  return '<button class="' + style + '" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="Currently supported only on Windows Masters"' : "") + ">" + text + "</button>";
+  return '<button class="' + style + '" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="' + mastersText.windowsOnly + '"' : "") + ">" + text + "</button>";
 }
 /** Outgoing: every Merge, plus every host whose health (or the add flow's check) says it is a Master and that is not merged yet. */
 function renderMerges() {
   const unmerged = state.targets.filter(item => !item.relayed && (state.health.get(item.id)?.isMaster || state.masterCheck.get(item.id)) && !state.merges.some(merge => merge.targetId === item.id));
   const ids = [...state.merges.map(row => row.targetId), ...unmerged.map(item => item.id)];
-  const name = id => state.merges.find(row => row.targetId === id)?.label || state.targets.find(row => row.id === id)?.label || id;
-  return '<section class="surface"><div class="card-head"><div><h2>Controlled from here</h2><p>Masters merged into this one · Merge: see and control its hosts from here</p></div></div>' +
-    (ids.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Status</th><th>Direction</th><th></th></tr></thead><tbody>' +
+  const name = id => state.merges.find(row => row.targetId === id)?.label || state.targets.find(row => row.id === id)?.label || id, t = mastersText;
+  return '<section class="surface"><div class="card-head"><div><h2>' + t.outTitle + "</h2><p>" + t.outLead + "</p></div></div>" +
+    (ids.length ? '<div class="table-wrap"><table><thead><tr><th>' + t.master + "</th><th>" + t.status + "</th><th>" + t.direction + "</th><th></th></tr></thead><tbody>" +
       ids.map(id => {
         const merge = state.merges.find(row => row.targetId === id), busyRow = state.merging.has(id) || state.twoWay.has(id);
-        const pair = merge ? twoWayButton(merge, merge.reverse ? "Try again" : "Enable two-way") : "";
-        const actions = merge ? pair + '<button class="small" data-action="sync-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + '>Sync</button><button class="danger small" data-action="remove-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Remove merge</button>" : '<button class="primary small" data-action="merge-master" data-id="' + esc(id) + '" title="See and control its hosts from here"' + (busyRow ? " disabled" : "") + ">Merge</button>";
-        return "<tr><td><strong>" + esc(name(id)) + "</strong><small><code>" + esc(id) + "</code></small></td><td>" + mergeStatus(id) + "</td><td>" + (merge ? reverseStatus(merge) : '<span class="muted">—</span>') + '</td><td class="actions"><div class="target-actions">' + actions + "</div></td></tr>";
+        const pair = merge ? twoWayButton(merge, merge.reverse ? t.tryAgain : t.enableTwoWay) : "";
+        const actions = merge ? pair + '<button class="small" data-action="sync-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">" + t.sync + '</button><button class="danger small" data-action="remove-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">" + t.removeMerge + "</button>" : '<button class="primary small" data-action="merge-master" data-id="' + esc(id) + '" title="' + t.mergeTitle + '"' + (busyRow ? " disabled" : "") + ">" + t.merge + "</button>";
+        return "<tr><td><strong>" + esc(name(id)) + "</strong><small><code>" + esc(id) + "</code></small></td><td>" + mergeStatus(id) + "</td><td>" + (merge ? reverseStatus(merge) : '<span class="muted">' + t.none + "</span>") + '</td><td class="actions"><div class="target-actions">' + actions + "</div></td></tr>";
       }).join("") + "</tbody></table></div>"
-      : '<div class="empty-inline">No Masters yet · a host you add that is itself a Master shows up here</div>') +
-    '<details><summary>How merging works</summary><p class="help">Merged hosts appear under All hosts with IDs like <code>master/machine</code> · Commands go through that Master with its rights<br>Enable two-way so that Master can also control this Master’s hosts</p></details></section>';
+      : '<div class="empty-inline">' + t.outEmpty + "</div>") +
+    "<details><summary>" + t.howTitle + '</summary><p class="help">' + t.how + "</p></details></section>";
 }
 /** Incoming: allowed Masters and relays joined on the Master ID, one row per Master. */
 function renderRelays() {
   const masters = Array.isArray(state.masters) ? state.masters : [], ids = [...new Set([...masters.map(row => row.id), ...state.relays.map(row => row.masterId)])];
-  const rows = ids.map(id => ({ id, direct: masters.find(row => row.id === id), relay: state.relays.find(row => row.masterId === id) }));
+  const rows = ids.map(id => ({ id, direct: masters.find(row => row.id === id), relay: state.relays.find(row => row.masterId === id) })), t = mastersText;
   const badges = ({ direct, relay }) =>
-    (direct ? '<span class="badge ' + (direct.revoked ? "bad" : "good") + '">Direct</span>' + (direct.revoked ? "<small>Revoked</small>" : "") : "") +
-    (relay ? '<span class="badge ' + (relay.revoked ? "bad" : "good") + '">Through merge</span>' + (relay.revoked ? "<small>Merging disabled</small>" : "<small>Last used " + esc(timestamp(relay.lastUsedAt)) + "</small>") : "");
+    (direct ? '<span class="badge ' + (direct.revoked ? "bad" : "good") + '">' + t.direct + "</span>" + (direct.revoked ? "<small>" + t.revoked + "</small>" : "") : "") +
+    (relay ? '<span class="badge ' + (relay.revoked ? "bad" : "good") + '">' + t.throughMerge + "</span>" + (relay.revoked ? "<small>" + t.mergingDisabled + "</small>" : "<small>" + esc(t.lastUsed(timestamp(relay.lastUsedAt))) + "</small>") : "");
   const actions = ({ id, direct, relay }) =>
-    (direct && !direct.revoked ? '<button class="danger small" data-action="revoke-master" data-id="' + esc(id) + '">Revoke</button>' : "") +
-    (relay ? (relay.revoked ? '<button class="small" data-action="allow-relay" data-id="' + esc(id) + '">Allow again</button>' : '<button class="danger small" data-action="revoke-relay" data-id="' + esc(id) + '">Disable merging</button>') : "");
-  return '<section class="surface"><div class="card-head"><div><h2>This Master is controlled by</h2><p>Masters that reach this one directly, or through a Merge (they see and control its hosts from there)</p></div><button data-action="accept-enrollment" title="Choose a public enrollment bundle from another Master">' + icons.plus + "Allow another Master…</button></div>" +
-    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Reaches this Master</th><th></th></tr></thead><tbody>' +
+    (direct && !direct.revoked ? '<button class="danger small" data-action="revoke-master" data-id="' + esc(id) + '">' + t.revoke + "</button>" : "") +
+    (relay ? (relay.revoked ? '<button class="small" data-action="allow-relay" data-id="' + esc(id) + '">' + t.allowAgain + "</button>" : '<button class="danger small" data-action="revoke-relay" data-id="' + esc(id) + '">' + t.disableMerging + "</button>") : "");
+  return '<section class="surface"><div class="card-head"><div><h2>' + t.inTitle + "</h2><p>" + t.inLead + '</p></div><button data-action="accept-enrollment" title="' + t.allowTitle + '">' + icons.plus + t.allowAnother + "</button></div>" +
+    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>' + t.master + "</th><th>" + t.reaches + "</th><th></th></tr></thead><tbody>" +
       rows.map(row => "<tr><td><strong>" + esc(row.direct?.label || row.relay?.label || row.id) + "</strong><small><code>" + esc(row.id) + '</code></small></td><td><div class="reach-badges">' + badges(row) + '</div></td><td class="actions"><div class="target-actions">' + actions(row) + "</div></td></tr>").join("") +
-      "</tbody></table></div>" : '<div class="empty-inline">No other Master controls this one</div>') +
-    '<p class="help mt">Revoke and Disable merging affect new requests; cancel running jobs separately from the Jobs tab</p></section>';
+      "</tbody></table></div>" : '<div class="empty-inline">' + t.inEmpty + "</div>") +
+    '<p class="help mt">' + t.inHelp + "</p></section>";
 }
 function copyRow(command) {
   return '<div class="copy-row"><code>' + esc(command) + '</code><button class="icon-button" data-action="copy" data-copy="' + esc(command) + '" aria-label="Copy ' + esc(command) + '" title="Copy">' + icons.copy + "</button></div>";
@@ -1662,41 +1707,42 @@ document.addEventListener("click", event => {
     }
     if (action === "refresh-masters") { await refreshMasters(); render(); }
     if (action === "revoke-master") {
-      if (!confirm("Revoke Master " + button.dataset.id + " on this host?")) return;
-      await rpc("masters.revoke", { masterId: button.dataset.id }); await refreshMasters(); render(); notify("Master revoked");
+      if (!confirm(mastersText.revokeConfirm(button.dataset.id))) return;
+      await rpc("masters.revoke", { masterId: button.dataset.id }); await refreshMasters(); render(); notify(mastersText.revokedNote);
     }
     if (action === "ctx-merge") {
       const [row] = await rpc("merges.discover", { targetId: button.dataset.id });
       if (row && !row.error) state.masterCheck.set(row.targetId, row.isMaster);
-      if (!row?.isMaster) { notify((row?.label || button.dataset.id) + (row?.error ? " could not be checked: " + row.error : " is not a Master, so there is nothing to merge"), Boolean(row?.error)); return; }
+      const name = row?.label || button.dataset.id;
+      if (!row?.isMaster) { notify(row?.error ? mastersText.notChecked(name, row.error) : mastersText.notMaster(name), Boolean(row?.error)); return; }
     }
     if (action === "merge-master" || action === "sync-merge" || action === "ctx-merge") {
       const targetId = button.dataset.id;
       state.merging.add(targetId); render();
       try {
         const merge = await rpc(action === "sync-merge" ? "merges.sync" : "merges.add", { targetId });
-        notify("Merged " + (merge.label || targetId) + " · " + merge.children.length + " hosts added to the tree");
+        notify(mastersText.mergedNote(merge.label || targetId, merge.children.length));
       } finally {
         state.merging.delete(targetId);
         await refreshMasters(); await refreshFleet(); render();
       }
     }
     if (action === "remove-merge") {
-      if (!confirm("Remove the merge with " + button.dataset.id + "? Its target hosts will disappear from this Master")) return;
-      await rpc("merges.remove", { targetId: button.dataset.id }); await refreshMasters(); await refreshFleet(); render(); notify("Merge removed");
+      if (!confirm(mastersText.removeConfirm(button.dataset.id))) return;
+      await rpc("merges.remove", { targetId: button.dataset.id }); await refreshMasters(); await refreshFleet(); render(); notify(mastersText.removedNote);
     }
     if (action === "revoke-relay" || action === "allow-relay") {
       const revoke = action === "revoke-relay";
-      if (revoke && !confirm("Disable merging for this Master? It cannot control target hosts through this Master until allowed again")) return;
+      if (revoke && !confirm(mastersText.disableConfirm)) return;
       await rpc(revoke ? "relays.revoke" : "relays.allow", { masterId: button.dataset.id }); await refreshMasters(); render();
-      notify(revoke ? "Merging disabled" : "Merging allowed again");
+      notify(revoke ? mastersText.disabledNote : mastersText.allowedNote);
     }
     if (action === "accept-enrollment") {
       const bundle = await native("open_json");
       if (!bundle) return;
-      if (!confirm("Allow Master " + (bundle.master?.label || bundle.master?.id || "") + " to run work with system rights on this host?")) return;
+      if (!confirm(mastersText.allowConfirm(bundle.master?.label || bundle.master?.id || ""))) return;
       await rpc("enrollment.accept", { bundle }); await refreshMasters(); render();
-      notify("Master added. If its SSH key is not in authorized_keys yet, run the installer with this bundle");
+      notify(mastersText.allowedMaster);
     }
     if (action === "refresh-service") { await refreshLocal(); render(); }
     if (action === "connect-client") {
@@ -1792,14 +1838,18 @@ document.addEventListener("submit", event => {
       try {
         const result = await native("merge_two_way", { targetId });
         const label = state.merges.find(row => row.targetId === targetId)?.label || targetId;
-        if (result.status === "two-way") notify("Two-way enabled with " + label + " · it can now control " + result.children + " of this Master’s hosts");
-        else notify("Enrolled with " + label + ", but the merge back failed: " + (result.error || result.status), true);
+        if (result.status === "two-way") notify(mastersText.twoWayOn(label, result.children));
+        else notify(mastersText.twoWayFailed(label, result.error || result.status), true);
       } finally {
         state.twoWay.delete(targetId);
         await refreshMasters(); await refreshFleet(); render();
       }
     }
     if (form.id === "create-pairing") {
+      // Pressed before the check for this address answered: check first, so a duplicate is still refused
+      // and a detected OS is still used.
+      if (form.dataset.osKey !== whereKey(form)) { clearTimeout(whereTimer); await checkWhere(form); }
+      if (form.dataset.duplicate) return;
       const address = values.address.trim();
       // Name is optional: an unnamed host is shown by its address.
       // No OS from Advanced or the check (no SSH answer yet): "unknown" saves both installers.
@@ -1808,8 +1858,7 @@ document.addEventListener("submit", event => {
       if (values.targetId.trim()) params.targetId = values.targetId.trim();
       if (values.routeKind) params.routeKind = values.routeKind;
       if (values.routes.trim()) params.routes = JSON.parse(values.routes);
-      let folderId = values.folder === "__new__" ? "" : values.folder;
-      if (values.folder === "__new__" && values.newFolder.trim()) folderId = (await rpc("folders.create", { name: values.newFolder.trim() })).id;
+      const folderId = await chosenFolder(values);
       const created = await rpc("pairing.create", params);
       state.pairing = Array.isArray(created) ? created[0] : created;
       // The Target ID is known now, so the machine lands in its folder as soon as it pairs.
@@ -1821,8 +1870,7 @@ document.addEventListener("submit", event => {
       const preview = state.add.preview;
       if (!preview) return;
       // Finish: save with the edited name, then file it in the folder chosen on the card (only if it changed).
-      let folderId = values.folder === "__new__" ? "" : values.folder;
-      if (values.folder === "__new__" && values.newFolder.trim()) folderId = (await rpc("folders.create", { name: values.newFolder.trim() })).id;
+      const folderId = await chosenFolder(values);
       const result = await rpc("pairing.complete", { code: preview.code, label: values.label.trim() || preview.label });
       if (folderId !== (state.folders.members?.[preview.targetId] || "")) { await rpc("folders.assign", { targetId: preview.targetId, folderId: folderId || null }); }
       state.folders = await rpc("folders.list");
@@ -1919,7 +1967,7 @@ document.addEventListener("keydown", event => {
 document.addEventListener("focusout", event => { if (event.target.id === "dc-edit" && state.dc.editing) void saveFolderEdit(event.target); });
 document.addEventListener("change", event => {
   if (event.target.id === "upload-input" && event.target.files?.length) { const files = [...event.target.files]; event.target.value = ""; void busy(null, () => uploadFiles(files)); return; }
-  if (event.target.id === "pairing-folder") { const input = $("#pairing-new-folder"); input.hidden = event.target.value !== "__new__"; if (!input.hidden) input.focus(); }
+  if (event.target.matches("[data-new-folder]")) { const input = event.target.form.elements.newFolder; input.hidden = event.target.value !== "__new__"; if (!input.hidden) input.focus(); }
 });
 /* The header scene is a map: hovering or focusing a host row lights that host's window. Direct target hosts
    take the near towers, hosts behind another Master the far group; the current Master is the logo itself. */

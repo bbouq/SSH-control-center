@@ -72,12 +72,7 @@ fn validate_envelope(envelope: &Envelope) -> Result<Bundle> {
     );
     Uuid::parse_str(&envelope.request_id).context("E_PAIRING_REQUEST: invalid request ID")?;
     Uuid::parse_str(&envelope.master_id).context("E_PAIRING_MASTER: invalid Master ID")?;
-    ensure!(
-        !envelope.target_label.is_empty()
-            && envelope.target_label.len() <= 256
-            && !envelope.target_label.chars().any(char::is_control),
-        "E_ARGUMENT: invalid machine name"
-    );
+    valid_label(&envelope.target_label)?;
     let value = bundle(envelope)?;
     ensure!(
         envelope.master_id == value.master.id,
@@ -359,12 +354,16 @@ pub(crate) fn route_kind(address: &str) -> &'static str {
         "public"
     }
 }
-fn create(state: &Path, config: &Config, p: &Value) -> Result<Value> {
-    let label = string(p, "label")?;
+/// A machine name as typed: 1-256 characters, no control characters.
+fn valid_label(label: &str) -> Result<&str> {
     ensure!(
         !label.is_empty() && label.len() <= 256 && !label.chars().any(char::is_control),
         "E_ARGUMENT: invalid machine name"
     );
+    Ok(label)
+}
+fn create(state: &Path, config: &Config, p: &Value) -> Result<Value> {
+    let label = valid_label(string(p, "label")?)?;
     let generated = label
         .chars()
         .map(|c| {
@@ -547,11 +546,7 @@ fn complete(state: &Path, config: &Config, p: &Value) -> Result<Value> {
             let label = value
                 .as_str()
                 .context("E_ARGUMENT: label must be a string")?;
-            ensure!(
-                !label.is_empty() && label.len() <= 256 && !label.chars().any(char::is_control),
-                "E_ARGUMENT: invalid machine name"
-            );
-            Some(label.to_owned())
+            Some(valid_label(label)?.to_owned())
         }
     };
     let mut db = database(state)?;
