@@ -24,6 +24,7 @@ Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scena
 
 - `empty`: an empty Master: no hosts, folders, Merges, relays or allowed Masters.
 - `new-host-master`: every host paired through the fixture is itself a Master, so `merges.discover` and `fleet.health` report `isMaster` and `merges.add` returns three merged hosts.
+- `masters-page`: adds two hosts that are Masters (`branch-master`, already merged, and `hq-master`, not merged), an allowed Master `peer-both` that is also a relay, and a relay-only Master `peer-relay` with merging disabled.
 
 `desktop/tests/decisions.cjs` holds the shared decision counter (each fill or choice on a field that was not pre-filled counts once) and `startFixture(flags)`, which starts the fixture on a free port for a check.
 
@@ -52,6 +53,8 @@ It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, whi
 `desktop/tests/add-host.cjs` adds one host from an empty Master through the add flow (plain Chromium), once with a normal host and once with the `new-host-master` scenario, and prints the decision count. It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. It does not gate on the count yet; today's flow is the baseline (4 decisions: kind of host, name, address, Pairing code). Run it in the Playwright image:
 
     docker run --rm -v "$PWD":/src -v <node_modules with playwright>:/pw/node_modules:ro -e NODE_PATH=/pw/node_modules -w /src mcr.microsoft.com/playwright:v1.48.2-jammy node desktop/tests/add-host.cjs
+
+`desktop/tests/masters-page.cjs` opens the Masters page on the `masters-page` scenario (plain Chromium). It checks both sections ("Controlled from here" and "This Master is controlled by"), that the unmerged Master is listed with Merge without any search and that no `merges.discover` request is sent, that `peer-both` is one row with "Direct" and "Through merge" badges, that "Allow another Master…" sits in the incoming section, and that Merge, Disable merging, Allow again and Revoke send their requests. Screenshots at 1180px and 820px go to `artifacts/add-host-ui/`.
 
 ## Not covered
 

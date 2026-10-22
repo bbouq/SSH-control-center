@@ -2,6 +2,8 @@
 // Scenario flags (comma-separated, env SSHCC_FIXTURE_SCENARIO or POST /scenario {"flags":[…]}):
 //   empty            start as a Master with no hosts, folders, Merges or relays
 //   new-host-master  every host paired through the fixture is itself a Master (merges.discover/fleet.health say so)
+//   masters-page     adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
+//                    directly and through a Merge, plus one that only merged this Master (merging disabled)
 // Test-only endpoints: GET /calls (every request the page sent), POST /scenario (reset state, clears /calls),
 // GET /pairing-code[?requestId=…][&master=other] (the code the new host would show after Approve; default: the
 // newest request awaiting approval; master=other gives a code made for another Master).
@@ -21,8 +23,15 @@ function reset(list) {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
     jobs: [], pairings: [], folders: [], folderMembers: {}, datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set()
   };
+  if (flags.has("masters-page")) {
+    const host = (id, label, address) => ({ schemaVersion: 2, id, nodeId: id + "-node", label, tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address, port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
+    s.targets.push(host("hq-master", "HQ Master", "192.0.2.41"), host("branch-master", "Branch Master", "192.0.2.42"));
+    s.masterHosts = new Set(["hq-master", "branch-master"]);
+    s.merges.push({ targetId: "branch-master", label: "Branch Master", status: "merged", error: null, syncedAt: now(), children: children("branch-master"), reverse: null });
+    s.masters.push({ id: "peer-both", label: "Peer Master", publicKey: "TEST", revoked: false });
+    s.relays.push({ masterId: "peer-both", label: "Peer Master", lastUsedAt: now(), revoked: false }, { masterId: "peer-relay", label: "Relay-only Master", lastUsedAt: now(), revoked: true });
+  }
 }
-reset((process.env.SSHCC_FIXTURE_SCENARIO || "").split(","));
 const now = () => new Date().toISOString();
 const sha = () => crypto.createHash("sha256").update(content).digest("hex");
 const slug = text => String(text || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "host";
@@ -33,6 +42,8 @@ const pairing = id => s.pairings.find(p => p.requestId === id) || (() => { throw
 const isMasterHost = id => s.masterHosts.has(id);
 const children = id => [1, 2, 3].map(n => ({ id: id + "/child-" + n, label: "Child " + n + " of " + id, tenant: "lab", os: n === 1 ? "windows" : "linux", nodeId: crypto.randomUUID() }));
 const healthRow = t => ({ targetId: t.id, online: true, checkedAt: now(), error: null, failures: 0, isMaster: isMasterHost(t.id), version: "test" });
+// After the helpers: the masters-page scenario uses `now` and `children`.
+reset((process.env.SSHCC_FIXTURE_SCENARIO || "").split(","));
 /** The code the new host shows after Approve: `SSHCC1.fixture.<masterId>.<requestId>`. */
 const pairingCode = (requestId, master = MASTER_ID) => "SSHCC1.fixture." + master + "." + requestId;
 function completePairing({ code }) {

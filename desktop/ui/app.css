@@ -241,6 +241,8 @@ td.actions [data-action="open-shell"] { width: 44px; min-height: 44px; padding: 
 td.actions [data-action="open-shell"]:hover:not(:disabled), td.actions [data-action="open-shell"]:focus-visible { border-color: var(--white); }
 td.actions [data-action="open-shell"] .btn-label { display: none; }
 td.actions .target-actions { flex-wrap: nowrap; justify-content: flex-end; }
+.reach-badges { display: grid; justify-items: start; gap: 2px; }
+.reach-badges small { margin: 0 0 6px 16px; }
 td > code { white-space: nowrap; overflow-wrap: normal; }
 .name-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .name-cell > div { min-width: 0; }

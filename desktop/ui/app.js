@@ -2,13 +2,13 @@ const $ = (selector, parent = document) => parent.querySelector(selector);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const pretty = value => JSON.stringify(value, null, 2);
 document.documentElement.dataset.theme = "dark";
-const titles = { datacenter: "Inventory", fleet: "All hosts", enroll: "Add target host", masters: "Allowed Masters", service: "Local service" };
+const titles = { datacenter: "Inventory", fleet: "All hosts", enroll: "Add target host", masters: "Masters", service: "Local service" };
 const state = {
   page: "datacenter", targets: [], masters: [], service: null, serviceError: "", selected: null,
   tab: "overview", query: "", group: "", status: "", diagnostics: new Map(), jobs: [], jobsError: "",
   job: null, stream: "stdout", log: "", offset: 0, eof: true, polling: false, newJob: false,
   export: null, pendingJob: null, file: null, files: null, pairing: null, pairings: [], setupSaved: null,
-  merges: [], relays: [], discovered: null, merging: new Set(), masterCheck: new Map(),
+  merges: [], relays: [], merging: new Set(), masterCheck: new Map(),
   view: localStorage.getItem("sshcc.fleetView") === "table" ? "table" : "graph",
   health: new Map(), healthError: "", healthLoading: false, healthAt: null, healthStarted: 0, flipped: new Set(), twoWay: new Map(),
   clientLinks: [], clientLinksError: "",
@@ -161,6 +161,8 @@ async function refreshHealth(refresh = false) {
   if ($("#fleet-table")) $("#fleet-table").innerHTML = renderFleetView();
   // Re-render only read-only summaries; a machine page may hold an open form.
   $("#dc-tree").innerHTML = renderDcTree();
+  // The Masters page lists hosts whose health says they are Masters.
+  if (state.page === "masters") $("#main").innerHTML = renderMasters();
   if (state.page === "datacenter" && state.dc.tab === "summary" && state.dc.node !== "dc" && !holdsForm() && !state.dc.adding) $("#dc-panel").innerHTML = renderDcPanel();
   if ($("#inv-summary")) $("#inv-summary").outerHTML = renderSummaryLine();
 }
@@ -178,6 +180,7 @@ async function navigate(page) {
   }
   if (page === "masters") {
     try { await refreshMasters(); if (state.page === page) render(); } catch (error) { notify(error, true); }
+    if (!state.health.size) void refreshHealth();
   }
   if (page === "service") { await refreshLocal(); if (state.page === page) render(); }
   if (page === "enroll") { try { await refreshPairings(); if (state.page === page) render(); } catch (error) { notify(pairingError(error), true); } }
@@ -365,7 +368,7 @@ function healthStat(item) {
 function renderOverview(item) {
   if (item.relayed) {
     return '<div class="stat-grid">' + stat("Connected via Master", esc(item.viaLabel || item.via)) + stat("Permissions", "Uses that Master’s rights") + healthStat(item) + "</div>" +
-      '<div class="disclosure-list"><details><summary>Technical details <small class="muted">Master ID, Node ID</small></summary><div><dl class="facts"><dt>Master ID</dt><dd><code>' + esc(item.via) + "</code></dd><dt>Node ID</dt><dd><code>" + esc(item.nodeId) + '</code></dd></dl><p class="help mt">Commands go through that Master. Change routes or remove this target host on Master ' + esc(item.viaLabel || item.via) + " · Cancel the merge on the Allowed Masters page</p></div></details></div>";
+      '<div class="disclosure-list"><details><summary>Technical details <small class="muted">Master ID, Node ID</small></summary><div><dl class="facts"><dt>Master ID</dt><dd><code>' + esc(item.via) + "</code></dd><dt>Node ID</dt><dd><code>" + esc(item.nodeId) + '</code></dd></dl><p class="help mt">Commands go through that Master. Change routes or remove this target host on Master ' + esc(item.viaLabel || item.via) + " · Remove the merge on the Masters page</p></div></details></div>";
   }
   const routes = item.routes || [], primary = routes[0];
   return '<div class="stat-grid">' +
@@ -380,7 +383,7 @@ function renderOverview(item) {
     routes.map((route, i) => '<tr><td class="num">' + (i + 1) + "</td><td>" + esc(routeKinds[route.kind] || route.kind) + "</td><td><code>" + esc(route.address) + ":" + esc(route.port || 22) + "</code></td><td>" + (route.proxyJump?.address ? "<code>" + esc(route.proxyJump.address) + "</code>" : '<span class="muted">Direct</span>') + "</td></tr>").join("") +
     '</tbody></table></div><h3 class="mt">Pinned host keys</h3><div class="output light mt"><pre>' + esc((item.hostKeys || []).join("\n") || "—") + "</pre></div></div></details>" +
     '<details><summary>Edit name and routes</summary><form id="edit-target"><div class="form-grid"><label class="full">Host name<input name="label" required value="' + esc(item.label || item.id) + '"></label><label class="full">Routes JSON<textarea class="mono" name="routes" rows="7" required spellcheck="false">' + esc(pretty(routes)) + '</textarea><small>Routes are tried in order · ProxyJump needs hostKeys and identityFile</small></label></div><div class="form-actions"><button type="submit" class="primary">Save</button></div><p class="help">To change the tenant, remove the target host and enroll it again so it uses that tenant’s key</p></form></details>' +
-    '<details><summary>Remove this target host from this Master</summary><div><p class="help">Only removes the record on this Master; jobs and data on the host stay. To revoke access, use Allowed Masters on that machine</p><button class="danger" data-action="remove-target">Remove ' + esc(item.label || item.id) + "</button></div></details>" +
+    '<details><summary>Remove this target host from this Master</summary><div><p class="help">Only removes the record on this Master; jobs and data on the host stay. To revoke access, use the Masters page on that host</p><button class="danger" data-action="remove-target">Remove ' + esc(item.label || item.id) + "</button></div></details>" +
     "</div>";
 }
 /* Connection check result, shown right under the host heading on every tab: one clear verdict, then each step. */
@@ -634,21 +637,15 @@ function renderPairingProgress(item) {
     '<details><summary>Request details</summary><p class="help">Request: <code>' + esc(item.requestId) + "</code><br>Back keeps the request under Unfinished requests. Cancel request forgets a request no host has approved; a host that already approved keeps its access until revoked there</p></details></section>";
 }
 function renderMasters() {
-  const rows = Array.isArray(state.masters) ? state.masters : [];
-  return heading("Allowed Masters", "Choose which Masters may control this host, and merge target hosts from other Masters", '<button data-action="refresh-masters">' + icons.refresh + "Refresh</button>") +
-    '<div class="stack"><section class="surface"><div class="card-head"><div><h2>Masters that can control this host</h2><p>Another Master’s access to this host (this host is its Target)</p></div><button data-action="accept-enrollment" title="Choose a public enrollment bundle from another Master">' + icons.plus + "Allow another Master…</button></div>" +
-    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Access</th><th></th></tr></thead><tbody>' +
-      rows.map(master => "<tr><td><strong>" + esc(master.label || master.id) + "</strong><small><code>" + esc(master.id) + '</code></small></td><td><span class="badge ' + (master.revoked ? "" : "good") + '">' + (master.revoked ? "Revoked" : "Allowed") + '</span></td><td class="actions">' + (master.revoked ? "" : '<button class="danger small" data-action="revoke-master" data-id="' + esc(master.id) + '">Revoke</button>') + "</td></tr>").join("") +
-      "</tbody></table></div>" : '<div class="empty-inline">No Masters are enrolled on this host</div>') +
-    '<p class="help mt">Revoking affects new requests; cancel running jobs separately from the Jobs tab</p></section>' +
-    (state.service?.roles?.includes("master") ? renderMerges() : "") + renderRelays() + "</div>";
+  return heading("Masters", "Merge another Master to see and control its hosts from here, and choose which Masters may control this one", '<button data-action="refresh-masters">' + icons.refresh + "Refresh</button>") +
+    '<div class="stack">' + (state.service?.roles?.includes("master") ? renderMerges() : "") + renderRelays() + "</div>";
 }
 function mergeStatus(targetId) {
   if (state.merging.has(targetId)) return '<span class="badge running">Merging…</span>';
   const merge = state.merges.find(row => row.targetId === targetId);
   if (!merge) return '<span class="badge">Not merged</span>';
   const count = (merge.children || []).length;
-  const labels = { merged: ["good", "Merged · " + count + " target hosts"], outdated: ["bad", "Remote Master needs an upgrade"], "not-master": ["bad", "Not a Master"], disabled: ["bad", "Remote Master disabled merging"], error: ["bad", "Error"] };
+  const labels = { merged: ["good", "Merged · " + count + " hosts"], outdated: ["bad", "Remote Master needs an upgrade"], "not-master": ["bad", "Not a Master"], disabled: ["bad", "Remote Master disabled merging"], error: ["bad", "Error"] };
   const [style, text] = labels[merge.status] || ["bad", merge.status];
   const detail = merge.status === "merged" ? "Last sync " + timestamp(merge.syncedAt) : (merge.error || "") + (count ? " · still using the previous list of " + count : "");
   return '<span class="badge ' + style + '">' + esc(text) + '</span><small class="wrap">' + esc(detail) + "</small>";
@@ -658,36 +655,44 @@ function reverseStatus(merge) {
   if (running) return '<span class="badge running">Enabling two-way…</span><small class="wrap">' + esc(running.message) + "</small>";
   const reverse = merge.reverse, peer = state.targets.find(item => item.id === merge.targetId);
   const relay = state.relays.find(row => row.masterId === peer?.nodeId);
-  if (isTwoWay(merge)) return '<span class="badge good">Two-way</span><small>' + esc(merge.label || merge.targetId) + " can control this Master’s target hosts</small>";
+  if (isTwoWay(merge)) return '<span class="badge good">Two-way</span><small>' + esc(merge.label || merge.targetId) + " can control this Master’s hosts</small>";
   if (reverse?.status === "two-way" && relay?.revoked) return '<span class="badge">One-way</span><small>Merging is disabled on this host</small>';
   const labels = { "two-way": ["pending", "Waiting for merge back"], "needs-attention": ["bad", "Paired, but merge back failed"], error: ["bad", "Two-way setup failed"], pending: ["pending", "Unfinished"] };
   const [style, text] = labels[reverse?.status] || ["", "One-way"];
-  return '<span class="badge ' + style + '">' + text + "</span>" + (reverse?.error ? '<small class="wrap">' + esc(reverse.error) + "</small>" : !reverse ? "<small>This Master controls that Master’s target hosts one way only</small>" : "");
+  return '<span class="badge ' + style + '">' + text + "</span>" + (reverse?.error ? '<small class="wrap">' + esc(reverse.error) + "</small>" : !reverse ? "<small>This Master controls that Master’s hosts one way only</small>" : "");
 }
+/** Outgoing: every Merge, plus every host whose health says it is a Master and that is not merged yet. */
 function renderMerges() {
-  const discovered = (state.discovered || []).filter(row => row.isMaster);
-  const ids = [...new Set([...state.merges.map(row => row.targetId), ...discovered.map(row => row.targetId)])];
-  const name = id => state.merges.find(row => row.targetId === id)?.label || discovered.find(row => row.targetId === id)?.label || state.targets.find(row => row.id === id)?.label || id;
-  const unreachable = (state.discovered || []).filter(row => row.error).length;
-  return '<section class="surface"><div class="card-head"><div><h2>Merge target hosts from other Masters</h2><p>To add a Master: use + Add target host for it, then merge it here (or from the pairing screen)</p></div><button data-action="discover-masters">' + icons.search + "Find Masters</button></div>" +
+  const unmerged = state.targets.filter(item => !item.relayed && state.health.get(item.id)?.isMaster && !state.merges.some(merge => merge.targetId === item.id));
+  const ids = [...state.merges.map(row => row.targetId), ...unmerged.map(item => item.id)];
+  const name = id => state.merges.find(row => row.targetId === id)?.label || state.targets.find(row => row.id === id)?.label || id;
+  return '<section class="surface"><div class="card-head"><div><h2>Controlled from here</h2><p>Masters merged into this one · Merge: see and control its hosts from here</p></div></div>' +
     (ids.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Status</th><th>Direction</th><th></th></tr></thead><tbody>' +
       ids.map(id => {
         const merge = state.merges.find(row => row.targetId === id), busyRow = state.merging.has(id) || state.twoWay.has(id);
         const canPair = merge?.status === "merged" && !isTwoWay(merge) && !(merge.reverse?.status === "two-way" && state.relays.some(row => row.masterId === state.targets.find(item => item.id === id)?.nodeId && row.revoked));
         const pair = canPair ? '<button class="primary small" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="Currently supported only on Windows Masters"' : "") + ">" + (merge.reverse ? "Try again" : "Enable two-way") + "</button>" : "";
-        const actions = merge ? pair + '<button class="small" data-action="sync-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + '>Sync</button><button class="danger small" data-action="remove-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Remove merge</button>" : '<button class="primary small" data-action="merge-master" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Merge</button>";
+        const actions = merge ? pair + '<button class="small" data-action="sync-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + '>Sync</button><button class="danger small" data-action="remove-merge" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : "") + ">Remove merge</button>" : '<button class="primary small" data-action="merge-master" data-id="' + esc(id) + '" title="See and control its hosts from here"' + (busyRow ? " disabled" : "") + ">Merge</button>";
         return "<tr><td><strong>" + esc(name(id)) + "</strong><small><code>" + esc(id) + "</code></small></td><td>" + mergeStatus(id) + "</td><td>" + (merge ? reverseStatus(merge) : '<span class="muted">—</span>') + '</td><td class="actions"><div class="target-actions">' + actions + "</div></td></tr>";
       }).join("") + "</tbody></table></div>"
-      : '<div class="empty-inline">' + (state.discovered ? "None of the target hosts is a Master" : "Press “Find Masters” to check the target hosts") + "</div>") +
-    (state.discovered ? '<p class="info-line">Checked ' + state.discovered.length + " target hosts · " + discovered.length + " Masters" + (unreachable ? " · " + unreachable + " unreachable" : "") + "</p>" : "") +
-    '<details><summary>How merging works</summary><p class="help">Merged target hosts appear under All hosts with IDs like <code>master/machine</code> · Commands go through that Master with its rights<br>Enable two-way so that Master can also control this Master’s target hosts</p></details></section>';
+      : '<div class="empty-inline">No Masters yet · a host you add that is itself a Master shows up here</div>') +
+    '<details><summary>How merging works</summary><p class="help">Merged hosts appear under All hosts with IDs like <code>master/machine</code> · Commands go through that Master with its rights<br>Enable two-way so that Master can also control this Master’s hosts</p></details></section>';
 }
+/** Incoming: allowed Masters and relays joined on the Master ID, one row per Master. */
 function renderRelays() {
-  if (!state.relays.length) return "";
-  return '<section class="surface"><div class="card-head"><div><h2>Masters that merged this host</h2><p>These Masters can control this Master’s target hosts through it</p></div></div><div class="table-wrap"><table><thead><tr><th>Master</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>' +
-    state.relays.map(relay => "<tr><td><strong>" + esc(relay.label) + "</strong><small><code>" + esc(relay.masterId) + "</code></small></td><td>" + esc(timestamp(relay.lastUsedAt)) + '</td><td><span class="badge ' + (relay.revoked ? "bad" : "good") + '">' + (relay.revoked ? "Merging disabled" : "Merged") + '</span></td><td class="actions">' +
-      (relay.revoked ? '<button class="small" data-action="allow-relay" data-id="' + esc(relay.masterId) + '">Allow again</button>' : '<button class="danger small" data-action="revoke-relay" data-id="' + esc(relay.masterId) + '">Disable merging</button>') + "</td></tr>").join("") +
-    "</tbody></table></div></section>";
+  const masters = Array.isArray(state.masters) ? state.masters : [], ids = [...new Set([...masters.map(row => row.id), ...state.relays.map(row => row.masterId)])];
+  const rows = ids.map(id => ({ id, direct: masters.find(row => row.id === id), relay: state.relays.find(row => row.masterId === id) }));
+  const badges = ({ direct, relay }) =>
+    (direct ? '<span class="badge ' + (direct.revoked ? "bad" : "good") + '">Direct</span>' + (direct.revoked ? "<small>Revoked</small>" : "") : "") +
+    (relay ? '<span class="badge ' + (relay.revoked ? "bad" : "good") + '">Through merge</span>' + (relay.revoked ? "<small>Merging disabled</small>" : "<small>Last used " + esc(timestamp(relay.lastUsedAt)) + "</small>") : "");
+  const actions = ({ id, direct, relay }) =>
+    (direct && !direct.revoked ? '<button class="danger small" data-action="revoke-master" data-id="' + esc(id) + '">Revoke</button>' : "") +
+    (relay ? (relay.revoked ? '<button class="small" data-action="allow-relay" data-id="' + esc(id) + '">Allow again</button>' : '<button class="danger small" data-action="revoke-relay" data-id="' + esc(id) + '">Disable merging</button>') : "");
+  return '<section class="surface"><div class="card-head"><div><h2>This Master is controlled by</h2><p>Masters that reach this one directly, or through a Merge (they see and control its hosts from there)</p></div><button data-action="accept-enrollment" title="Choose a public enrollment bundle from another Master">' + icons.plus + "Allow another Master…</button></div>" +
+    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>Master</th><th>Reaches this Master</th><th></th></tr></thead><tbody>' +
+      rows.map(row => "<tr><td><strong>" + esc(row.direct?.label || row.relay?.label || row.id) + "</strong><small><code>" + esc(row.id) + '</code></small></td><td><div class="reach-badges">' + badges(row) + '</div></td><td class="actions"><div class="target-actions">' + actions(row) + "</div></td></tr>").join("") +
+      "</tbody></table></div>" : '<div class="empty-inline">No other Master controls this one</div>') +
+    '<p class="help mt">Revoke and Disable merging affect new requests; cancel running jobs separately from the Jobs tab</p></section>';
 }
 function copyRow(command) {
   return '<div class="copy-row"><code>' + esc(command) + '</code><button class="icon-button" data-action="copy" data-copy="' + esc(command) + '" aria-label="Copy ' + esc(command) + '" title="Copy">' + icons.copy + "</button></div>";
@@ -1497,13 +1502,6 @@ document.addEventListener("click", event => {
       if (!confirm("Revoke Master " + button.dataset.id + " on this host?")) return;
       await rpc("masters.revoke", { masterId: button.dataset.id }); await refreshMasters(); render(); notify("Master revoked");
     }
-    if (action === "discover-masters") {
-      state.discovered = await rpc("merges.discover");
-      for (const row of state.discovered) if (!row.error) state.masterCheck.set(row.targetId, row.isMaster);
-      render();
-      const found = state.discovered.filter(row => row.isMaster).length;
-      notify(found ? "Found " + found + " Master(s). Press Merge to control their machines" : "None of the target hosts is a Master");
-    }
     if (action === "ctx-merge") {
       const [row] = await rpc("merges.discover", { targetId: button.dataset.id });
       if (row && !row.error) state.masterCheck.set(row.targetId, row.isMaster);
@@ -1514,7 +1512,7 @@ document.addEventListener("click", event => {
       state.merging.add(targetId); render();
       try {
         const merge = await rpc(action === "sync-merge" ? "merges.sync" : "merges.add", { targetId });
-        notify("Merged " + (merge.label || targetId) + " · " + merge.children.length + " target hosts added to the tree");
+        notify("Merged " + (merge.label || targetId) + " · " + merge.children.length + " hosts added to the tree");
       } finally {
         state.merging.delete(targetId);
         await refreshMasters(); await refreshFleet(); render();
@@ -1629,7 +1627,7 @@ document.addEventListener("submit", event => {
       try {
         const result = await native("merge_two_way", { targetId });
         const label = state.merges.find(row => row.targetId === targetId)?.label || targetId;
-        if (result.status === "two-way") notify("Two-way enabled with " + label + " · it can now control " + result.children + " of this Master’s target hosts");
+        if (result.status === "two-way") notify("Two-way enabled with " + label + " · it can now control " + result.children + " of this Master’s hosts");
         else notify("Enrolled with " + label + ", but the merge back failed: " + (result.error || result.status), true);
       } finally {
         state.twoWay.delete(targetId);
