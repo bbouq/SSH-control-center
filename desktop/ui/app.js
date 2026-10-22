@@ -561,6 +561,8 @@ const addText = {
   savedTo: "Saved to", serverHint: "Ubuntu Server without a desktop?", serverCommand: file => "sudo apt install --no-install-recommends ./" + file + " && sshcc-setup",
   code: "Code from the new host", codeHelp: "After Approve, the new host shows a code that starts with SSHCC1. Copy all of it and paste it here",
   codeIdle: "Checked the moment you paste", codeChecking: "Checking…", codeDone: "Code accepted",
+  hostName: "Host name", osName: "OS", shownAs: "Shown as", hostKey: "Host key (SHA-256)",
+  reviewHelp: "Read from the code. Nothing is added until you press Finish", finish: "Finish",
   readyTitle: "Service and host identity verified", readyText: "Agents can use this host now", openHost: "Open this host", another: "Add another host", done: "Done",
   attentionTitle: "Installed, but the connection check failed", attentionText: "No need to reinstall. Fix the address and check again",
   retryHelp: "Only the address changes; identity and host key stay the same", retry: "Check again", back: "Back",
@@ -587,29 +589,31 @@ const addText = {
     ["64 KiB", "The code is too long. Copy only the code"],
   ]
 };
-/** The add column's current step, from the request, whether its installer was saved and (later) the pasted code:
- *  no request → 1; request not saved → 1 (Save installer… is in step 1); saved → 3; after the code (ready /
- *  needs_attention) → 4 "result". Step 2 is never current: it is done once the installer is saved.
- *  Slice 04 adds a previewed code → 4 "review" here. */
-function addStep({ request, saved }) {
+/** The add column's current step, from the request, whether its installer was saved and the pasted code:
+ *  no request → 1; request not saved → 1 (Save installer… is in step 1); saved → 3; code previewed (nothing
+ *  saved yet) → 4 "review"; after Finish (ready / needs_attention) → 4 "result". Step 2 is never current: it is
+ *  done once the installer is saved. */
+function addStep({ request, saved, previewed }) {
   if (request && ["ready", "needs_attention"].includes(request.state)) return { n: 4, phase: "result" };
+  if (request && previewed) return { n: 4, phase: "review" };
   if (request && saved) return { n: 3, phase: "paste" };
   return { n: 1, phase: request ? "save" : "where" };
 }
-function addReset() { state.add = { code: "", checked: "", error: "", focused: null, skipped: state.add?.skipped || new Set() }; }
+function addReset() { state.add = { code: "", checked: "", error: "", preview: null, focused: null, skipped: state.add?.skipped || new Set() }; }
 function renderAddHost(options = {}) {
   const request = state.pairing, saved = request ? state.saved.get(request.requestId) : null;
-  const now = addStep({ request, saved: Boolean(saved || state.add.skipped.has(request?.requestId)) });
+  const preview = state.add.preview?.requestId === request?.requestId ? state.add.preview : null;
+  const now = addStep({ request, saved: Boolean(saved || state.add.skipped.has(request?.requestId)), previewed: Boolean(preview) });
   const folders = (state.folders.folders || []).filter(folder => folder.master === "local");
   const folder = folders.find(row => row.id === options.folder), site = (state.datacenters.datacenters || []).find(row => row.id === options.site);
   const card = (n, body) => {
     const status = n === now.n ? "is-now" : n < now.n ? "is-done" : "is-later";
-    return '<section class="add-step ' + status + '" data-step="' + n + '"' + (status === "is-now" ? ' aria-current="step"' : "") + '><div class="add-n">' + (status === "is-done" ? "✓" : n) + "</div>" +
+    return '<section class="add-step ' + status + '" data-step="' + n + '"' + (status === "is-now" ? ' aria-current="step" data-phase="' + now.phase + '"' : "") + '><div class="add-n">' + (status === "is-done" ? "✓" : n) + "</div>" +
       '<div class="add-body"><h2>' + addText.steps[n - 1] + "</h2>" + (n <= now.n ? body : "") + "</div></section>";
   };
   const requests = state.pairings.filter(item => item.state !== "ready");
   return '<div id="add-host" class="add-flow">' + heading(addText.title, [folder && addText.inFolder(folder.name), site && addText.inSite(site.name), addText.lead].filter(Boolean).join(" · "), '<button data-action="enroll-close">' + icons.close + addText.close + "</button>") +
-    '<div class="add-column">' + card(1, addWhere(request, now, options, folders)) + card(2, addInstall(request, saved)) + card(3, addPaste(now)) + card(4, request ? addResult(request) : "") + "</div>" +
+    '<div class="add-column">' + card(1, addWhere(request, now, options, folders)) + card(2, addInstall(request, saved)) + card(3, addPaste(now)) + card(4, now.phase === "review" ? addReview(preview, folders) : request ? addResult(request) : "") + "</div>" +
     addUnfinished(requests) + "</div>" +
     '<details class="mt"><summary>' + addText.admin + '</summary><div><p class="help">Import a registration or a v1 registry; host keys are still checked as usual</p><div class="page-actions"><button data-action="import-registration">Import registration file…</button><button data-action="import-v1-registry">Import v1 registry…</button></div><form id="paste-registration" class="mt"><label>Registration JSON<textarea name="document" class="mono" rows="4" required spellcheck="false"></textarea></label><div class="form-actions"><button type="submit">Import</button></div></form></div></details>';
 }
@@ -694,20 +698,33 @@ function onCodeInput(box, pasted) {
   state.add.code = box.value; clearTimeout(codeTimer);
   codeTimer = setTimeout(() => void checkCode(box.value.trim()), pasted ? 0 : 500);
 }
+/** Previews the code (read only); a good code opens the review card, nothing is saved until Finish. */
 async function checkCode(code) {
   if (!code || code === state.add.checked) return;
   state.add.checked = code; state.add.error = ""; setCodeCheck(addText.codeChecking);
   try {
-    const result = await rpc("pairing.complete", { code });
-    state.pairing = result; state.add.code = "";
-    await checkPairedMaster(result);
-    await refreshPairings(); await refreshFleet(); render();
+    const result = await rpc("pairing.preview", { code });
+    if (state.add.checked !== code) return;
+    // A code for another unfinished request moves the column to that request.
+    if (result.requestId !== state.pairing?.requestId) state.pairing = state.pairings.find(item => item.requestId === result.requestId) || state.pairing;
+    state.add.preview = { ...result, code }; render();
   } catch (error) {
     if (state.add.checked !== code) return; // a newer value is being checked
     state.add.error = pairingError(error); setCodeCheck(state.add.error, "bad");
   }
 }
-/** Step 4 (until the review card): today's ready / needs-attention result. */
+/** Step 4 review: facts read from the code, with name and folder editable; Finish saves. */
+function addReview(preview, folders) {
+  const current = state.folders.members?.[preview.targetId] || "", address = (state.pairing?.envelope?.bundle?.routes || [])[0]?.address || "";
+  const option = (value, text) => '<option value="' + esc(value) + '"' + (value === current ? " selected" : "") + ">" + esc(text) + "</option>";
+  return '<form id="finish-pairing" class="add-where"><dl class="facts"><dt>' + addText.hostName + "</dt><dd>" + esc(preview.hostName || "—") + "</dd><dt>" + addText.address + "</dt><dd>" + esc(address) +
+    "</dd><dt>" + addText.osName + "</dt><dd>" + esc({ windows: addText.osWindows, linux: addText.osLinux }[preview.os] || preview.os) + "</dd><dt>" + addText.hostKey + '</dt><dd><code class="wrap">' + esc(preview.hostKeySha256) + "</code></dd></dl>" +
+    '<div class="form-grid"><label>' + addText.shownAs + '<input name="label" maxlength="256" required value="' + esc(preview.label) + '"></label>' +
+    '<label>' + addText.folder + '<select name="folder" id="pairing-folder">' + option("", addText.none) + folders.map(row => option(row.id, row.name)).join("") + option("__new__", addText.newFolder) +
+    '</select><input name="newFolder" id="pairing-new-folder" maxlength="64" placeholder="' + addText.newFolderName + '" hidden></label></div>' +
+    '<div class="form-actions"><button type="submit" class="primary" data-focus>' + addText.finish + '</button></div><p class="help">' + addText.reviewHelp + "</p></form>";
+}
+/** Step 4 result after Finish: ready / needs-attention, in the same card. */
 function addResult(item) {
   const registered = state.targets.find(row => row.id === item.targetId);
   const routes = registered?.routes || item.envelope?.bundle?.routes || [];
@@ -731,7 +748,7 @@ function addUnfinished(requests) {
 function focusAddStep() {
   const now = $('#add-host [aria-current="step"]');
   if (!now) return;
-  const key = (state.pairing?.requestId || "") + ":" + now.dataset.step;
+  const key = (state.pairing?.requestId || "") + ":" + now.dataset.step + ":" + now.dataset.phase;
   // Same step after a re-render: put focus back only if the re-render dropped it.
   if (state.add.focused === key && document.activeElement && document.activeElement !== document.body) return;
   state.add.focused = key; now.querySelector("[data-focus]")?.focus();
@@ -1770,6 +1787,19 @@ document.addEventListener("submit", event => {
       if (folderId) await rpc("folders.assign", { targetId: state.pairing.targetId, folderId });
       if (folderId) state.folders = await rpc("folders.list");
       await refreshPairings(); await saveInstaller();
+    }
+    if (form.id === "finish-pairing") {
+      const preview = state.add.preview;
+      if (!preview) return;
+      // Finish: save with the edited name, then file it in the folder chosen on the card (only if it changed).
+      let folderId = values.folder === "__new__" ? "" : values.folder;
+      if (values.folder === "__new__" && values.newFolder.trim()) folderId = (await rpc("folders.create", { name: values.newFolder.trim() })).id;
+      const result = await rpc("pairing.complete", { code: preview.code, label: values.label.trim() || preview.label });
+      if (folderId !== (state.folders.members?.[preview.targetId] || "")) { await rpc("folders.assign", { targetId: preview.targetId, folderId: folderId || null }); }
+      state.folders = await rpc("folders.list");
+      state.pairing = result; state.add.preview = null; state.add.code = "";
+      await checkPairedMaster(result);
+      await refreshPairings(); await refreshFleet(); render();
     }
     if (form.id === "retry-pairing") {
       if (!submittedPairing) return;

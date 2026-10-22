@@ -149,6 +149,12 @@ fn completing_one_removes_its_sibling_and_the_sibling_code_says_replaced() {
         .to_string();
     assert!(error.contains("unknown setup request"), "{error}");
     assert!(error.contains("E_PAIRING_REPLACED"), "{error}");
+    // The review step reads the code first and says the same.
+    let previewed = fx
+        .call("pairing.preview", json!({"code": code(&linux)}))
+        .unwrap_err()
+        .to_string();
+    assert!(previewed.contains("E_PAIRING_REPLACED"), "{previewed}");
     let targets = fx.targets();
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0]["os"], "windows");

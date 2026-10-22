@@ -1,5 +1,5 @@
 // Walks the one-column add flow ("+ Add host") on the fixture and gates on the decision count (≤ 2).
-// Also checks: step marking and focus, plain errors in place, one check per pasted value, the address as the
+// Also checks: the review card (nothing saved before Finish, edits saved), the attention + retry path, step marking and focus, plain errors in place, one check per pasted value, the address as the
 // default name, "Add host here…" on a folder, unfinished requests, and no "target" noun on screen.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -28,7 +28,7 @@ async function assertNoTargetNoun(page, where) {
 }
 const focusedId = page => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
 
-/** Steps 1–3 as a Newcomer does them: type the address, Save installer…, paste the code. */
+/** Steps 1–3 as a Newcomer does them: type the address, Save installer…, paste the code. Ends on the review card. */
 async function addOneHost(page, url, d, { folderId } = {}) {
   await assertCurrent(page, 1);
   assert.equal(await focusedId(page), "add-address", "focus starts in the address box");
@@ -48,7 +48,19 @@ async function addOneHost(page, url, d, { folderId } = {}) {
   await assertNoTargetNoun(page, "step 3");
   // On the new host: open the installer, Approve, copy the code (simulated by the fixture).
   await d.fill(page.locator("#add-code"), await codeFor(page, url), "pairing code");
-  await page.locator(".ready-message").waitFor();
+  await page.locator("#finish-pairing").waitFor();
+  await assertCurrent(page, 4);
+  const card = step(page, 4);
+  assert.match(await card.innerText(), /SHA256:/, "review card shows the host key fingerprint");
+  assert.equal(await card.locator('[name="label"]').inputValue(), ADDRESS, "shown-as name defaults to the address");
+  assert.equal(rpcCalls(await calls(page, url), "pairing.complete").length, 0, "nothing saved before Finish");
+  assert.equal((await rpcCall(page, url, "targets.list")).filter(t => t.routes[0].address === ADDRESS).length, 0, "no host saved before Finish");
+}
+const rpcCall = async (page, url, method, params = {}) => (await (await page.request.post(url + "/rpc", { data: { command: "rpc", args: { method, params } } })).json());
+/** Step 4: Finish completes the pairing; the result shows in the same card. */
+async function finish(page, result = ".ready-message") {
+  await step(page, 4).getByRole("button", { name: "Finish" }).click();
+  await step(page, 4).locator(result).waitFor();
   await assertCurrent(page, 4);
 }
 
@@ -65,20 +77,64 @@ const checks = {
     assert.equal(await add.getAttribute("aria-haspopup"), null, "no dropdown");
     await add.click();
     await addOneHost(page, url, d);
-    await assertNoTargetNoun(page, "step 4");
+    await assertNoTargetNoun(page, "step 4 review");
+    await page.locator('[data-action="dc-toggle"][data-node="master:local"]').click();
+    assert.equal(await page.locator("#dc-tree .dc-item").filter({ hasText: ADDRESS }).count(), 0, "the tree gains no host before Finish");
+    await shots(page, "review");
+    await finish(page);
+    await assertNoTargetNoun(page, "step 4 result");
     const sent = await calls(page, url);
     assert.equal(rpcCalls(sent, "pairing.create").length, 1);
     assert.equal(rpcCalls(sent, "pairing.create")[0].params.address, ADDRESS);
     assert.equal(rpcCalls(sent, "pairing.create")[0].params.label, ADDRESS, "empty name is sent as the address");
     assert.equal(sent.filter(c => c.command === "save_setup").length, 1);
+    assert.equal(rpcCalls(sent, "pairing.preview").length, 1);
     assert.equal(rpcCalls(sent, "pairing.complete").length, 1);
-    await page.locator('[data-action="dc-toggle"][data-node="master:local"]').click();
     await page.locator("#dc-tree .dc-item").filter({ hasText: ADDRESS }).waitFor();
+    await step(page, 4).getByRole("button", { name: "Open this host" }).click();
+    await page.waitForFunction(() => !document.querySelector("#add-host"));
+    await page.locator(".page-heading h1").filter({ hasText: ADDRESS }).waitFor();
+  },
+  /** Name and folder changed on the review card are what get saved. */
+  async "review-edits"(page, url, d) {
+    const office = await rpcCall(page, url, "folders.create", { name: "Office" });
+    const lab = await rpcCall(page, url, "folders.create", { name: "Lab" });
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    await addOneHost(page, url, d);
+    const card = step(page, 4);
+    await card.locator('[name="label"]').fill("Accounting PC");
+    await card.locator('[name="folder"]').selectOption(lab.id);
+    await finish(page);
+    const sent = await calls(page, url);
+    assert.equal(rpcCalls(sent, "pairing.complete")[0].params.label, "Accounting PC");
+    const assigned = rpcCalls(sent, "folders.assign");
+    assert.equal(assigned.at(-1).params.folderId, lab.id);
+    const saved = (await rpcCall(page, url, "targets.list")).find(t => t.routes[0].address === ADDRESS);
+    assert.equal(saved.label, "Accounting PC");
+    assert.equal((await rpcCall(page, url, "folders.list")).members[saved.id], lab.id);
+    assert.ok(office.id);
+  },
+  /** The connection check fails: failures in plain words and the address-only retry, with no new installer. */
+  async "attention-retry"(page, url, d) {
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    await addOneHost(page, url, d);
+    await finish(page, "#retry-pairing");
+    const card = step(page, 4);
+    await card.filter({ hasText: "Installed, but the connection check failed" }).waitFor();
+    await card.locator("li").first().waitFor();
+    await shots(page, "attention");
+    await card.locator('#retry-pairing [name="address"]').fill("192.0.2.32");
+    await card.getByRole("button", { name: "Check again" }).click();
+    await card.locator(".ready-message").waitFor();
+    const sent = await calls(page, url);
+    assert.equal(rpcCalls(sent, "pairing.status").filter(c => c.params.routes?.[0]?.address === "192.0.2.32").length, 1);
+    assert.equal(sent.filter(c => c.command === "save_setup").length, 1, "no new installer");
   },
   /** The new host is a Master: today's offer card shows until the review card (ticket 04/05). */
   async "empty+new-host-master"(page, url, d) {
     await page.goto(url); await page.locator('[data-action="add-host"]').click();
     await addOneHost(page, url, d);
+    await finish(page);
     await page.locator(".callout").filter({ hasText: "is also a Master" }).waitFor();
   },
   /** Wrong codes: a plain sentence in place, the code stays, one request per distinct value. */
@@ -97,8 +153,9 @@ const checks = {
     await check.filter({ hasText: "damaged or incomplete" }).waitFor();
     assert.doesNotMatch(await check.innerText(), /E_PAIRING/, "plain words, no error code");
     assert.equal(await page.locator('#add-host button[type="submit"]').count(), 0);
-    const sent = rpcCalls(await calls(page, url), "pairing.complete");
+    const sent = rpcCalls(await calls(page, url), "pairing.preview");
     assert.equal(sent.filter(c => c.params.code === other).length, 1, "same value checked once");
+    assert.equal(rpcCalls(await calls(page, url), "pairing.complete").length, 0, "checking saves nothing");
     await assertCurrent(page, 3);
     await shots(page, "wrong-code");
     // Leave it unfinished, then come back: the request is listed with Resume / Cancel.
@@ -126,6 +183,8 @@ const checks = {
     await page.locator('.dc-item[data-node="folder:' + folder.id + '"]').click({ button: "right" });
     await page.getByRole("menuitem", { name: "Add host here…" }).click();
     await addOneHost(page, url, d, { folderId: folder.id });
+    assert.equal(await step(page, 4).locator('[name="folder"]').inputValue(), folder.id, "review card keeps the folder");
+    await finish(page);
     const assigned = rpcCalls(await calls(page, url), "folders.assign");
     assert.equal(assigned.length, 1); assert.equal(assigned[0].params.folderId, folder.id);
   },
@@ -182,7 +241,7 @@ const checks = {
     assert.equal(motion, 0, "nothing animates");
   },
 };
-const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "reduced-motion": ["empty"] };
+const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "reduced-motion": ["empty"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];
