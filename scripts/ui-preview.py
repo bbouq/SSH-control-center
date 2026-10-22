@@ -18,6 +18,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import pathlib
 import signal
 import subprocess
@@ -28,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UI = ROOT / "desktop/ui"
+PID_LABEL = "sshcc.ui-preview.pid"
 BRIDGE = r"""
 window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
   const response = await fetch("/invoke", { method: "POST", body: JSON.stringify({ command, args }) });
@@ -51,6 +53,8 @@ class Preview:
         self.probe = None
         self.run_id = uuid.uuid4().hex[:8]
         self.label = "sshcc.ui-preview=" + self.run_id
+        # The owning process, so a later preview sweeps only leftovers whose preview has died.
+        self.labels = ["--label", self.label, "--label", f"{PID_LABEL}={os.getpid()}"]
         self.network = "sshcc-ui-preview-" + self.run_id
         self.containers = []
         self.target_count = targets
@@ -69,7 +73,7 @@ class Preview:
 
     def container(self, alias, role, label, extra=()):
         name = f"{self.network}-{alias}"
-        run("docker", "run", "-d", "--name", name, "--hostname", alias, "--label", self.label,
+        run("docker", "run", "-d", "--name", name, "--hostname", alias, *self.labels,
             "--network", self.network, "--network-alias", alias, *extra, self.image)
         self.containers.append(name)
         arguments = ["sshcc", "init", "--role", role, "--owner", "0", "--label", label]
@@ -104,7 +108,7 @@ class Preview:
         self.request("targets.import", {"registration": registration}, master)
 
     def start(self):
-        run("docker", "network", "create", "--internal", "--label", self.label, self.network)
+        run("docker", "network", "create", "--internal", *self.labels, self.network)
         if self.scenario == "sites":
             return self.start_sites()
         self.master = self.container("master", "master", "ui-preview-master")
@@ -129,7 +133,7 @@ class Preview:
                 self.install_docker_cli(target)
         if self.docker_socket:
             self.probe = "sshcc-ct-probe-" + self.run_id
-            run("docker", "run", "-d", "--name", self.probe, "--label", self.label, "alpine:3.20",
+            run("docker", "run", "-d", "--name", self.probe, *self.labels, "alpine:3.20",
                 "sh", "-c", "while true; do date -u +probe-%H:%M:%S; sleep 5; done")
 
     def start_sites(self):
@@ -155,12 +159,12 @@ class Preview:
             self.request("datacenters.assign", {"master": master, "datacenterId": datacenter["id"]})
         if self.docker_socket:
             self.probe = "sshcc-ct-probe-" + self.run_id
-            run("docker", "run", "-d", "--name", self.probe, "--label", self.label, "alpine:3.20",
+            run("docker", "run", "-d", "--name", self.probe, *self.labels, "alpine:3.20",
                 "sh", "-c", "while true; do date -u +probe-%H:%M:%S; sleep 5; done")
 
     def install_docker_cli(self, target):
         # Copy the docker client from the official CLI image; the socket is this computer's daemon.
-        holder = run("docker", "create", "--label", self.label, "docker:27-cli").stdout.strip()
+        holder = run("docker", "create", *self.labels, "docker:27-cli").stdout.strip()
         try:
             local = self.output / "docker-cli"
             self.output.mkdir(parents=True, exist_ok=True)
@@ -252,16 +256,39 @@ def handler(preview):
     return Handler
 
 
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        pass  # the process exists but belongs to another user
+    return True
+
+
+def stale(kind):
+    """IDs of preview containers or networks whose owning preview process is gone; unlabelled ones are kept."""
+    command = ["network", "ls"] if kind == "network" else ["ps", "-a"]
+    listing = run("docker", *command, "--filter", "label=sshcc.ui-preview",
+                  "--format", '{{.ID}} {{.Label "' + PID_LABEL + '"}}').stdout.splitlines()
+    rows = [line.split(" ", 1) + [""] for line in listing if line.strip()]
+    return [row[0] for row in rows if row[1].strip() and not alive(row[1].strip())], [row[0] for row in rows if not row[1].strip()]
+
+
 def sweep_stale():
-    """Remove containers and networks left by an earlier preview that was killed before its cleanup ran."""
-    stale = run("docker", "ps", "-aq", "--filter", "label=sshcc.ui-preview").stdout.split()
-    if stale:
-        run("docker", "rm", "-f", *stale, check=False)
-    networks = run("docker", "network", "ls", "-q", "--filter", "name=sshcc-ui-preview-").stdout.split()
+    """Remove containers and networks left by an earlier preview that was killed before its cleanup ran.
+    Previews still running (in another terminal or session) are left alone."""
+    containers, unowned = stale("ps")
+    if containers:
+        run("docker", "rm", "-f", *containers, check=False)
+    networks, _ = stale("network")
     if networks:
         run("docker", "network", "rm", *networks, check=False)
-    if stale:
-        print(f"removed {len(stale)} containers left by an earlier preview", file=sys.stderr)
+    if containers:
+        print(f"removed {len(containers)} containers left by an earlier preview", file=sys.stderr)
+    if unowned:
+        print(f"kept {len(unowned)} preview containers from an older script; if none is running, remove them with "
+              "docker rm -f $(docker ps -aq --filter label=sshcc.ui-preview)", file=sys.stderr)
 
 
 def main():
