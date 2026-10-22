@@ -3,7 +3,7 @@
 //   empty            start as a Master with no hosts, folders, Merges or relays
 //   new-host-master  every host paired through the fixture is itself a Master (merges.discover/fleet.health say so)
 //   needs-attention  completing a pairing fails the connection check; an address retry (pairing.status routes) passes
-//   masters-page    adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
+//   masters-page     adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
 //                    directly and through a Merge, plus one that only merged this Master (merging disabled)
 // Test-only endpoints: GET /calls (every request the page sent), POST /scenario (reset state, clears /calls),
 // GET /pairing-code[?requestId=…][&master=other] (the code the new host would show after Approve; default: the
@@ -81,6 +81,18 @@ function mergeAdd(targetId) {
   s.merges = s.merges.filter(row => row.targetId !== targetId).concat(merge);
   return merge;
 }
+// `pairing.check` stand-in: SSH answers only at the addresses below; every other address does not answer
+// (a fresh Windows machine). SLOW_ADDRESS answers after 1.5 s, to test that late answers are ignored.
+const BANNERS = { "192.0.2.33": "SSH-2.0-OpenSSH_for_Windows_9.5", "192.0.2.32": "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5", "192.0.2.99": "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5" };
+const SLOW_ADDRESS = "192.0.2.99";
+async function checkAddress(address, port) {
+  if (address === SLOW_ADDRESS) await new Promise(done => setTimeout(done, 1500));
+  const same = r => r.address.toLowerCase() === address.toLowerCase() && Number(r.port || 22) === port;
+  const target = s.targets.find(t => t.routes.some(same)), request = !target && s.pairings.find(p => p.state === "awaiting_approval" && p.routes.some(same));
+  const banner = port === 22 && BANNERS[address] || null;
+  return { address, port, reachable: Boolean(banner), banner, os: banner ? (banner.includes("Windows") ? "windows" : "linux") : null,
+    alreadyAs: target?.label || request?.label || null, alreadyTargetId: target?.id || null, alreadyRequestId: request?.requestId || null };
+}
 function rpc(method, p = {}) {
   switch (method) {
     case "system.status": return { label: "UI fixture (no real service)", nodeId: "fixture", roles: ["master", "target"], version: "test", uptimeSeconds: 120 };
@@ -118,6 +130,7 @@ function rpc(method, p = {}) {
       return pairingView(pairing(p.requestId));
     case "pairing.preview": return previewPairing(p);
     case "pairing.complete": return completePairing(p);
+    case "pairing.check": return checkAddress(need(p.address, "address").trim(), Number(p.port || 22));
     case "pairing.cancel": { const row = pairing(need(p.requestId, "requestId")); s.pairings = s.pairings.filter(item => item !== row); return { requestId: row.requestId, cancelled: true }; }
     // Folders and datacenters (tree organisation only).
     case "folders.list": return { folders: s.folders, members: s.folderMembers };
@@ -171,7 +184,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/rpc" && req.method === "POST") {
       const { command: name, args = {} } = await body(req);
       calls.push({ command: name, ...args });
-      return json(res, command(name, args));
+      return json(res, await command(name, args));
     }
     const files = { "/": "index.html", "/app.css": "app.css", "/app.js": "app.js" };
     if (url.pathname === "/fixture.js") { res.setHeader("content-type", "application/javascript"); return res.end(bootstrap); }

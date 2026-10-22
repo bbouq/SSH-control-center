@@ -37,6 +37,8 @@ async function addOneHost(page, url, d, { folderId } = {}) {
   await column(page).getByText("Advanced").click();
   await assertNoTargetNoun(page, "step 1 with Advanced open");
   await d.fill(page.locator("#add-address"), ADDRESS, "address");
+  // A fresh Windows machine has no SSH server yet: a calm note, and the flow goes on.
+  await page.locator("#add-address-check").filter({ hasText: "the installer turns SSH on" }).waitFor();
   await page.getByRole("button", { name: "Save installer…" }).click();
   await assertCurrent(page, 3);
   assert.equal(await focusedId(page), "add-code", "focus moves to the code box");
@@ -186,6 +188,51 @@ const checks = {
     const assigned = rpcCalls(await calls(page, url), "folders.assign");
     assert.equal(assigned.length, 1); assert.equal(assigned[0].params.folderId, folder.id);
   },
+  /** Step 1 live check: detected OS, duplicates of a host or a request, and late answers ignored. */
+  async "live-check"(page, url) {
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    const box = page.locator("#add-address"), line = page.locator("#add-address-check"), os = page.locator('#create-pairing [name="os"]');
+    const save = page.getByRole("button", { name: "Save installer…" });
+    // An answer for an earlier value that arrives late is never shown.
+    await box.fill("192.0.2.99"); await page.waitForTimeout(600);
+    await box.fill("192.0.2.40");
+    await line.filter({ hasText: "the installer turns SSH on" }).waitFor();
+    await page.waitForTimeout(1500);
+    assert.match(await line.innerText(), /the installer turns SSH on/, "late answer ignored");
+    assert.equal(await os.inputValue(), "windows", "late answer did not change the OS");
+    assert.equal(rpcCalls(await calls(page, url), "pairing.check").length, 2, "one check per pause");
+    // A known OS fills the OS choice.
+    await box.fill("192.0.2.32");
+    await line.filter({ hasText: "SSH answers · Ubuntu or Debian" }).waitFor();
+    assert.equal(await os.inputValue(), "linux");
+    await box.fill("192.0.2.33");
+    await line.filter({ hasText: "SSH answers · Windows" }).waitFor();
+    assert.equal(await os.inputValue(), "windows");
+    assert.ok(await save.isEnabled());
+    await shots(page, "live-check-os");
+    // An existing host: "Already added as …", Save installer disabled, a link to that host.
+    await box.fill("192.0.2.20");
+    await line.filter({ hasText: "Already added as UI test target" }).waitFor();
+    assert.ok(await save.isDisabled(), "duplicate disables Save installer");
+    await shots(page, "live-check-duplicate");
+    await box.fill("192.0.2.33");
+    await line.filter({ hasText: "SSH answers" }).waitFor();
+    assert.ok(await save.isEnabled(), "enabled again for a new address");
+    // An open request for the address: same message, with Resume.
+    await page.request.post(url + "/rpc", { data: { command: "rpc", args: { method: "pairing.create", params: { label: "Lab box", tenant: "lab", os: "linux", address: "192.0.2.50", port: 22 } } } });
+    await box.fill("192.0.2.50");
+    await line.filter({ hasText: "Already added as Lab box" }).waitFor();
+    assert.ok(await save.isDisabled());
+    await line.getByRole("button", { name: "Resume it" }).click();
+    await column(page).locator(".facts").filter({ hasText: "Lab box" }).waitFor();
+    // Back to a fresh form, then follow the link to the existing host.
+    page.once("dialog", dialog => dialog.accept());
+    await column(page).getByRole("button", { name: "Cancel request" }).click();
+    await assertCurrent(page, 1);
+    await page.locator("#add-address").fill("192.0.2.20");
+    await line.getByRole("button", { name: "Open it" }).click();
+    await page.waitForFunction(() => !document.querySelector("#add-host"));
+  },
   /** Reduced motion: steps never animate. */
   async "reduced-motion"(page, url) {
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -194,7 +241,7 @@ const checks = {
     assert.equal(motion, 0, "nothing animates");
   },
 };
-const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "reduced-motion": ["empty"] };
+const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "reduced-motion": ["empty"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

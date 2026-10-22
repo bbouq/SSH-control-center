@@ -566,6 +566,68 @@ fn status(state: &Path, config: &Config, p: &Value) -> Result<Value> {
     }
     view(&read_pending(&db, id)?)
 }
+/// The OS an SSH identification line reports, if this tool can tell.
+fn banner_os(banner: &str) -> Option<&'static str> {
+    let software = banner.splitn(3, '-').nth(2)?;
+    if software.starts_with("OpenSSH_for_Windows") {
+        Some("windows")
+    } else if software.starts_with("OpenSSH_")
+        && (software.contains(" Ubuntu") || software.contains(" Debian"))
+    {
+        Some("linux")
+    } else {
+        None
+    }
+}
+/// Read-only live check for an address typed in "Add host": does SSH answer, which OS its banner
+/// reports, and is it already a saved Target (same route rule as `fleet::save_target`) or a request
+/// awaiting approval. Banner only, never logs in; writes nothing.
+fn check(state: &Path, p: &Value) -> Result<Value> {
+    let address = string(p, "address")?.trim();
+    ensure!(
+        !address.is_empty() && address.len() <= 253 && !address.chars().any(char::is_control),
+        "E_ARGUMENT: invalid address"
+    );
+    let port = match p.get("port") {
+        None | Some(Value::Null) => 22,
+        Some(value) => value
+            .as_u64()
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port > 0)
+            .context("E_ARGUMENT: invalid port")?,
+    };
+    let same = |route: &Route| route.address.eq_ignore_ascii_case(address) && route.port == port;
+    // Read the database first and let go of it before the slow network probe.
+    let (mut already_as, mut target_id, mut request_id) = (None, None, None);
+    {
+        let db = database(state)?;
+        if let Some(target) = fleet::list_targets(&db)?
+            .into_iter()
+            .find(|t| t.routes.iter().any(same))
+        {
+            already_as = Some(target.label);
+            target_id = Some(target.id);
+        } else {
+            let mut stmt =
+                db.prepare("SELECT document FROM pairing_requests ORDER BY rowid DESC")?;
+            for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+                let pending: Pending = serde_json::from_str(&row?)?;
+                if pending.state == "awaiting_approval"
+                    && bundle(&pending.envelope)?.routes.iter().any(same)
+                {
+                    already_as = Some(pending.envelope.target_label.clone());
+                    request_id = Some(pending.envelope.request_id.clone());
+                    break;
+                }
+            }
+        }
+    }
+    let banner = crate::ssh_banner::read(address, port).ok();
+    let os = banner.as_deref().and_then(banner_os);
+    Ok(
+        json!({"address":address,"port":port,"reachable":banner.is_some(),"banner":banner,"os":os,"alreadyAs":already_as,"alreadyTargetId":target_id,"alreadyRequestId":request_id}),
+    )
+}
 pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Value>> {
     if !req.method.starts_with("pairing.") {
         return Ok(None);
@@ -580,6 +642,7 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
         "pairing.complete" => complete(state, config, &req.params)?,
         "pairing.preview" => preview(state, config, &req.params)?,
         "pairing.cancel" => cancel(state, &req.params)?,
+        "pairing.check" => check(state, &req.params)?,
         _ => bail!("E_METHOD: unsupported pairing method"),
     }))
 }

@@ -548,6 +548,8 @@ const addText = {
   inFolder: name => "Folder " + name, inSite: name => "Datacenter " + name + " · used if the new host is a Master",
   steps: ["Where is the new host?", "Install on the new host", "Paste the code", "Check and finish"],
   address: "IP or host name", addressPlaceholder: "e.g. 192.0.2.20 or a Tailscale name", addressHelp: "An address this Master can reach · with Tailscale, sign in on the new host first",
+  checking: "Checking the address…", sshAnswers: os => "SSH answers" + (os ? " · " + os : ""), osNames: { windows: "Windows", linux: "Ubuntu or Debian" },
+  noSsh: "No SSH answer yet. That is normal for a new Windows machine: the installer turns SSH on", alreadyAs: "Already added as", openIt: "Open it", resumeIt: "Resume it",
   os: "Operating system", osWindows: "Windows / Windows Server", osLinux: "Ubuntu 24.04 — Desktop or Server",
   optional: "Optional", name: "Name", namePlaceholder: "Shown as its address if left empty", folder: "Folder", none: "None", newFolder: "+ New folder…", newFolderName: "New folder name",
   advanced: "Advanced", group: "Key group", groupHelp: "Hosts in the same key group share one SSH key on this Master. Keep the default unless you separate keys per group or team",
@@ -559,7 +561,7 @@ const addText = {
   savedTo: "Saved to", serverHint: "Ubuntu Server without a desktop?", serverCommand: file => "sudo apt install --no-install-recommends ./" + file + " && sshcc-setup",
   code: "Code from the new host", codeHelp: "After Approve, the new host shows a code that starts with SSHCC1. Copy all of it and paste it here",
   codeIdle: "Checked the moment you paste", codeChecking: "Checking…", codeDone: "Code accepted",
-  hostName: "Host name", osName: "OS", osNames: { windows: "Windows", linux: "Ubuntu" }, shownAs: "Shown as", hostKey: "Host key (SHA-256)",
+  hostName: "Host name", osName: "OS", shownAs: "Shown as", hostKey: "Host key (SHA-256)",
   reviewHelp: "Read from the code. Nothing is added until you press Finish", finish: "Finish",
   readyTitle: "Service and host identity verified", readyText: "Agents can use this host now", openHost: "Open this host", another: "Add another host", done: "Done",
   attentionTitle: "Installed, but the connection check failed", attentionText: "No need to reinstall. Fix the address and check again",
@@ -626,6 +628,7 @@ function addWhere(request, now, options, folders) {
   const option = (value, text, selected) => '<option value="' + esc(value) + '"' + (selected ? " selected" : "") + ">" + esc(text) + "</option>";
   return '<form id="create-pairing" class="add-where">' +
     '<label>' + addText.address + '<input id="add-address" class="add-big" name="address" required autocomplete="off" spellcheck="false" placeholder="' + addText.addressPlaceholder + '" value="' + (options.self ? "127.0.0.1" : "") + '" data-focus><small>' + addText.addressHelp + "</small></label>" +
+    '<p class="add-check" id="add-address-check" aria-live="polite"></p>' +
     '<label>' + addText.os + '<select name="os">' + option("windows", addText.osWindows) + option("linux", addText.osLinux) + "</select></label>" +
     "<details><summary>" + addText.optional + '</summary><div class="form-grid"><label>' + addText.name + '<input name="label" maxlength="256" placeholder="' + addText.namePlaceholder + '" value="' + (options.self ? esc(state.service?.label || "") : "") + '"></label>' +
     '<label>' + addText.folder + '<select name="folder" id="pairing-folder">' + option("", addText.none) + folders.map(row => option(row.id, row.name, options.folder === row.id)).join("") + option("__new__", addText.newFolder) +
@@ -636,6 +639,36 @@ function addWhere(request, now, options, folders) {
     '<label>' + addText.network + '<select name="routeKind">' + option("", addText.detect) + option("lan", addText.lan) + option("tailscale", addText.tailscale) + option("public", addText.publicIp) + "</select></label>" +
     '<label>' + addText.bridge + '<input name="user" value="sshcc-bridge" required></label><label class="full">' + addText.routes + '<textarea name="routes" rows="4" class="mono" placeholder="' + addText.routesPlaceholder + '"></textarea><small>' + addText.routesHelp + "</small></label></div></details>" +
     '<div class="form-actions"><button type="submit" class="primary">' + addText.save + '</button></div><p class="help">' + addText.saveHelp + "</p></form>";
+}
+/** Step 1 live check: `pairing.check` after a ~400 ms pause; only the answer for the current address/port is shown. */
+let whereTimer = 0;
+const whereKey = form => form.address.value.trim() + ":" + (Number(form.port.value) || 22);
+function onWhereInput(form) {
+  clearTimeout(whereTimer); setWhereCheck(form, "");
+  if (form.address.value.trim()) whereTimer = setTimeout(() => void checkWhere(form), 400);
+}
+function setWhereCheck(form, html, tone = "", duplicate = false) {
+  const line = $("#add-address-check", form);
+  line.innerHTML = html; line.className = "add-check" + (tone ? " " + tone : "");
+  $('button[type="submit"]', form).disabled = duplicate;
+}
+async function checkWhere(form) {
+  const key = whereKey(form), address = form.address.value.trim(), port = Number(form.port.value) || 22;
+  setWhereCheck(form, esc(addText.checking));
+  let result;
+  try { result = await rpc("pairing.check", { address, port }); } catch { result = null; }
+  // Resume needs the request in the list; it may have been made elsewhere since the list was read.
+  if (result?.alreadyRequestId && !state.pairings.some(item => item.requestId === result.alreadyRequestId)) await refreshPairings().catch(() => {});
+  if (!form.isConnected || whereKey(form) !== key) return; // a newer value is being checked
+  if (!result) return setWhereCheck(form, "");
+  if (result.alreadyAs) {
+    const link = result.alreadyTargetId ? '<button type="button" class="small" data-action="open-paired-target" data-id="' + esc(result.alreadyTargetId) + '">' + addText.openIt + "</button>"
+      : result.alreadyRequestId ? '<button type="button" class="small" data-action="resume-pairing" data-id="' + esc(result.alreadyRequestId) + '">' + addText.resumeIt + "</button>" : "";
+    return setWhereCheck(form, icons.alert + "<span>" + addText.alreadyAs + " <strong>" + esc(result.alreadyAs) + "</strong></span>" + link, "bad", true);
+  }
+  if (!result.reachable) return setWhereCheck(form, icons.info + "<span>" + esc(addText.noSsh) + "</span>");
+  if (result.os) form.os.value = result.os;
+  setWhereCheck(form, icons.check + "<span>" + esc(addText.sshAnswers(addText.osNames[result.os])) + "</span>", "good");
 }
 /** Step 2: one line; done as soon as the installer is saved. The Ubuntu Server command is folded under it. */
 function addInstall(request, saved) {
@@ -685,7 +718,7 @@ function addReview(preview, folders) {
   const current = state.folders.members?.[preview.targetId] || "", address = (state.pairing?.envelope?.bundle?.routes || [])[0]?.address || "";
   const option = (value, text) => '<option value="' + esc(value) + '"' + (value === current ? " selected" : "") + ">" + esc(text) + "</option>";
   return '<form id="finish-pairing" class="add-where"><dl class="facts"><dt>' + addText.hostName + "</dt><dd>" + esc(preview.hostName || "—") + "</dd><dt>" + addText.address + "</dt><dd>" + esc(address) +
-    "</dd><dt>" + addText.osName + "</dt><dd>" + esc(addText.osNames[preview.os] || preview.os) + "</dd><dt>" + addText.hostKey + '</dt><dd><code class="wrap">' + esc(preview.hostKeySha256) + "</code></dd></dl>" +
+    "</dd><dt>" + addText.osName + "</dt><dd>" + esc({ windows: addText.osWindows, linux: addText.osLinux }[preview.os] || preview.os) + "</dd><dt>" + addText.hostKey + '</dt><dd><code class="wrap">' + esc(preview.hostKeySha256) + "</code></dd></dl>" +
     '<div class="form-grid"><label>' + addText.shownAs + '<input name="label" maxlength="256" required value="' + esc(preview.label) + '"></label>' +
     '<label>' + addText.folder + '<select name="folder" id="pairing-folder">' + option("", addText.none) + folders.map(row => option(row.id, row.name)).join("") + option("__new__", addText.newFolder) +
     '</select><input name="newFolder" id="pairing-new-folder" maxlength="64" placeholder="' + addText.newFolderName + '" hidden></label></div>' +
@@ -1703,6 +1736,7 @@ document.addEventListener("click", event => {
   });
 });
 document.addEventListener("input", event => {
+  if (event.target.form?.id === "create-pairing" && ["address", "port"].includes(event.target.name)) onWhereInput(event.target.form);
   if (event.target.id === "add-code") onCodeInput(event.target, event.inputType === "insertFromPaste");
   if (event.target.closest?.("#confirm-delete")) { const form = $("#confirm-delete"); form.querySelector('[type="submit"]').disabled = event.target.value !== form.dataset.name; }
   if (event.target.id === "file-filter") { state.fileQuery = event.target.value; $("#files-output").innerHTML = renderFileList(); }
