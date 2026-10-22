@@ -550,7 +550,7 @@ const addText = {
   address: "IP or host name", addressPlaceholder: "e.g. 192.0.2.20 or a Tailscale name", addressHelp: "An address this Master can reach · with Tailscale, sign in on the new host first",
   checking: "Checking the address…", sshAnswers: os => "SSH answers" + (os ? " · " + os : ""), osNames: { windows: "Windows", linux: "Ubuntu or Debian" },
   noSsh: "No SSH answer yet. That is normal for a new Windows machine: the installer turns SSH on", alreadyAs: "Already added as", openIt: "Open it", resumeIt: "Resume it",
-  os: "Operating system", osWindows: "Windows / Windows Server", osLinux: "Ubuntu 24.04 — Desktop or Server",
+  os: "Operating system", osDetect: "Detect from the address (both installers if unknown)", osWindows: "Windows / Windows Server", osLinux: "Ubuntu 24.04 — Desktop or Server",
   optional: "Optional", name: "Name", namePlaceholder: "Shown as its address if left empty", folder: "Folder", none: "None", newFolder: "+ New folder…", newFolderName: "New folder name",
   advanced: "Advanced", group: "Key group", groupHelp: "Hosts in the same key group share one SSH key on this Master. Keep the default unless you separate keys per group or team",
   hostId: "Host ID", generated: "Generated automatically", port: "SSH port", network: "Network type", detect: "Detect from address", lan: "LAN", tailscale: "Tailscale", publicIp: "Public IP",
@@ -558,6 +558,8 @@ const addText = {
   save: "Save installer…", saveHelp: "The installer holds only public data. This Master can control the new host only after someone clicks Approve there",
   haveInstaller: "I already have the installer", cancelRequest: "Cancel request",
   open: file => "Open <strong>" + esc(file) + "</strong> on the new host and click <strong>Approve</strong>", openAny: "Open the installer on the new host and click <strong>Approve</strong>",
+  openEither: (exe, deb) => "Open <strong>" + esc(exe) + "</strong> (Windows) or <strong>" + esc(deb) + "</strong> (Ubuntu) on the new host, whichever matches it, and click <strong>Approve</strong>",
+  bothHelp: "Both installers are for this host. The one you use first wins; the other stops working", eitherOs: "Windows or Ubuntu",
   savedTo: "Saved to", serverHint: "Ubuntu Server without a desktop?", serverCommand: file => "sudo apt install --no-install-recommends ./" + file + " && sshcc-setup",
   code: "Code from the new host", codeHelp: "After Approve, the new host shows a code that starts with SSHCC1. Copy all of it and paste it here",
   codeIdle: "Checked the moment you paste", codeChecking: "Checking…", codeDone: "Code accepted",
@@ -583,6 +585,7 @@ const addText = {
     ["E_PAIRING_CODE", "This code is damaged or incomplete. Copy all of it again from the new host, starting with SSHCC1."],
     ["E_PAIRING_DIGEST: pairing code", "This code is damaged or incomplete. Copy all of it again from the new host, starting with SSHCC1."],
     ["E_PAIRING_VERSION", "This is not a code from the new host. Copy all of it again, starting with SSHCC1."],
+    ["E_PAIRING_REPLACED", "This installer was replaced by the other one you already used"],
     ["unknown setup request", "This code belongs to a request that no longer exists on this Master. Save a new installer and run it on the new host"],
     ["E_PAIRING_CONFLICT", "A different host already answered this request. Save a new installer for this host"],
     ["PAIRING", "This code does not match the request. Check that you copied all of it from the host you just installed, on the right Master"],
@@ -629,11 +632,11 @@ function addWhere(request, now, options, folders) {
   return '<form id="create-pairing" class="add-where">' +
     '<label>' + addText.address + '<input id="add-address" class="add-big" name="address" required autocomplete="off" spellcheck="false" placeholder="' + addText.addressPlaceholder + '" value="' + (options.self ? "127.0.0.1" : "") + '" data-focus><small>' + addText.addressHelp + "</small></label>" +
     '<p class="add-check" id="add-address-check" aria-live="polite"></p>' +
-    '<label>' + addText.os + '<select name="os">' + option("windows", addText.osWindows) + option("linux", addText.osLinux) + "</select></label>" +
     "<details><summary>" + addText.optional + '</summary><div class="form-grid"><label>' + addText.name + '<input name="label" maxlength="256" placeholder="' + addText.namePlaceholder + '" value="' + (options.self ? esc(state.service?.label || "") : "") + '"></label>' +
     '<label>' + addText.folder + '<select name="folder" id="pairing-folder">' + option("", addText.none) + folders.map(row => option(row.id, row.name, options.folder === row.id)).join("") + option("__new__", addText.newFolder) +
     '</select><input name="newFolder" id="pairing-new-folder" maxlength="64" placeholder="' + addText.newFolderName + '" hidden></label></div></details>' +
     "<details><summary>" + addText.advanced + '</summary><div class="form-grid">' +
+    '<label>' + addText.os + '<select name="os">' + option("", addText.osDetect) + option("windows", addText.osWindows) + option("linux", addText.osLinux) + "</select></label>" +
     '<label>' + addText.group + '<input name="tenant" required value="' + esc(tenant) + '" list="pairing-groups" pattern="[A-Za-z0-9_\\-]+" maxlength="64"><datalist id="pairing-groups">' + groups.map(group => '<option value="' + esc(group) + '"></option>').join("") + "</datalist><small>" + addText.groupHelp + "</small></label>" +
     '<label>' + addText.hostId + '<input name="targetId" pattern="[A-Za-z0-9_\\-]+" maxlength="64" placeholder="' + addText.generated + '"></label><label>' + addText.port + '<input name="port" type="number" value="22" min="1" max="65535" required></label>' +
     '<label>' + addText.network + '<select name="routeKind">' + option("", addText.detect) + option("lan", addText.lan) + option("tailscale", addText.tailscale) + option("public", addText.publicIp) + "</select></label>" +
@@ -660,6 +663,7 @@ async function checkWhere(form) {
   // Resume needs the request in the list; it may have been made elsewhere since the list was read.
   if (result?.alreadyRequestId && !state.pairings.some(item => item.requestId === result.alreadyRequestId)) await refreshPairings().catch(() => {});
   if (!form.isConnected || whereKey(form) !== key) return; // a newer value is being checked
+  form.dataset.os = result?.os || ""; form.dataset.osKey = key; // what Save installer… uses when Advanced OS is "Detect"
   if (!result) return setWhereCheck(form, "");
   if (result.alreadyAs) {
     const link = result.alreadyTargetId ? '<button type="button" class="small" data-action="open-paired-target" data-id="' + esc(result.alreadyTargetId) + '">' + addText.openIt + "</button>"
@@ -667,14 +671,19 @@ async function checkWhere(form) {
     return setWhereCheck(form, icons.alert + "<span>" + addText.alreadyAs + " <strong>" + esc(result.alreadyAs) + "</strong></span>" + link, "bad", true);
   }
   if (!result.reachable) return setWhereCheck(form, icons.info + "<span>" + esc(addText.noSsh) + "</span>");
-  if (result.os) form.os.value = result.os;
   setWhereCheck(form, icons.check + "<span>" + esc(addText.sshAnswers(addText.osNames[result.os])) + "</span>", "good");
 }
 /** Step 2: one line; done as soon as the installer is saved. The Ubuntu Server command is folded under it. */
 function addInstall(request, saved) {
-  const file = saved?.path ? saved.path.split(/[\\/]/).pop() : "";
+  const name = path => path.split(/[\\/]/).pop();
+  if (saved?.paths) { // an unknown-OS pair: both installers in one folder
+    const [exe, deb] = ["exe", "deb"].map(ext => name(saved.paths.find(path => path.endsWith("." + ext)) || ""));
+    return "<p>" + addText.openEither(exe, deb) + '</p><p class="help wrap">' + addText.savedTo + " " + esc(saved.folder || "") + " · " + addText.bothHelp + "</p>" +
+      "<details><summary>" + addText.serverHint + "</summary><div>" + copyRow(addText.serverCommand(deb)) + "</div></details>";
+  }
+  const file = saved?.path ? name(saved.path) : "";
   return "<p>" + (file ? addText.open(file) : addText.openAny) + "</p>" + (saved?.path ? '<p class="help wrap">' + addText.savedTo + " " + esc(saved.path) + "</p>" : "") +
-    (request?.os === "linux" ? "<details><summary>" + addText.serverHint + "</summary><div>" + copyRow(addText.serverCommand(file || "FILE.deb")) + "</div></details>" : "");
+    (request?.os === "linux" || request?.sibling ? "<details><summary>" + addText.serverHint + "</summary><div>" + copyRow(addText.serverCommand(file && request?.os === "linux" ? file : "FILE.deb")) + "</div></details>" : "");
 }
 /** Step 3: the code is checked on paste, once per distinct value; no submit button. */
 function addPaste(now) {
@@ -688,7 +697,7 @@ async function saveInstaller() {
   const request = state.pairing;
   if (!request) return;
   const saved = await native("save_setup", { requestId: request.requestId });
-  if (saved) state.saved.set(request.requestId, saved);
+  if (saved) for (const id of [request.requestId, request.sibling].filter(Boolean)) state.saved.set(id, saved);
   render();
 }
 function setCodeCheck(text, tone = "") { const line = $("#add-code-check"); if (line) { line.textContent = text; line.className = "add-check" + (tone ? " " + tone : ""); } }
@@ -737,10 +746,12 @@ function addResult(item) {
   return '<div class="callout pending">' + icons.alert + "<div><strong>" + addText.attentionTitle + "</strong><p>" + addText.attentionText + "</p>" + (failed.length ? "<ul>" + failed.map(stage => "<li>" + esc(pairingError(stage.message)) + "</li>").join("") + "</ul>" : "") + "</div></div>" +
     '<form id="retry-pairing"><label>' + addText.address + '<input name="address" required value="' + esc(routes[0]?.address || "") + '" data-focus><small>' + addText.retryHelp + '</small></label><div class="form-actions"><button type="submit" class="primary">' + addText.retry + '</button><button type="button" data-action="pairing-back">' + icons.back + addText.back + "</button></div></form>";
 }
-function addUnfinished(requests) {
+function addUnfinished(all) {
+  // A sibling pair (unknown OS) is one row: the Windows request stands for both; Cancel cancels both.
+  const requests = all.filter(item => !(item.sibling && item.os !== "windows" && all.some(row => row.requestId === item.sibling)));
   if (!requests.length) return "";
   return '<section class="section add-unfinished"><div class="section-heading"><h2>' + addText.unfinished + '</h2><button class="small" data-action="refresh-pairings">' + icons.refresh + addText.refresh + "</button></div>" +
-    '<div class="table-wrap"><table><thead><tr><th>' + addText.host + "</th><th>" + addText.status + "</th><th></th></tr></thead><tbody>" + requests.map(item => "<tr><td><strong>" + esc(item.label || item.targetId) + "</strong><small>" + esc(timestamp(item.createdAt)) + "</small></td>" +
+    '<div class="table-wrap"><table><thead><tr><th>' + addText.host + "</th><th>" + addText.status + "</th><th></th></tr></thead><tbody>" + requests.map(item => "<tr><td><strong>" + esc(item.label || item.targetId) + "</strong><small>" + esc((all.some(row => row.requestId === item.sibling) ? addText.eitherOs + " · " : "") + timestamp(item.createdAt)) + "</small></td>" +
       '<td><span class="badge pending">' + esc(pairingState(item)) + '</span></td><td class="actions"><div class="target-actions"><button class="small" data-action="resume-pairing" data-id="' + esc(item.requestId) + '">' + addText.resume + "</button>" +
       (item.state === "awaiting_approval" ? '<button class="small danger" data-action="pairing-cancel" data-id="' + esc(item.requestId) + '">' + addText.cancel + "</button>" : "") + "</div></td></tr>").join("") + "</tbody></table></div></section>";
 }
@@ -1527,9 +1538,12 @@ document.addEventListener("click", event => {
     if (action === "pairing-cancel") {
       const requestId = button.dataset.id;
       if (!confirm(addText.cancelConfirm)) return;
-      await rpc("pairing.cancel", { requestId });
-      state.saved.delete(requestId);
-      if (state.pairing?.requestId === requestId) { state.pairing = null; addReset(); }
+      const sibling = state.pairings.find(item => item.sibling === requestId && item.state === "awaiting_approval")?.requestId;
+      for (const id of [requestId, sibling].filter(Boolean)) {
+        await rpc("pairing.cancel", { requestId: id });
+        state.saved.delete(id);
+        if (state.pairing?.requestId === id) { state.pairing = null; addReset(); }
+      }
       await refreshPairings(); render(); notify(addText.cancelled);
     }
     if (action === "dc-goto") {
@@ -1788,13 +1802,16 @@ document.addEventListener("submit", event => {
     if (form.id === "create-pairing") {
       const address = values.address.trim();
       // Name is optional: an unnamed host is shown by its address.
-      const params = { label: values.label.trim() || address, tenant: values.tenant, os: values.os, address, user: values.user, port: Number(values.port) };
+      // No OS from Advanced or the check (no SSH answer yet): "unknown" saves both installers.
+      const detected = form.dataset.osKey === whereKey(form) ? form.dataset.os : "";
+      const params = { label: values.label.trim() || address, tenant: values.tenant, os: values.os || detected || "unknown", address, user: values.user, port: Number(values.port) };
       if (values.targetId.trim()) params.targetId = values.targetId.trim();
       if (values.routeKind) params.routeKind = values.routeKind;
       if (values.routes.trim()) params.routes = JSON.parse(values.routes);
       let folderId = values.folder === "__new__" ? "" : values.folder;
       if (values.folder === "__new__" && values.newFolder.trim()) folderId = (await rpc("folders.create", { name: values.newFolder.trim() })).id;
-      state.pairing = await rpc("pairing.create", params);
+      const created = await rpc("pairing.create", params);
+      state.pairing = Array.isArray(created) ? created[0] : created;
       // The Target ID is known now, so the machine lands in its folder as soon as it pairs.
       if (folderId) await rpc("folders.assign", { targetId: state.pairing.targetId, folderId });
       if (folderId) state.folders = await rpc("folders.list");

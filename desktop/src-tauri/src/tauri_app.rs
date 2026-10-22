@@ -262,19 +262,43 @@ async fn save_remote_file(
 #[tauri::command]
 async fn save_setup(app: AppHandle, request_id: String) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let status = client::call(&Request {
-            method: "pairing.status".into(),
-            params: serde_json::json!({"requestId": request_id}),
-        })
-        .map_err(|error| format!("{error:#}"))?;
-        let envelope = &status["envelope"];
-        let windows = envelope["bundle"]["os"] == "windows";
-        let extension = if windows { "exe" } else { "deb" };
-        let filename = format!(
-            "sshcc-client-{}.{}",
-            status["targetId"].as_str().unwrap_or("new-machine"),
-            extension
-        );
+        let status = |id: &str| {
+            client::call(&Request {
+                method: "pairing.status".into(),
+                params: serde_json::json!({"requestId": id}),
+            })
+            .map_err(|error| format!("{error:#}"))
+        };
+        let request = status(&request_id)?;
+        let templates = sshcc_core::setup_package::default_templates();
+        // An unknown-OS pair: one folder, both installers (Windows .exe and Ubuntu .deb).
+        if let Some(sibling) = request["sibling"].as_str() {
+            let other = status(sibling)?;
+            let Some(folder) = app
+                .dialog()
+                .file()
+                .set_title("Choose a folder for the installers (Windows and Ubuntu)")
+                .blocking_pick_folder()
+            else {
+                return Ok(None);
+            };
+            let folder = folder.into_path().map_err(|error| error.to_string())?;
+            return sshcc_core::setup_package::build_into(
+                &[request["envelope"].clone(), other["envelope"].clone()],
+                &templates,
+                &folder,
+            )
+            .map(Some)
+            .map_err(|error| format!("{error:#}"));
+        }
+        let envelope = &request["envelope"];
+        let filename =
+            sshcc_core::setup_package::file_name(envelope).map_err(|error| format!("{error:#}"))?;
+        let extension = if envelope["bundle"]["os"] == "windows" {
+            "exe"
+        } else {
+            "deb"
+        };
         let Some(path) = app
             .dialog()
             .file()
@@ -286,13 +310,9 @@ async fn save_setup(app: AppHandle, request_id: String) -> Result<Option<Value>,
             return Ok(None);
         };
         let path = path.into_path().map_err(|error| error.to_string())?;
-        sshcc_core::setup_package::build(
-            envelope,
-            &sshcc_core::setup_package::default_templates(),
-            &path,
-        )
-        .map(Some)
-        .map_err(|error| format!("{error:#}"))
+        sshcc_core::setup_package::build(envelope, &templates, &path)
+            .map(Some)
+            .map_err(|error| format!("{error:#}"))
     })
     .await
     .map_err(|error| error.to_string())?
