@@ -4,7 +4,28 @@ The management UI (`desktop/ui`) can be exercised in a plain browser against an 
 
 ## Fixture
 
-`node desktop/tests/fixture.cjs` serves `desktop/ui` on `http://127.0.0.1:42197` (override with `SSHCC_UI_TEST_PORT`) and replaces the Tauri IPC bridge with an in-memory stub. It does not use local IPC, SSH, a real Target or production data. Its stub answers only a small set of methods (`system.status`, `targets.*`, `jobs.*`, `files.*`, `enrollment.export`, `masters.list` and the shell-open command); anything else returns an error. `GET /calls` returns every request the page sent, which the checks inspect.
+`node desktop/tests/fixture.cjs` serves `desktop/ui` on `http://127.0.0.1:42197` (override with `SSHCC_UI_TEST_PORT`) and replaces the Tauri IPC bridge with an in-memory stub. It does not use local IPC, SSH, a real Target or production data. Its stub answers only these methods; anything else (method or native command) returns an error:
+
+- `system.status`, `targets.list`, `targets.doctor`, `targets.update`, `fleet.health`
+- `jobs.*`, `files.list`, `files.read`, `files.write`, `enrollment.export`
+- pairing: `pairing.create`, `pairing.status` (list, one request, or address retry), `pairing.complete`, `pairing.cancel`
+- folders and datacenters: `folders.list`, `folders.create`, `folders.rename`, `folders.delete`, `folders.assign`, `datacenters.list`, `datacenters.create`, `datacenters.assign`
+- Merges and relays: `merges.list`, `merges.discover`, `merges.add`, `merges.sync`, `merges.remove`, `relays.list`, `relays.allow`, `relays.revoke`
+- allowed Masters: `masters.list`, `masters.revoke`, `enrollment.accept`
+- native commands: shell open, `open_json` / `save_json` (always cancelled), and `save_setup` ("save installer"; it returns a fixed path and writes nothing)
+
+Test-only endpoints:
+
+- `GET /calls` returns every request the page sent, which the checks inspect.
+- `GET /pairing-code[?requestId=…][&master=other]` returns the Pairing code the new host would show after Approve (default: the newest request awaiting approval). `master=other` gives a code made for another Master, which `pairing.complete` refuses with `E_PAIRING_MASTER`. Any other text is refused as a damaged code.
+- `POST /scenario` with `{"flags": [...]}` resets all state to that scenario and clears `/calls`.
+
+Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scenario`). With no flags the fixture has one Target, `ui-test`, and one allowed Master.
+
+- `empty`: an empty Master: no hosts, folders, Merges, relays or allowed Masters.
+- `new-host-master`: every host paired through the fixture is itself a Master, so `merges.discover` and `fleet.health` report `isMaster` and `merges.add` returns three merged hosts.
+
+`desktop/tests/decisions.cjs` holds the shared decision counter (each fill or choice on a field that was not pre-filled counts once) and `startFixture(flags)`, which starts the fixture on a free port for a check.
 
 Fixture behaviors that the checks rely on:
 
@@ -27,6 +48,10 @@ Fixture behaviors that the checks rely on:
 - the request always carries the correct Target ID.
 
 It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, which is git-ignored.
+
+`desktop/tests/add-host.cjs` adds one host from an empty Master through the add flow (plain Chromium), once with a normal host and once with the `new-host-master` scenario, and prints the decision count. It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. It does not gate on the count yet; today's flow is the baseline (4 decisions: kind of host, name, address, Pairing code). Run it in the Playwright image:
+
+    docker run --rm -v "$PWD":/src -v <node_modules with playwright>:/pw/node_modules:ro -e NODE_PATH=/pw/node_modules -w /src mcr.microsoft.com/playwright:v1.48.2-jammy node desktop/tests/add-host.cjs
 
 ## Not covered
 
