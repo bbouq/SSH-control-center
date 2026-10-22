@@ -17,3 +17,19 @@ _Avoid_: IDE, editor, tool (when meaning one of these three)
 **Local Service**:
 The machine-local SSH Control Center service that owns keys, jobs, and Target sessions on this host.
 _Avoid_: desktop window, tray (those are separate UI processes)
+
+**Tag**:
+A free-text marker an operator attaches to a Target; one Target can carry many Tags, and they are used to filter lists and to choose a group of Targets for one action.
+_Avoid_: label (that is a Target's or Master's display name), key-value label, selector
+
+**Merge**:
+One Master reaching another Master's Targets through it, possibly across several Masters in a row; on a team, each person is identified by their own Master.
+_Avoid_: link, chain, user account (a person has no account of their own; their Master is their identity)
+
+**Relay Path**:
+The ordered list of Masters a request passes through, from the Master that issued it to the last Master before the Target.
+_Avoid_: route (that is how one Master reaches a Target directly), hop list
+
+**Merge Role**:
+The rights one Master grants a Master that merged it: Full or View-only, optionally limited to chosen Tags; across a Relay Path the lowest role applies.
+_Avoid_: permission, user role

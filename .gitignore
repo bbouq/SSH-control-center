@@ -27,3 +27,4 @@ known_hosts
 *.exe
 *.zip
 .scratch/
+.DS_Store
