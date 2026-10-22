@@ -461,27 +461,66 @@ fn diagnose(state: &Path, config: &Config, id: &str) -> Result<Value> {
     tx.commit()?;
     view(&pending)
 }
-fn complete(state: &Path, config: &Config, p: &Value) -> Result<Value> {
-    let receipt = decode_receipt(string(p, "code")?)?;
+/// One validation path for `preview` and `complete`, so they never disagree.
+/// Returns the stored request, the receipt and the receipt digest; writes nothing.
+fn validate_code(
+    db: &Connection,
+    config: &Config,
+    code: &str,
+) -> Result<(Pending, Receipt, String)> {
+    let receipt = decode_receipt(code)?;
     ensure!(
         receipt.master_id == config.node_id,
         "E_PAIRING_MASTER: code belongs to another Master"
     );
     let receipt_digest = digest(&canonical(&receipt)?);
-    let mut db = database(state)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let mut pending = read_pending(&tx, &receipt.request_id)?;
+    let pending = read_pending(db, &receipt.request_id)?;
     validate_binding(&pending.envelope, &receipt)?;
     if let Some(old) = &pending.receipt_digest {
         ensure!(
             old == &receipt_digest,
             "E_PAIRING_CONFLICT: a different machine already answered this request"
         );
+    }
+    Ok((pending, receipt, receipt_digest))
+}
+/// Read-only facts for the review card, taken from the code before anything is saved.
+fn preview(state: &Path, config: &Config, p: &Value) -> Result<Value> {
+    let db = database(state)?;
+    let (pending, receipt, _) = validate_code(&db, config, string(p, "code")?)?;
+    let mut target = receipt.registration;
+    fleet::validate_target(&mut target, false)?;
+    let key = target
+        .host_keys
+        .first()
+        .context("E_PAIRING_CODE: pairing code has no host key")?;
+    Ok(
+        json!({"requestId":pending.envelope.request_id,"targetId":target.id,"label":pending.envelope.target_label,"hostName":target.label,"os":target.os,"hostKeySha256":fleet::public_key_fingerprint(key)?}),
+    )
+}
+fn complete(state: &Path, config: &Config, p: &Value) -> Result<Value> {
+    let label = match p.get("label") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let label = value
+                .as_str()
+                .context("E_ARGUMENT: label must be a string")?;
+            ensure!(
+                !label.is_empty() && label.len() <= 256 && !label.chars().any(char::is_control),
+                "E_ARGUMENT: invalid machine name"
+            );
+            Some(label.to_owned())
+        }
+    };
+    let mut db = database(state)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let (mut pending, receipt, receipt_digest) = validate_code(&tx, config, string(p, "code")?)?;
+    if pending.receipt_digest.is_some() {
         return view(&pending);
     }
     let mut target = receipt.registration;
     fleet::validate_target(&mut target, false)?;
-    target.label = pending.envelope.target_label.clone();
+    target.label = label.unwrap_or_else(|| pending.envelope.target_label.clone());
     // This is the same strict host-key/node/group collision guard as import.
     fleet::save_target(&tx, &target)?;
     pending.receipt_digest = Some(receipt_digest);
@@ -539,6 +578,7 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
         "pairing.create" => create(state, config, &req.params)?,
         "pairing.status" => status(state, config, &req.params)?,
         "pairing.complete" => complete(state, config, &req.params)?,
+        "pairing.preview" => preview(state, config, &req.params)?,
         "pairing.cancel" => cancel(state, &req.params)?,
         _ => bail!("E_METHOD: unsupported pairing method"),
     }))
