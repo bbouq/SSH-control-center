@@ -138,15 +138,12 @@ fn an_unknown_os_makes_a_windows_and_an_ubuntu_request_linked_as_siblings() {
 fn completing_one_removes_its_sibling_and_the_sibling_code_says_replaced() {
     let fx = Fixture::new();
     let (windows, linux) = pair(&fx);
-    let done = fx.complete(&windows)
-        .unwrap();
+    let done = fx.complete(&windows).unwrap();
     assert_eq!(done["requestId"], windows["requestId"]);
     let listed = fx.requests();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["requestId"], windows["requestId"]);
-    let error = fx.complete(&linux)
-        .unwrap_err()
-        .to_string();
+    let error = fx.complete(&linux).unwrap_err().to_string();
     assert!(error.contains("unknown setup request"), "{error}");
     assert!(error.contains("E_PAIRING_REPLACED"), "{error}");
     // The review step reads the code first and says the same.
@@ -164,11 +161,8 @@ fn completing_one_removes_its_sibling_and_the_sibling_code_says_replaced() {
 fn the_ubuntu_request_can_win_too() {
     let fx = Fixture::new();
     let (windows, linux) = pair(&fx);
-    fx.complete(&linux)
-        .unwrap();
-    let error = fx.complete(&windows)
-        .unwrap_err()
-        .to_string();
+    fx.complete(&linux).unwrap();
+    let error = fx.complete(&windows).unwrap_err().to_string();
     assert!(error.contains("E_PAIRING_REPLACED"), "{error}");
     assert_eq!(fx.targets()[0]["os"], "linux");
 }
@@ -179,8 +173,7 @@ fn a_cancelled_sibling_does_not_stop_the_other_from_completing() {
     let (windows, linux) = pair(&fx);
     fx.call("pairing.cancel", json!({"requestId":linux["requestId"]}))
         .unwrap();
-    fx.complete(&windows)
-        .unwrap();
+    fx.complete(&windows).unwrap();
     assert_eq!(fx.targets().len(), 1);
 }
 
@@ -206,8 +199,7 @@ fn a_request_stored_before_the_sibling_field_still_loads_and_completes() {
     .unwrap();
     drop(db);
     assert_eq!(fx.requests()[0]["sibling"], Value::Null);
-    fx.complete(&created)
-        .unwrap();
+    fx.complete(&created).unwrap();
     assert_eq!(fx.targets().len(), 1);
 }
 
@@ -223,14 +215,12 @@ fn already_added_ignores_the_requests_own_sibling() {
     assert_eq!(fresh["alreadyAs"], "New PC");
     // Checked for one of the pair, neither it nor its sibling is "already added".
     for own in [windows, linux] {
-        let result =
-            check(json!({"address":"127.0.0.1","port":port,"requestId":own["requestId"]}));
+        let result = check(json!({"address":"127.0.0.1","port":port,"requestId":own["requestId"]}));
         assert_eq!(result["alreadyAs"], Value::Null);
         assert_eq!(result["alreadyRequestId"], Value::Null);
     }
     // Another request for the same address still counts.
     let other = fx.create("linux", "127.0.0.1", port);
-    let result =
-        check(json!({"address":"127.0.0.1","port":port,"requestId":windows["requestId"]}));
+    let result = check(json!({"address":"127.0.0.1","port":port,"requestId":windows["requestId"]}));
     assert_eq!(result["alreadyRequestId"], other["requestId"]);
 }

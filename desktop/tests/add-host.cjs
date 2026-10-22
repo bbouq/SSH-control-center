@@ -1,6 +1,7 @@
 // Walks the one-column add flow ("+ Add host") on the fixture and gates on the decision count (≤ 2).
 // Also checks: the review card (nothing saved before Finish, edits saved), the attention + retry path, step marking and focus, plain errors in place, one check per pasted value, the address as the
-// default name, "Add host here…" on a folder, unfinished requests, and no "target" noun on screen.
+// default name, "Add host here…" on a folder, unfinished requests, and no "target" noun on screen. With no SSH answer the OS is
+// unknown: both installers are saved, the first one used wins, and the other one's code says it was replaced.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -34,6 +35,7 @@ async function addOneHost(page, url, d, { folderId } = {}) {
   assert.equal(await focusedId(page), "add-address", "focus starts in the address box");
   if (folderId) assert.equal(await column(page).locator('[name="folder"]').inputValue(), folderId, "folder pre-selected");
   await assertNoTargetNoun(page, "step 1");
+  assert.equal(await column(page).locator('[name="os"]').isVisible(), false, "no OS choice on the main path");
   await column(page).getByText("Advanced").click();
   await assertNoTargetNoun(page, "step 1 with Advanced open");
   await d.fill(page.locator("#add-address"), ADDRESS, "address");
@@ -42,7 +44,8 @@ async function addOneHost(page, url, d, { folderId } = {}) {
   await page.getByRole("button", { name: "Save installer…" }).click();
   await assertCurrent(page, 3);
   assert.equal(await focusedId(page), "add-code", "focus moves to the code box");
-  await step(page, 2).filter({ hasText: /Open sshcc-client-.*\.exe on the new host and click Approve/ }).waitFor();
+  // OS unknown: both installers, named in one line.
+  await step(page, 2).filter({ hasText: /Open sshcc-client-\S+\.exe \(Windows\) or sshcc-client-\S+\.deb \(Ubuntu\) on the new host, whichever matches it, and click Approve/ }).waitFor();
   assert.equal(await step(page, 2).locator(".add-n").innerText(), "✓");
   assert.equal(await page.locator('#add-host button[type="submit"]').count(), 0, "no submit button in steps 2–3");
   await assertNoTargetNoun(page, "step 3");
@@ -87,6 +90,7 @@ const checks = {
     assert.equal(rpcCalls(sent, "pairing.create").length, 1);
     assert.equal(rpcCalls(sent, "pairing.create")[0].params.address, ADDRESS);
     assert.equal(rpcCalls(sent, "pairing.create")[0].params.label, ADDRESS, "empty name is sent as the address");
+    assert.equal(rpcCalls(sent, "pairing.create")[0].params.os, "unknown", "no SSH answer: the OS is never asked");
     assert.equal(sent.filter(c => c.command === "save_setup").length, 1);
     assert.equal(rpcCalls(sent, "pairing.preview").length, 1);
     assert.equal(rpcCalls(sent, "pairing.complete").length, 1);
@@ -162,12 +166,15 @@ const checks = {
     await column(page).getByRole("button", { name: "Close" }).click();
     await page.locator('[data-action="add-host"]').click();
     const row = column(page).locator(".add-unfinished tr").filter({ hasText: ADDRESS });
+    assert.equal(await row.count(), 1, "a sibling pair is one unfinished row");
+    assert.match(await row.innerText(), /Windows or Ubuntu/);
     await row.getByRole("button", { name: "Resume" }).click();
     await assertCurrent(page, 3);
     page.once("dialog", dialog => dialog.accept());
     await column(page).locator(".add-unfinished").getByRole("button", { name: "Cancel" }).click();
     await page.waitForFunction(() => !document.querySelector(".add-unfinished"));
-    assert.equal(rpcCalls(await calls(page, url), "pairing.cancel").length, 1);
+    assert.equal(rpcCalls(await calls(page, url), "pairing.cancel").length, 2, "cancelling the row cancels both installers' requests");
+    assert.deepEqual(await rpcCall(page, url, "pairing.status"), []);
     await assertCurrent(page, 1);
   },
   /** "Add host here…" on a folder pre-selects and applies it; context menus say "Add host…". */
@@ -199,15 +206,13 @@ const checks = {
     await line.filter({ hasText: "the installer turns SSH on" }).waitFor();
     await page.waitForTimeout(1500);
     assert.match(await line.innerText(), /the installer turns SSH on/, "late answer ignored");
-    assert.equal(await os.inputValue(), "windows", "late answer did not change the OS");
+    assert.equal(await os.inputValue(), "", "the OS choice under Advanced stays on Detect");
     assert.equal(rpcCalls(await calls(page, url), "pairing.check").length, 2, "one check per pause");
     // A known OS fills the OS choice.
     await box.fill("192.0.2.32");
     await line.filter({ hasText: "SSH answers · Ubuntu or Debian" }).waitFor();
-    assert.equal(await os.inputValue(), "linux");
     await box.fill("192.0.2.33");
     await line.filter({ hasText: "SSH answers · Windows" }).waitFor();
-    assert.equal(await os.inputValue(), "windows");
     assert.ok(await save.isEnabled());
     await shots(page, "live-check-os");
     // An existing host: "Already added as …", Save installer disabled, a link to that host.
@@ -233,6 +238,35 @@ const checks = {
     await line.getByRole("button", { name: "Open it" }).click();
     await page.waitForFunction(() => !document.querySelector("#add-host"));
   },
+  /** A detected OS makes one request and one installer. */
+  async "detected-os"(page, url) {
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    await page.locator("#add-address").fill("192.0.2.32");
+    await page.locator("#add-address-check").filter({ hasText: "SSH answers · Ubuntu or Debian" }).waitFor();
+    await page.getByRole("button", { name: "Save installer…" }).click();
+    await assertCurrent(page, 3);
+    await step(page, 2).filter({ hasText: /Open sshcc-client-\S+\.deb on the new host and click Approve/ }).waitFor();
+    const sent = await calls(page, url);
+    assert.equal(rpcCalls(sent, "pairing.create")[0].params.os, "linux");
+    assert.equal((await rpcCall(page, url, "pairing.status")).length, 1, "one request");
+  },
+  /** The other installer was used first: its code says so in plain words, in place. */
+  async "replaced"(page, url) {
+    await page.goto(url); await page.locator('[data-action="add-host"]').click();
+    await page.locator("#add-address").fill(ADDRESS);
+    await page.getByRole("button", { name: "Save installer…" }).click();
+    await assertCurrent(page, 3);
+    const requests = await rpcCall(page, url, "pairing.status");
+    const [windows, linux] = ["windows", "linux"].map(os => requests.find(row => row.os === os));
+    assert.equal(windows.sibling, linux.requestId);
+    const linuxCode = await codeFor(page, url, "?requestId=" + linux.requestId);
+    // The Windows installer was used and its code pasted already (e.g. in another window).
+    await rpcCall(page, url, "pairing.complete", { code: await codeFor(page, url, "?requestId=" + windows.requestId) });
+    await page.locator("#add-code").fill(linuxCode);
+    await page.locator("#add-code-check").filter({ hasText: "This installer was replaced by the other one you already used" }).waitFor();
+    await assertCurrent(page, 3);
+    await shots(page, "replaced");
+  },
   /** Reduced motion: steps never animate. */
   async "reduced-motion"(page, url) {
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -241,7 +275,7 @@ const checks = {
     assert.equal(motion, 0, "nothing animates");
   },
 };
-const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "reduced-motion": ["empty"] };
+const scenarios = { "empty": ["empty"], "empty+new-host-master": ["empty", "new-host-master"], "review-edits": ["empty"], "attention-retry": ["empty", "needs-attention"], "wrong-codes": ["empty"], "folder": ["empty"], "live-check": [], "detected-os": ["empty"], "replaced": ["empty"], "reduced-motion": ["empty"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];
