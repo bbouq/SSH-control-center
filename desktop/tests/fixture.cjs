@@ -2,7 +2,8 @@
 // Scenario flags (comma-separated, env SSHCC_FIXTURE_SCENARIO or POST /scenario {"flags":[…]}):
 //   empty            start as a Master with no hosts, folders, Merges or relays
 //   new-host-master  every host paired through the fixture is itself a Master (merges.discover/fleet.health say so)
-//   masters-page     adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
+//   needs-attention  completing a pairing fails the connection check; an address retry (pairing.status routes) passes
+//   masters-page    adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
 //                    directly and through a Merge, plus one that only merged this Master (merging disabled)
 // Test-only endpoints: GET /calls (every request the page sent), POST /scenario (reset state, clears /calls),
 // GET /pairing-code[?requestId=…][&master=other] (the code the new host would show after Approve; default: the
@@ -46,15 +47,30 @@ const healthRow = t => ({ targetId: t.id, online: true, checkedAt: now(), error:
 reset((process.env.SSHCC_FIXTURE_SCENARIO || "").split(","));
 /** The code the new host shows after Approve: `SSHCC1.fixture.<masterId>.<requestId>`. */
 const pairingCode = (requestId, master = MASTER_ID) => "SSHCC1.fixture." + master + "." + requestId;
-function completePairing({ code }) {
+/** Validation shared by preview and complete (as on the real Master): the request the code answers. */
+function codeRequest(code) {
   const m = /^SSHCC1\.fixture\.([^.]+)\.([^.]+)$/.exec(String(need(code, "code")).trim());
   if (!m) throw new Error("E_PAIRING_CODE: damaged pairing code");
   if (m[1] !== MASTER_ID) throw new Error("E_PAIRING_MASTER: code belongs to another Master");
-  const p = pairing(m[2]);
+  return pairing(m[2]);
+}
+const hostKeySha256 = p => "SHA256:" + crypto.createHash("sha256").update("FIXTURE-" + p.targetId).digest("base64").replace(/=+$/, "");
+/** Read only: the review card's facts; saves nothing. */
+function previewPairing({ code }) {
+  const p = codeRequest(code);
+  return { requestId: p.requestId, targetId: p.targetId, label: p.label, hostName: "fixture-" + p.os + "-pc", os: p.os, hostKeySha256: hostKeySha256(p) };
+}
+function completePairing({ code, label }) {
+  const p = codeRequest(code);
+  if (p.state !== "awaiting_approval") return pairingView(p);
+  if (label) p.label = label;
   const target = { schemaVersion: 2, id: p.targetId, nodeId: crypto.randomUUID(), label: p.label, tenant: p.tenant, os: p.os, user: p.user, routes: p.routes, hostKeys: ["ssh-ed25519 FIXTURE-" + p.targetId], bridgePath: p.os === "windows" ? "C:\\Program Files\\SSHCC\\sshcc.exe" : "/usr/bin/sshcc", runnerInstalled: true };
   s.targets = s.targets.filter(t => t.id !== p.targetId).concat(target);
   if (flags.has("new-host-master")) s.masterHosts.add(p.targetId);
-  Object.assign(p, { state: "ready", updatedAt: now(), diagnostics: { targetId: p.targetId, ok: true, stages: [{ name: "fixture", ok: true, message: "Isolated UI test only" }] } });
+  const failed = flags.has("needs-attention");
+  Object.assign(p, { state: failed ? "needs_attention" : "ready", updatedAt: now(), diagnostics: failed
+    ? { targetId: p.targetId, ok: false, stages: [{ name: "connect", ok: false, message: "No SSH answer at " + p.routes[0].address + ":" + p.routes[0].port }] }
+    : { targetId: p.targetId, ok: true, stages: [{ name: "fixture", ok: true, message: "Isolated UI test only" }] } });
   return pairingView(p);
 }
 function mergeAdd(targetId) {
@@ -100,6 +116,7 @@ function rpc(method, p = {}) {
       if (!p.requestId) return s.pairings.map(pairingView);
       if (p.routes) { const row = pairing(p.requestId), t = s.targets.find(item => item.id === row.targetId); if (t) t.routes = p.routes; row.routes = p.routes; row.state = "ready"; row.updatedAt = now(); }
       return pairingView(pairing(p.requestId));
+    case "pairing.preview": return previewPairing(p);
     case "pairing.complete": return completePairing(p);
     case "pairing.cancel": { const row = pairing(need(p.requestId, "requestId")); s.pairings = s.pairings.filter(item => item !== row); return { requestId: row.requestId, cancelled: true }; }
     // Folders and datacenters (tree organisation only).

@@ -8,7 +8,7 @@ The management UI (`desktop/ui`) can be exercised in a plain browser against an 
 
 - `system.status`, `targets.list`, `targets.doctor`, `targets.update`, `fleet.health`
 - `jobs.*`, `files.list`, `files.read`, `files.write`, `enrollment.export`
-- pairing: `pairing.create`, `pairing.status` (list, one request, or address retry), `pairing.complete`, `pairing.cancel`
+- pairing: `pairing.create`, `pairing.status` (list, one request, or address retry), `pairing.preview` (read only: host name, OS and a fake SHA-256 Host key fingerprint), `pairing.complete` (with an optional `label`), `pairing.cancel`
 - folders and datacenters: `folders.list`, `folders.create`, `folders.rename`, `folders.delete`, `folders.assign`, `datacenters.list`, `datacenters.create`, `datacenters.assign`
 - Merges and relays: `merges.list`, `merges.discover`, `merges.add`, `merges.sync`, `merges.remove`, `relays.list`, `relays.allow`, `relays.revoke`
 - allowed Masters: `masters.list`, `masters.revoke`, `enrollment.accept`
@@ -17,13 +17,14 @@ The management UI (`desktop/ui`) can be exercised in a plain browser against an 
 Test-only endpoints:
 
 - `GET /calls` returns every request the page sent, which the checks inspect.
-- `GET /pairing-code[?requestId=…][&master=other]` returns the Pairing code the new host would show after Approve (default: the newest request awaiting approval). `master=other` gives a code made for another Master, which `pairing.complete` refuses with `E_PAIRING_MASTER`. Any other text is refused as a damaged code.
+- `GET /pairing-code[?requestId=…][&master=other]` returns the Pairing code the new host would show after Approve (default: the newest request awaiting approval). `master=other` gives a code made for another Master, which `pairing.preview` and `pairing.complete` refuse with `E_PAIRING_MASTER`. Any other text is refused as a damaged code.
 - `POST /scenario` with `{"flags": [...]}` resets all state to that scenario and clears `/calls`.
 
 Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scenario`). With no flags the fixture has one Target, `ui-test`, and one allowed Master.
 
 - `empty`: an empty Master: no hosts, folders, Merges, relays or allowed Masters.
 - `new-host-master`: every host paired through the fixture is itself a Master, so `merges.discover` and `fleet.health` report `isMaster` and `merges.add` returns three merged hosts.
+- `needs-attention`: completing a pairing fails the connection check (`needs_attention` with one failed stage); an address retry (`pairing.status` with `routes`) then passes.
 - `masters-page`: adds two hosts that are Masters (`branch-master`, already merged, and `hq-master`, not merged), an allowed Master `peer-both` that is also a relay, and a relay-only Master `peer-relay` with merging disabled.
 
 `desktop/tests/decisions.cjs` holds the shared decision counter (each fill or choice on a field that was not pre-filled counts once) and `startFixture(flags)`, which starts the fixture on a free port for a check.
@@ -50,7 +51,7 @@ Fixture behaviors that the checks rely on:
 
 It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, which is git-ignored.
 
-`desktop/tests/add-host.cjs` walks the one-column add flow ("+ Add host": address, Save installer…, paste the code) from an empty Master (plain Chromium) and fails if adding one host takes more than 2 decisions. It checks: one sidebar button with no dropdown; exactly one current step (`aria-current="step"`, acid only on its number) and focus on its main control; the empty name sent as the address and the host shown in the tree; a code from another Master and a damaged code each shown as a plain sentence in place, with no submit button and one `pairing.complete` per distinct pasted value; an unfinished request listed with Resume / Cancel; "Add host here…" on a folder pre-selecting and applying it; the `new-host-master` scenario; no motion under reduced motion; and no on-screen "target". It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. Run it in the Playwright image:
+`desktop/tests/add-host.cjs` walks the one-column add flow ("+ Add host": address, Save installer…, paste the code) from an empty Master (plain Chromium) and fails if adding one host takes more than 2 decisions. It checks: one sidebar button with no dropdown; exactly one current step (`aria-current="step"`, acid only on its number) and focus on its main control; the review card in step 4 (fingerprint shown, no `pairing.complete` and no host in the tree before Finish; a name and folder changed on the card are what get saved; "Open this host" opens the host's page); the empty name sent as the address and the host shown in the tree after Finish; the `needs-attention` path (failures listed, address-only retry, no second installer); a code from another Master and a damaged code each shown as a plain sentence in place, with no submit button, one `pairing.preview` per distinct pasted value and no `pairing.complete`; an unfinished request listed with Resume / Cancel; "Add host here…" on a folder pre-selecting and applying it; the `new-host-master` scenario; no motion under reduced motion; and no on-screen "target". It writes screenshots at 1180px and 820px and `add-host-results.json` under `artifacts/add-host-ui/`. Run it in the Playwright image:
 
     docker run --rm -v "$PWD":/src -v <node_modules with playwright>:/pw/node_modules:ro -e NODE_PATH=/pw/node_modules -w /src mcr.microsoft.com/playwright:v1.48.2-jammy node desktop/tests/add-host.cjs
 
