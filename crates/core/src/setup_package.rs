@@ -153,14 +153,19 @@ pub fn build(envelope: &Value, templates: &Path, output: &Path) -> Result<Value>
     )
 }
 
+/// The installer's extension for the request's OS: `exe` (Windows) or `deb` (Ubuntu).
+pub fn extension(envelope: &Value) -> Result<&'static str> {
+    match envelope["bundle"]["os"].as_str() {
+        Some("windows") => Ok("exe"),
+        Some("linux") => Ok("deb"),
+        _ => bail!("unsupported target OS"),
+    }
+}
+
 /// The installer's file name: `sshcc-client-<host ID>.exe` (Windows) or `.deb` (Ubuntu).
 pub fn file_name(envelope: &Value) -> Result<String> {
     let bundle = &envelope["bundle"];
-    let extension = match bundle["os"].as_str() {
-        Some("windows") => "exe",
-        Some("linux") => "deb",
-        _ => bail!("unsupported target OS"),
-    };
+    let extension = extension(envelope)?;
     let id = bundle["targetId"].as_str().context("missing target ID")?;
     // Same character rule as Target IDs, so the name can never leave the folder.
     ensure!(

@@ -294,11 +294,8 @@ async fn save_setup(app: AppHandle, request_id: String) -> Result<Option<Value>,
         let envelope = &request["envelope"];
         let filename =
             sshcc_core::setup_package::file_name(envelope).map_err(|error| format!("{error:#}"))?;
-        let extension = if envelope["bundle"]["os"] == "windows" {
-            "exe"
-        } else {
-            "deb"
-        };
+        let extension =
+            sshcc_core::setup_package::extension(envelope).map_err(|error| format!("{error:#}"))?;
         let Some(path) = app
             .dialog()
             .file()
