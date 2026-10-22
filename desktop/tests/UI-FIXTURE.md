@@ -8,7 +8,7 @@ The management UI (`desktop/ui`) can be exercised in a plain browser against an 
 
 - `system.status`, `targets.list`, `targets.doctor`, `targets.update`, `fleet.health`
 - `jobs.*`, `files.list`, `files.read`, `files.write`, `enrollment.export`
-- pairing: `pairing.create`, `pairing.status` (list, one request, or address retry), `pairing.complete`, `pairing.cancel`
+- pairing: `pairing.create`, `pairing.status` (list, one request, or address retry), `pairing.complete`, `pairing.cancel`, `pairing.check` (SSH answers only at 192.0.2.33 (Windows), 192.0.2.32 and 192.0.2.99 (Ubuntu) on port 22; 192.0.2.99 answers after 1.5 s; "already added" from the fixture's hosts and requests awaiting approval)
 - folders and datacenters: `folders.list`, `folders.create`, `folders.rename`, `folders.delete`, `folders.assign`, `datacenters.list`, `datacenters.create`, `datacenters.assign`
 - Merges and relays: `merges.list`, `merges.discover`, `merges.add`, `merges.sync`, `merges.remove`, `relays.list`, `relays.allow`, `relays.revoke`
 - allowed Masters: `masters.list`, `masters.revoke`, `enrollment.accept`
