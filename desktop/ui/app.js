@@ -13,7 +13,7 @@ const state = {
   health: new Map(), healthError: "", healthLoading: false, healthAt: null, healthStarted: 0, flipped: new Set(), twoWay: new Map(),
   clientLinks: [], clientLinksError: "",
   // Datacenter: tree selection, collapsed branches and on-demand container data per machine ("local" = this Master).
-  dc: { node: "dc", tab: "summary", query: "", collapsed: new Set(), filter: "running", adding: null, editing: null, ctView: "containers",
+  dc: { node: "dc", tab: "summary", query: "", collapsed: new Set(), seen: new Set(), filter: "running", adding: null, editing: null, ctView: "containers",
     monInterval: Number(localStorage.getItem("sshcc.monitorInterval")) || 5000, monPaused: false },
   monitor: new Map(),
   containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} }
@@ -493,6 +493,7 @@ function renderFiles(item) {
     '<div class="file-bar"><button type="button" class="icon-button" data-action="parent-folder" aria-label="Up one folder" title="Up one folder"' + (state.files ? "" : " disabled") + ">" + icons.up + "</button>" +
     '<form id="browse-files" class="path-pick"><input name="path" id="file-path" aria-label="Folder path · press Enter to open" class="mono" required value="' + esc(path) + '">' +
     '<button type="button" class="icon-button" data-action="path-menu" aria-label="Choose a folder" title="Choose a folder">' + icons.chevron + "</button></form>" +
+    '<div class="search file-search"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="file-filter" type="search" aria-label="Search this folder" placeholder="Search this folder…" value="' + esc(state.fileQuery || "") + '"' + (state.files ? "" : " disabled") + "></div>" +
     '<button type="button" data-action="mkdir"' + (state.files ? "" : " disabled") + ">" + icons.plus + 'New folder</button><button type="button" class="accent" data-action="upload-pick"' + (state.files ? "" : " disabled") + ">" + icons.up + 'Upload…</button><input type="file" id="upload-input" multiple hidden></div>' +
     '<div id="upload-status">' + renderUploadStatus() + '</div><div id="files-output" class="file-drop">' + renderFileList() + '</div><div id="file-editor">' + renderFileEditor() + "</div>";
 }
@@ -500,13 +501,14 @@ const fileTime = seconds => seconds ? new Date(seconds * 1000).toLocaleString("e
 function renderFileList() {
   if (!state.files && state.filesError) return '<div class="callout pending">' + icons.alert + "<div><strong>Can’t open files yet</strong><p>" + esc(state.filesError) + "</p></div></div>";
   if (!state.files) return '<div class="empty-inline">Reading folders…</div>';
-  const entries = [...state.files.entries].sort((a, b) => (b.isDirectory ? 1 : 0) - (a.isDirectory ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
+  const query = (state.fileQuery || "").trim().toLowerCase();
+  const entries = [...state.files.entries].filter(entry => !query || String(entry.name).toLowerCase().includes(query)).sort((a, b) => (b.isDirectory ? 1 : 0) - (a.isDirectory ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
   const up = parentPath(state.files.path), atRoot = up === state.files.path;
   const parent = atRoot ? "" : '<tr><td><button class="row-button file-name folder" data-action="open-folder" data-path="' + esc(up) + '">' + icons.up + '..</button></td><td class="num muted">—</td><td class="muted">Parent folder</td><td></td></tr>';
   return '<div class="table-wrap"><table class="file-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>' + parent +
     entries.map(entry => '<tr data-file="' + esc(entry.path) + '" data-name="' + esc(entry.name) + '" data-dir="' + (entry.isDirectory ? "1" : "") + '"><td><button class="row-button file-name' + (entry.isDirectory ? " folder" : "") + '" data-action="' + (entry.isDirectory ? "open-folder" : "open-file") + '" data-path="' + esc(entry.path) + '">' + (entry.isDirectory ? icons.folder : icons.file) + esc(entry.name) + "</button>" + (entry.isSymlink ? " " + chip("link") : "") +
       '</td><td class="num muted" title="' + esc(entry.size ?? "") + ' bytes">' + (entry.isDirectory ? "—" : esc(formatSize(entry.size))) + '</td><td class="muted">' + esc(fileTime(entry.modified)) + '</td><td class="row-more-cell"><button type="button" class="icon-button row-more" data-action="file-more" aria-haspopup="menu" aria-label="More actions for ' + esc(entry.name) + '" title="More actions">' + icons.more + "</button></td></tr>").join("") +
-    (entries.length ? "" : '<tr><td colspan="4" class="muted">This folder is empty · drop files here to upload</td></tr>') + "</tbody></table></div>";
+    (entries.length ? "" : '<tr><td colspan="4" class="muted">' + (query ? "Nothing here matches “" + esc(state.fileQuery.trim()) + "”" : "This folder is empty · drop files here to upload") + "</td></tr>") + "</tbody></table></div>";
 }
 function renderFileEditor() {
   if (!state.file) return "";
@@ -814,6 +816,8 @@ function dcMachineRow(entry, depth) {
 }
 function dcMasterRows(master, depth, rows, open) {
   const node = "master:" + master.id, editing = state.dc.editing;
+  // Masters start folded so the sidebar opens short; after that the person's choice sticks.
+  if (!state.dc.seen.has(node)) { state.dc.seen.add(node); state.dc.collapsed.add(node); }
   if (state.dc.query && !master.machines.some(entry => dcMatches(entry.item))) return;
   const tag = master.current ? '<span class="dc-tag is-current">current</span>' : "";
   const status = master.current ? (state.service ? "good" : "bad") : stateStyles[nodeState(master.item)] || "";
@@ -1155,6 +1159,7 @@ async function browseFiles(path) {
   const result = await rpc("files.list", { targetId, path });
   if (targetId !== state.selected) return;
   const resolved = Array.isArray(result) ? path : result.path || path;
+  if (resolved !== state.files?.path) state.fileQuery = "";
   state.files = { path: resolved, entries: Array.isArray(result) ? result : result.entries || [] }; state.filesError = "";
   state.recentPaths = [resolved, ...(state.recentPaths || []).filter(row => row !== resolved)].slice(0, 6);
   state.file = null;
@@ -1597,6 +1602,7 @@ document.addEventListener("click", event => {
 });
 document.addEventListener("input", event => {
   if (event.target.closest?.("#confirm-delete")) { const form = $("#confirm-delete"); form.querySelector('[type="submit"]').disabled = event.target.value !== form.dataset.name; }
+  if (event.target.id === "file-filter") { state.fileQuery = event.target.value; $("#files-output").innerHTML = renderFileList(); }
   if (event.target.id === "fleet-search") { state.query = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
   if (event.target.id === "dc-search") {
     state.dc.query = state.query = event.target.value; $("#dc-tree").innerHTML = renderDcTree();

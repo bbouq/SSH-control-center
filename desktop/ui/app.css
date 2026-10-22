@@ -367,7 +367,7 @@ details > div, details > form, details > p { padding: 4px 0 18px; }
 /* Files */
 .path-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
 .path-bar input { flex: 1 1 260px; }
-.file-name { display: inline-flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 14px; font-weight: 400; letter-spacing: 0; }
+.file-name { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 13px; font-weight: 400; letter-spacing: 0; }
 .file-name.folder { color: var(--white); }
 .file-name svg.i { color: var(--lilac); }
 .file-name.folder svg.i { color: var(--acid); }
@@ -419,7 +419,7 @@ dialog h2 { margin-bottom: 12px; }
 .app-side .dot { width: 7px; height: 7px; }
 .app-side .dc-toggle { min-height: 30px; }
 .app-side .dc-count, .app-side .dc-os { font-size: 10px; }
-.app-side .dc-tag { font-size: 9px; padding: 0 4px; }
+.app-side .dc-tag { font-size: 9px; padding: 3px calc(4px - .14em) 2px 4px; }
 .app-side .search input { min-height: 36px; font-size: 14px; }
 .dc-icon svg.i { width: 15px; height: 15px; color: var(--lilac); }
 .dc-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -427,7 +427,7 @@ dialog h2 { margin-bottom: 12px; }
 .dc-row:not(.is-selected) .dc-item[data-node^="node:"] .dc-name { opacity: .85; }
 .dc-count, .dc-os { flex: none; font-family: var(--mono); font-weight: 400; font-size: 11px; letter-spacing: .1em; color: var(--lilac); font-variant-numeric: tabular-nums; text-transform: uppercase; }
 .dc-os.is-hot { color: var(--amber); }
-.dc-tag { flex: none; font-family: var(--mono); font-weight: 400; font-size: 10px; letter-spacing: .14em; padding: 1px 6px; border: 1px solid var(--rule); color: var(--lilac); text-transform: uppercase; white-space: nowrap; }
+.dc-tag { flex: none; font-family: var(--mono); font-weight: 400; font-size: 10px; letter-spacing: .14em; line-height: 1; display: inline-flex; align-items: center; padding: 4px calc(6px - .14em) 3px 6px; border: 1px solid var(--rule); color: var(--lilac); text-transform: uppercase; white-space: nowrap; }
 .dc-tag.is-current { border-color: var(--acid); color: var(--acid); }
 .dc-row.is-editing { padding-top: 4px; padding-bottom: 4px; }
 .dc-row.is-editing .dc-icon { margin: 0 6px; }
@@ -574,8 +574,14 @@ td .text-button.danger { font-size: 19px; }
 .path-pick .icon-button svg.i { transform: rotate(90deg); }
 .file-drop { min-height: 160px; outline: 2px dashed transparent; outline-offset: 4px; transition: outline-color 120ms ease-out, background-color 120ms ease-out; }
 .file-drop.is-drop { outline-color: var(--acid); background: rgba(156, 255, 87, .06); }
-.file-table td { padding-top: 6px; padding-bottom: 6px; }
-.file-table td .row-button { min-height: 36px; }
+.file-table td { padding-top: 2px; padding-bottom: 2px; font-size: 13px; }
+.file-table td .row-button { min-height: 30px; }
+/* Long folders scroll inside the table, header pinned, so the bar and editor stay in reach. */
+#files-output .table-wrap { max-height: min(62vh, 640px); overflow-y: auto; }
+.file-table thead th { position: sticky; top: 0; z-index: 1; background: var(--violet); }
+.file-search { flex: 0 1 240px; min-width: 160px; }
+.file-table td:first-child > * { vertical-align: middle; }
+.file-table .row-more { min-height: 30px; width: 30px; height: 30px; }
 .file-table .row-more-cell { width: 52px; padding-right: 0; text-align: right; }
 .row-more { width: 44px; min-height: 44px; border: 0; color: var(--lilac); }
 .row-more:hover:not(:disabled), .row-more:focus-visible, .row-more[aria-expanded="true"] { color: var(--acid); background: var(--hover); }
