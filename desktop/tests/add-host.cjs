@@ -57,6 +57,9 @@ async function addOneHost(page, url, d, { folderId } = {}) {
   await assertNoTargetNoun(page, "step 3");
   // On the new host: open the installer, Approve, copy the code (simulated by the fixture).
   await d.fill(page.locator("#add-code"), await codeFor(page, url), "pairing code");
+  // A good code is confirmed on step 3 for a moment (host name included) before the review card opens.
+  await page.locator("#add-code-check.good").filter({ hasText: /Code accepted · this is \S+/ }).waitFor();
+  assert.equal(await step(page, 3).getAttribute("aria-current"), "step", "still on step 3 while the confirmation shows");
   await page.locator("#finish-pairing").waitFor();
   await assertCurrent(page, 4);
   const card = step(page, 4);

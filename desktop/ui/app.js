@@ -562,7 +562,7 @@ const addText = {
   bothHelp: "Both installers are for this host. The one you use first wins; the other stops working", eitherOs: "Windows or Ubuntu",
   savedTo: "Saved to", serverHint: "Ubuntu Server without a desktop?", serverCommand: file => "sudo apt install --no-install-recommends ./" + file + " && sshcc-setup",
   code: "Code from the new host", codeHelp: "After Approve, the new host shows a code that starts with SSHCC1. Copy all of it and paste it here",
-  codeIdle: "Checked the moment you paste", codeChecking: "Checking…", codeDone: "Code accepted",
+  codeIdle: "Checked the moment you paste", codeChecking: "Checking…", codeDone: "Code accepted", codeAccepted: name => "✓ Code accepted · this is " + name,
   hostName: "Host name", osName: "OS", shownAs: "Shown as", hostKey: "Host key (SHA-256)",
   reviewHelp: "Read from the code. Nothing is added until you press Finish", finish: "Finish",
   readyTitle: "Service and host identity verified", readyText: "Agents can use this host now", openHost: "Open this host", another: "Add another host", done: "Done",
@@ -714,6 +714,7 @@ async function saveInstaller() {
 }
 function setCodeCheck(text, tone = "") { const line = $("#add-code-check"); if (line) { line.textContent = text; line.className = "add-check" + (tone ? " " + tone : ""); } }
 let codeTimer = 0;
+const CODE_ACCEPTED_MS = 700;
 /** A paste is checked at once; typing waits for a pause. Each distinct value is sent once. */
 function onCodeInput(box, pasted) {
   state.add.code = box.value; clearTimeout(codeTimer);
@@ -728,6 +729,10 @@ async function checkCode(code) {
     if (state.add.checked !== code) return;
     // A code for another unfinished request moves the column to that request.
     if (result.requestId !== state.pairing?.requestId) state.pairing = state.pairings.find(item => item.requestId === result.requestId) || state.pairing;
+    // Hold the confirmation on step 3 for a moment so the jump to step 4 is not a surprise.
+    setCodeCheck(addText.codeAccepted(result.hostName || result.label), "good");
+    await new Promise(resolve => setTimeout(resolve, CODE_ACCEPTED_MS));
+    if (state.add.checked !== code) return; // edited, cancelled or closed during the pause
     state.add.preview = { ...result, code }; render();
   } catch (error) {
     if (state.add.checked !== code) return; // a newer value is being checked
@@ -774,7 +779,7 @@ function focusAddStep() {
   const key = (state.pairing?.requestId || "") + ":" + now.dataset.step + ":" + now.dataset.phase;
   // Same step after a re-render: put focus back only if the re-render dropped it.
   if (state.add.focused === key && document.activeElement && document.activeElement !== document.body) return;
-  state.add.focused = key; now.querySelector("[data-focus]")?.focus();
+  state.add.focused = key; now.scrollIntoView({ block: "nearest" }); now.querySelector("[data-focus]")?.focus();
 }
 /** The Master line in the result card: merging, merged (host count, Merge gloss, optional Two-way) or failed. */
 function addMasterLine(item) {
