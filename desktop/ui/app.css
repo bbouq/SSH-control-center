@@ -196,6 +196,7 @@ main { display: block; padding: 24px clamp(20px, 3vw, 44px) 72px; outline: none;
 .surface { padding: 18px 0 0; border-top: 1px solid var(--white); }
 .surface + .surface, .section + .section, .surface + .section, .section + .surface { margin-top: 28px; }
 .stack { display: grid; gap: 28px; }
+.stack > * { min-width: 0; } /* a wide table scrolls in its .table-wrap instead of widening the page */
 .section-heading, .card-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .section-heading p, .card-head p { margin: 4px 0 0; font-size: 14px; color: var(--lilac); }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 22px; }
@@ -241,6 +242,8 @@ td.actions [data-action="open-shell"] { width: 44px; min-height: 44px; padding: 
 td.actions [data-action="open-shell"]:hover:not(:disabled), td.actions [data-action="open-shell"]:focus-visible { border-color: var(--white); }
 td.actions [data-action="open-shell"] .btn-label { display: none; }
 td.actions .target-actions { flex-wrap: nowrap; justify-content: flex-end; }
+.reach-badges { display: grid; justify-items: start; gap: 2px; }
+.reach-badges small { margin: 0 0 6px 16px; }
 td > code { white-space: nowrap; overflow-wrap: normal; }
 .name-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .name-cell > div { min-width: 0; }
@@ -604,3 +607,31 @@ td .text-button.danger { font-size: 19px; }
 .confirm-label { text-transform: none; letter-spacing: 0; font-family: var(--body); font-size: 15px; color: var(--white); display: block; }
 .confirm-label code { font-size: 14px; color: var(--acid); padding: 0 2px; }
 .confirm-label input { margin-top: 8px; }
+
+/* Add host: one column of four numbered steps. Only the current step uses acid (thick rule, number,
+   heading); done steps are dimmed with a check, later steps fainter still. No motion between steps. */
+.add-column { max-width: 760px; }
+.add-step { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 16px; border-top: 1px solid var(--rule); padding: 16px 0 22px; }
+.add-step.is-now { border-top-color: var(--acid); box-shadow: inset 0 2px 0 var(--acid); } /* 3 px rule that keeps a 1 px border, so nothing shifts when the step changes */
+/* Current step in acid; done steps in muted --lilac; later steps fainter only through non-text marks (soft rule,
+   hollow number) so every word stays at --lilac contrast or better (DESIGN.md rule 8). */
+.add-n { font-family: var(--display); font-size: 48px; font-weight: 700; line-height: 1; color: var(--lilac); }
+.add-step.is-now .add-n, .add-step.is-now h2 { color: var(--acid); }
+.add-step.is-done .add-body, .add-step.is-done .add-body :is(h2, p, dd, strong, textarea) { color: var(--lilac); }
+.add-step.is-later { border-top-color: var(--rule-soft); }
+.add-step.is-later h2 { color: var(--lilac); }
+.add-step.is-later .add-n { color: transparent; -webkit-text-stroke: 1px var(--lilac); }
+.add-body { display: grid; gap: 12px; min-width: 0; align-content: start; }
+.add-body h2 { margin: 0; font-size: 22px; }
+.add-body p { margin: 0; }
+.add-body details > div { padding-top: 8px; }
+.add-where { display: grid; gap: 14px; }
+.add-where label { display: grid; gap: 4px; }
+.add-big { font-size: 24px; min-height: 56px; border-color: var(--white); }
+.add-check { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--lilac); min-height: 1.5em; }
+.add-check.good { color: var(--white); }
+.add-check.bad { color: var(--rose); }
+.add-unfinished { max-width: 760px; margin-top: 28px; }
+@media (max-width: 900px) { .add-step { grid-template-columns: 40px minmax(0, 1fr); gap: 12px; } .add-n { font-size: 36px; } }
+/* Narrow: Masters and unfinished-request buttons stack instead of hiding past the table's edge. */
+@media (max-width: 900px) { :is(.add-unfinished, .masters) td.actions .target-actions { flex-wrap: wrap; flex-direction: column; align-items: stretch; } :is(.add-unfinished, .masters) td.actions button { white-space: normal; text-align: center; } }

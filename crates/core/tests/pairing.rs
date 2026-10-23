@@ -596,3 +596,73 @@ fn datacenters_group_masters_optionally() {
     call("datacenters.assign", json!({"master": "local", "datacenterId": null})).unwrap();
     assert!(call("datacenters.list", json!({})).unwrap().unwrap()["members"].as_object().unwrap().is_empty());
 }
+
+#[test]
+fn preview_reads_the_code_without_saving_anything() {
+    let fx = Fixture::new();
+    let created = fx.create(Some("one"));
+    let registration = fx.registration(&created["envelope"]);
+    let code = pairing::encode_receipt(&created["envelope"], &registration).unwrap();
+    let status = || {
+        fx.call("pairing.status", json!({"requestId":created["requestId"]}))
+            .unwrap()
+    };
+    let before = status();
+    let preview = fx.call("pairing.preview", json!({"code":code})).unwrap();
+    assert_eq!(
+        preview,
+        json!({"requestId":created["requestId"],"targetId":"one","label":"เครื่องทดสอบ ไทย","hostName":"physical-hostname","os":"linux","hostKeySha256":fleet::public_key_fingerprint(&key(2)).unwrap()})
+    );
+    assert_eq!(targets(&fx), json!([]));
+    assert_eq!(status(), before);
+}
+
+#[test]
+fn preview_refuses_bad_codes_with_the_same_error_as_complete() {
+    let fx = Fixture::new();
+    let created = fx.create(Some("one"));
+    let registration = fx.registration(&created["envelope"]);
+    let code = pairing::encode_receipt(&created["envelope"], &registration).unwrap();
+    let mut receipt = serde_json::to_value(pairing::decode_receipt(&code).unwrap()).unwrap();
+    receipt["masterId"] = json!(Uuid::new_v4().to_string());
+    let other_master = raw_code(&receipt);
+    let mut damaged = code.clone();
+    damaged.pop();
+    damaged.push('x');
+    let same_error = |code: &str| {
+        let preview = fx
+            .call("pairing.preview", json!({"code":code}))
+            .unwrap_err()
+            .to_string();
+        let complete = fx
+            .call("pairing.complete", json!({"code":code}))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(preview, complete);
+        preview
+    };
+    assert!(same_error(&other_master).contains("another Master"));
+    assert!(same_error(&damaged).contains("damaged"));
+    assert_eq!(targets(&fx), json!([]));
+    fx.no_network();
+    fx.call("pairing.complete", json!({"code":code})).unwrap();
+    let mut another = registration.clone();
+    another["nodeId"] = json!(Uuid::new_v4().to_string());
+    let another = pairing::encode_receipt(&created["envelope"], &another).unwrap();
+    assert!(same_error(&another).contains("different machine already answered"));
+}
+#[test]
+fn complete_saves_the_name_edited_on_the_review_card() {
+    let fx = Fixture::new();
+    let created = fx.create(Some("one"));
+    let code =
+        pairing::encode_receipt(&created["envelope"], &fx.registration(&created["envelope"]))
+            .unwrap();
+    fx.no_network();
+    fx.call(
+        "pairing.complete",
+        json!({"code":code,"label":"web-01 ใหม่"}),
+    )
+    .unwrap();
+    assert_eq!(targets(&fx)[0]["label"], "web-01 ใหม่");
+}

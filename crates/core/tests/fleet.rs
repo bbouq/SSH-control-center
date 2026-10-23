@@ -607,6 +607,18 @@ fn pairing_back_requires_an_active_merge_and_the_callers_own_code() {
     }
     fx.call("relays.allow", json!({ "masterId": merging }))
         .unwrap();
+    // A merged Master always knows its own OS; the two-request "unknown" form is local only.
+    let unknown = json!({"os":"unknown","routes":[{"kind":"lan","address":"10.0.0.9","port":22}]});
+    assert!(fleet::relay_pair(&fx.state, &fx.config, &merging, &unknown)
+        .unwrap_err()
+        .to_string()
+        .contains("E_ARGUMENT: os must be windows or linux"));
+    let status = Request {
+        method: "pairing.status".into(),
+        params: json!({}),
+    };
+    let pending = sshcc_core::pairing::handle(&fx.state, &fx.config, &status).unwrap();
+    assert_eq!(pending, Some(json!([])));
     assert!(fleet::relay_pair_complete(&fx.state, &fx.config, &merging, &json!({}))
         .unwrap_err()
         .to_string()

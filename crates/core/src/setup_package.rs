@@ -153,6 +153,43 @@ pub fn build(envelope: &Value, templates: &Path, output: &Path) -> Result<Value>
     )
 }
 
+/// The installer's extension for the request's OS: `exe` (Windows) or `deb` (Ubuntu).
+pub fn extension(envelope: &Value) -> Result<&'static str> {
+    match envelope["bundle"]["os"].as_str() {
+        Some("windows") => Ok("exe"),
+        Some("linux") => Ok("deb"),
+        _ => bail!("unsupported target OS"),
+    }
+}
+
+/// The installer's file name: `sshcc-client-<host ID>.exe` (Windows) or `.deb` (Ubuntu).
+pub fn file_name(envelope: &Value) -> Result<String> {
+    let bundle = &envelope["bundle"];
+    let extension = extension(envelope)?;
+    let id = bundle["targetId"].as_str().context("missing target ID")?;
+    // Same character rule as Target IDs, so the name can never leave the folder.
+    ensure!(
+        !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "invalid target ID"
+    );
+    Ok(format!("sshcc-client-{id}.{extension}"))
+}
+
+/// Builds each request's installer into one existing folder (an unknown-OS pair: the Windows
+/// `.exe` and the Ubuntu `.deb`), named by [`file_name`].
+pub fn build_into(envelopes: &[Value], templates: &Path, folder: &Path) -> Result<Value> {
+    ensure!(folder.is_dir(), "the chosen folder does not exist");
+    let files = envelopes
+        .iter()
+        .map(|envelope| build(envelope, templates, &folder.join(file_name(envelope)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let paths: Vec<Value> = files.iter().map(|file| file["path"].clone()).collect();
+    Ok(json!({"folder": folder.display().to_string(), "paths": paths, "files": files}))
+}
+
 fn ar_members(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     ensure!(bytes.starts_with(b"!<arch>\n"), "invalid Debian archive");
     let mut members = Vec::new();

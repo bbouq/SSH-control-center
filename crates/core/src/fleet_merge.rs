@@ -4,14 +4,12 @@ use super::{
     attach, database, handle, list_targets, printable, role, slug, str_arg, target, transport,
     Target, MAX_TARGETS,
 };
-use crate::{config::Config, protocol::Request};
+use crate::{config::Config, protocol::Request, ssh_banner};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read,
-    net::{TcpStream, ToSocketAddrs},
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -23,7 +21,6 @@ use std::{
 use uuid::Uuid;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
-const BANNER_TIMEOUT: Duration = Duration::from_secs(3);
 /// Upper bound on concurrent probes, so a 50-Target fleet never bursts 50 SSH clients.
 const PROBE_WORKERS: usize = 8;
 const HEALTH_TTL: chrono::TimeDelta = chrono::TimeDelta::seconds(30);
@@ -397,6 +394,12 @@ pub fn relay_pair(state: &Path, config: &Config, master_id: &str, p: &Value) -> 
     role(config, "master")?;
     let db = database(state)?;
     grant(&db, master_id, false)?;
+    // "unknown" (two requests, one per installer) is for the local add flow only.
+    let os = str_arg(p, "os")?;
+    ensure!(
+        matches!(os, "windows" | "linux"),
+        "E_ARGUMENT: os must be windows or linux"
+    );
     if let Some(existing) = requester_target(&db, master_id)? {
         return Ok(json!({"existingTargetId":existing.id}));
     }
@@ -411,7 +414,7 @@ pub fn relay_pair(state: &Path, config: &Config, master_id: &str, p: &Value) -> 
         config,
         &Request {
             method: "pairing.create".into(),
-            params: json!({"label":label,"tenant":MASTERS_TENANT,"os":str_arg(p, "os")?,
+            params: json!({"label":label,"tenant":MASTERS_TENANT,"os":os,
                 "routes":p.get("routes").context("E_ARGUMENT: routes required")?}),
         },
     )?
@@ -581,38 +584,12 @@ fn probe(state: &Path, config: &Config, targets: &[Target]) -> Vec<Result<Value,
     bounded(targets, |t| status(state, config, t))
 }
 
-/// An OpenSSH banner without logging in, so no session, process or logon event on the Target.
-fn banner(address: &str, port: u16) -> Result<(), String> {
-    let fail = |error: &dyn std::fmt::Display| format!("{address}:{port}: {error}");
-    let mut last = fail(&"address did not resolve");
-    for addr in (address, port).to_socket_addrs().map_err(|e| fail(&e))? {
-        let mut stream = match TcpStream::connect_timeout(&addr, BANNER_TIMEOUT) {
-            Ok(stream) => stream,
-            Err(error) => {
-                last = fail(&error);
-                continue;
-            }
-        };
-        stream
-            .set_read_timeout(Some(BANNER_TIMEOUT))
-            .map_err(|e| fail(&e))?;
-        let mut head = [0u8; 255];
-        let read = stream.read(&mut head).map_err(|e| fail(&e))?;
-        return if head[..read].windows(4).any(|w| w == b"SSH-") {
-            Ok(())
-        } else {
-            Err(fail(&"port answered without an SSH banner"))
-        };
-    }
-    Err(last)
-}
-
 /// None when only a ProxyJump route could reach the Target, which needs a real SSH probe.
 fn reachable(target: &Target) -> Option<Result<(), String>> {
     let mut failures = Vec::new();
     for route in target.routes.iter().filter(|r| r.proxy_jump.is_none()) {
-        match banner(&route.address, route.port) {
-            Ok(()) => return Some(Ok(())),
+        match ssh_banner::read(&route.address, route.port) {
+            Ok(_) => return Some(Ok(())),
             Err(error) => failures.push(error),
         }
     }

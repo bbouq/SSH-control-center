@@ -17,6 +17,7 @@ pub mod search;
 pub mod security;
 pub mod service;
 pub mod setup_package;
+pub mod ssh_banner;
 pub mod stream;
 pub mod terminal;
 pub mod windows_service;

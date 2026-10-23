@@ -363,6 +363,11 @@ fn run() -> Result<()> {
                 address,
                 output,
             } => {
+                // "unknown" makes two requests (one per installer); that form is for the UI only.
+                anyhow::ensure!(
+                    matches!(os.as_str(), "windows" | "linux"),
+                    "--os must be windows or linux"
+                );
                 let value = call(
                     "pairing.create",
                     json!({"label":label,"tenant":tenant,"os":os,"address":address}),
