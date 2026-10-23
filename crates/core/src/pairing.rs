@@ -48,8 +48,9 @@ struct Pending {
     #[serde(default)]
     diagnostics: Option<Value>,
     /// The other request of a pair made for an unknown OS (Windows + Ubuntu). Absent on older
-    /// requests and on single ones.
-    #[serde(default)]
+    /// requests and on single ones. Not written when absent, so an older Master can still read
+    /// single requests after a downgrade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sibling: Option<String>,
 }
 fn digest(bytes: &[u8]) -> String {
