@@ -309,14 +309,14 @@ const th = {
   side: {
     addHost: "+ เพิ่มเครื่อง", filter: "กรองเครื่อง", filterPlaceholder: "กรองเครื่อง…", menu: "เมนูหลัก", nav: "การนำทาง",
     inventory: "เครื่องทั้งหมด", treeToggle: "แสดงหรือซ่อนผังเครื่อง", masters: "เครื่องหลัก (Masters)", service: "บริการ",
-    footTitle: "หน้าต่างนี้สั่งงานจาก Master นี้", current: "Master ปัจจุบัน", connecting: "กำลังเชื่อมต่อ…", unavailable: "ติดต่อบริการไม่ได้",
-    refresh: "รีเฟรช", language: "ภาษา", reading: "กำลังอ่านข้อมูลจากบริการในเครื่อง…", dismiss: "ปิด",
+    footTitle: "หน้าต่างนี้สั่งงานจาก Master นี้", current: "Master ปัจจุบัน", connecting: "กำลังเชื่อมต่อ…", unavailable: "Service ไม่พร้อมใช้งาน",
+    refresh: "Refresh", language: "ภาษา", reading: "กำลังอ่านข้อมูลจากบริการในเครื่อง…", dismiss: "ปิด",
   },
   common: {
     copied: "คัดลอกแล้ว", copyFailed: "คัดลอกไม่ได้ เลือกข้อความแล้วกด Ctrl+C", copy: "คัดลอก", copyCommand: command => "คัดลอก " + command,
     openApp: "เปิดแอป SSH Control Center เพื่อเชื่อมต่อกับบริการในเครื่อง", notInRegistry: "เครื่องนี้ไม่อยู่ในรายการของ Master นี้",
     thisHost: "เครื่องนี้", none: "—", close: "ปิด", cancel: "ยกเลิก", refresh: "รีเฟรช", rename: "เปลี่ยนชื่อ", checkedAt: when => "ตรวจเมื่อ " + when,
-    badFormat: "บริการส่งรายการเครื่องมาในรูปแบบที่ไม่รองรับ", jobsFailed: error => "อัปเดตงานไม่ได้: " + error,
+    badFormat: "บริการส่งรายการเครื่องมาในรูปแบบที่ไม่รองรับ", jobsFailed: error => "ไม่สามารถอัพเดตงานได้: " + error,
   },
   dialogs: {
     openJson: "เปิดไฟล์ลงทะเบียน", saveJson: "บันทึกชุดข้อมูลลงทะเบียน (สาธารณะ)", download: "ดาวน์โหลดไฟล์",
@@ -338,7 +338,7 @@ const th = {
     role: { current: "Master · ปัจจุบัน", merged: "Master · Merge แล้ว", master: "Master", target: "เครื่อง" },
     via: name => "ผ่าน " + name,
     terminalOn: name => "เปิดเทอร์มินัลบน " + name, installFirst: "ติดตั้งบริการบนเครื่องก่อน", openTerminal: "เปิดเทอร์มินัล",
-    head: { host: "เครื่อง", role: "บทบาท", address: "ที่อยู่", cpu: "CPU", mem: "หน่วยความจำ", status: "สถานะ" },
+    head: { host: "เครื่อง", role: "บทบาท", address: "ที่อยู่", cpu: "CPU", mem: "MEM", status: "สถานะ" },
     thisMaster: "Master นี้", thisWindow: "หน้าต่างนี้", connected: "เชื่อมต่อได้", problem: "พบปัญหา",
     highLoad: "โหลดสูง", highLoadTitle: cpu => "CPU " + cpu + "% จากค่าล่าสุดในแท็บติดตาม",
     filters: { all: "ทั้งหมด", online: "ออนไลน์", offline: "ออฟไลน์", other: "ไม่ทราบ" }, filterBy: "กรองตามสถานะ",

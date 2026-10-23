@@ -18,7 +18,7 @@ const ALLOWED = new Set(`Master Masters Tag Merge SSH SSHCC Approve Owner SSH Co
   AI ID OS IP CPU JSON CLI MCP LAN Tailscale Windows Server Ubuntu Debian Linux Desktop ProxyJump hostKeys identityFile
   PowerShell Bash Shell stdout stderr UTF SHA B KB MB GB TB GiB KiB Node Host key host Bridge session Session Terminal
   Repository WebView tray named pipe Unix socket Services SSHControlCenter Cursor Claude Code Codex docker podman path
-  client server Enter Ctrl C v swap root array object OpenSSH sshcc bridge authorized keys Ctrl e g`.split(/\s+/));
+  client server Service Refresh MEM Enter Ctrl C v swap root array object OpenSSH sshcc bridge authorized keys Ctrl e g`.split(/\s+/));
 
 const rpc = async (page, url, method, params = {}) => (await (await page.request.post(url + "/rpc", { data: { command: "rpc", args: { method, params } } })).json());
 const scenario = (page, url, flags) => page.request.post(url + "/scenario", { data: { flags } });
