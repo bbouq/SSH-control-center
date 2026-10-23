@@ -180,12 +180,12 @@ async fn open_shell(target_id: String, owner_session_id: Option<String>) -> Resu
 // The caller cannot supply a local path. Access is limited to the user's native
 // file selection, so the webview needs no general filesystem permission.
 #[tauri::command]
-async fn open_json(app: AppHandle) -> Result<Option<Value>, String> {
+async fn open_json(app: AppHandle, title: Option<String>) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(path) = app
             .dialog()
             .file()
-            .set_title("Open registration or enrollment")
+            .set_title(title.unwrap_or_else(|| "Open registration or enrollment".into()))
             .add_filter("JSON", &["json"])
             .blocking_pick_file()
         else {
@@ -209,12 +209,16 @@ async fn open_json(app: AppHandle) -> Result<Option<Value>, String> {
 }
 
 #[tauri::command]
-async fn save_json(app: AppHandle, document: Value) -> Result<Option<String>, String> {
+async fn save_json(
+    app: AppHandle,
+    document: Value,
+    title: Option<String>,
+) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(path) = app
             .dialog()
             .file()
-            .set_title("Save public enrollment bundle")
+            .set_title(title.unwrap_or_else(|| "Save public enrollment bundle".into()))
             .add_filter("JSON", &["json"])
             .set_file_name("sshcc-enrollment.json")
             .blocking_save_file()
@@ -238,12 +242,13 @@ async fn save_remote_file(
     target_id: String,
     path: String,
     name: String,
+    title: Option<String>,
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(dest) = app
             .dialog()
             .file()
-            .set_title("Download file")
+            .set_title(title.unwrap_or_else(|| "Download file".into()))
             .set_file_name(name)
             .blocking_save_file()
         else {
@@ -258,9 +263,15 @@ async fn save_remote_file(
 }
 
 // Setup data is fetched again from the owner-authorized service. The webview
-// supplies only a request ID; writing is limited to the native save dialog.
+// supplies only a request ID (and the dialog titles in the window's language);
+// writing is limited to the native save dialog.
 #[tauri::command]
-async fn save_setup(app: AppHandle, request_id: String) -> Result<Option<Value>, String> {
+async fn save_setup(
+    app: AppHandle,
+    request_id: String,
+    title: Option<String>,
+    folder_title: Option<String>,
+) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let status = |id: &str| {
             client::call(&Request {
@@ -277,7 +288,9 @@ async fn save_setup(app: AppHandle, request_id: String) -> Result<Option<Value>,
             let Some(folder) = app
                 .dialog()
                 .file()
-                .set_title("Choose a folder for the installers (Windows and Ubuntu)")
+                .set_title(folder_title.unwrap_or_else(|| {
+                    "Choose a folder for the installers (Windows and Ubuntu)".into()
+                }))
                 .blocking_pick_folder()
             else {
                 return Ok(None);
@@ -299,7 +312,7 @@ async fn save_setup(app: AppHandle, request_id: String) -> Result<Option<Value>,
         let Some(path) = app
             .dialog()
             .file()
-            .set_title("Save installer for the new machine")
+            .set_title(title.unwrap_or_else(|| "Save installer for the new machine".into()))
             .add_filter("Installer", &[extension])
             .set_file_name(filename)
             .blocking_save_file()
@@ -447,8 +460,9 @@ fn show_window(app: &AppHandle) {
             .build();
         OPENING.store(false, Ordering::Release);
         if let Err(error) = result {
+            let text = crate::options::tray_text(crate::options::os_is_thai());
             app.dialog()
-                .message(format!("Cannot open the management window: {error}"))
+                .message(format!("{}: {error}", text.cannot_open))
                 .title("SSH Control Center")
                 .show(|_| {});
         }
@@ -566,16 +580,11 @@ pub fn run_tauri(isolated_window: bool) {
                 }
                 return Ok(());
             }
-            let open =
-                MenuItem::with_id(app, "open", "Open SSH Control Center", true, None::<&str>)?;
+            // The tray follows the OS language (see `options::tray_text`).
+            let text = crate::options::tray_text(crate::options::os_is_thai());
+            let open = MenuItem::with_id(app, "open", text.open, true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(
-                app,
-                "quit",
-                "Quit tray icon (service keeps running)",
-                true,
-                None::<&str>,
-            )?;
+            let quit = MenuItem::with_id(app, "quit", text.quit, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &separator, &quit])?;
             TrayIconBuilder::new()
                 .icon(Image::from_bytes(include_bytes!("../icons/icon.png"))?)

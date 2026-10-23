@@ -32,6 +32,8 @@ jobs:
         run: cargo test --locked -p sshcc-core -- --test-threads=1
       - name: Build CLI and desktop
         run: cargo build --locked -p sshcc -p sshcc-desktop
+      - name: Desktop tests
+        run: cargo test --locked -p sshcc-desktop
 
   windows:
     name: Windows · CLI + desktop
