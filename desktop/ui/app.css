@@ -612,12 +612,12 @@ td .text-button.danger { font-size: 19px; }
    heading); done steps are dimmed with a check, later steps fainter still. No motion between steps. */
 .add-column { max-width: 760px; }
 .add-step { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 16px; border-top: 1px solid var(--rule); padding: 16px 0 22px; }
-.add-step.is-now { border-top: 3px solid var(--acid); }
+.add-step.is-now { border-top-color: var(--acid); box-shadow: inset 0 2px 0 var(--acid); } /* 3 px rule that keeps a 1 px border, so nothing shifts when the step changes */
 /* Current step in acid; done steps in muted --lilac; later steps fainter only through non-text marks (soft rule,
    hollow number) so every word stays at --lilac contrast or better (DESIGN.md rule 8). */
 .add-n { font-family: var(--display); font-size: 48px; font-weight: 700; line-height: 1; color: var(--lilac); }
 .add-step.is-now .add-n, .add-step.is-now h2 { color: var(--acid); }
-.add-step.is-done .add-body, .add-step.is-done .add-body :is(h2, p, dd, strong) { color: var(--lilac); }
+.add-step.is-done .add-body, .add-step.is-done .add-body :is(h2, p, dd, strong, textarea) { color: var(--lilac); }
 .add-step.is-later { border-top-color: var(--rule-soft); }
 .add-step.is-later h2 { color: var(--lilac); }
 .add-step.is-later .add-n { color: transparent; -webkit-text-stroke: 1px var(--lilac); }

@@ -56,11 +56,18 @@ async function addOneHost(page, url, d, { folderId } = {}) {
   assert.equal(await page.locator('#add-host button[type="submit"]').count(), 0, "no submit button in steps 2–3");
   await assertNoTargetNoun(page, "step 3");
   // On the new host: open the installer, Approve, copy the code (simulated by the fixture).
-  await d.fill(page.locator("#add-code"), await codeFor(page, url), "pairing code");
+  const code = await codeFor(page, url);
+  await d.fill(page.locator("#add-code"), code, "pairing code");
   // A good code is confirmed on step 3 for a moment (host name included) before the review card opens.
   await page.locator("#add-code-check.good").filter({ hasText: /Code accepted · this is \S+/ }).waitFor();
   assert.equal(await step(page, 3).getAttribute("aria-current"), "step", "still on step 3 while the confirmation shows");
+  const codeBox = () => page.evaluate(() => { const r = document.querySelector('#add-host .add-step[data-step="3"] textarea').getBoundingClientRect(); return [Math.round(r.top + scrollY), Math.round(r.height)]; });
+  const before = await codeBox();
   await page.locator("#finish-pairing").waitFor();
+  // The pasted code stays in place, read only: step 3 does not collapse or move.
+  const pasted = step(page, 3).locator("textarea");
+  assert.equal(await pasted.inputValue(), code); assert.ok(await pasted.evaluate(el => el.readOnly), "read only once done");
+  const after = await codeBox(); assert.deepEqual(after, before, "the code box keeps its place and size: " + before + " → " + after);
   await assertCurrent(page, 4);
   const card = step(page, 4);
   assert.match(await card.innerText(), /SHA256:/, "review card shows the host key fingerprint");

@@ -699,7 +699,9 @@ function addInstall(request, saved) {
 }
 /** Step 3: the code is checked on paste, once per distinct value; no submit button. */
 function addPaste(now) {
-  if (now.n > 3) return '<p class="add-check">' + icons.check + addText.codeDone + "</p>";
+  // Done: the pasted code stays where it was (read only, same layout) so nothing above step 4 moves.
+  if (now.n > 3) return state.add.code ? '<label>' + addText.code + '<textarea class="mono" rows="3" readonly spellcheck="false">' + esc(state.add.code) + "</textarea></label>" +
+    '<p class="add-check good">' + esc(addText.codeAccepted(state.add.accepted)) + '</p><p class="help">' + addText.codeHelp + "</p>" : '<p class="add-check">' + icons.check + addText.codeDone + "</p>";
   const error = state.add.error;
   return '<label>' + addText.code + '<textarea id="add-code" class="mono" rows="3" maxlength="65536" autocomplete="off" spellcheck="false" placeholder="SSHCC1.…" data-focus>' + esc(state.add.code) + "</textarea></label>" +
     '<p class="add-check' + (error ? " bad" : "") + '" id="add-code-check" aria-live="polite">' + esc(error || addText.codeIdle) + '</p><p class="help">' + addText.codeHelp + "</p>";
@@ -730,7 +732,7 @@ async function checkCode(code) {
     // A code for another unfinished request moves the column to that request.
     if (result.requestId !== state.pairing?.requestId) state.pairing = state.pairings.find(item => item.requestId === result.requestId) || state.pairing;
     // Hold the confirmation on step 3 for a moment so the jump to step 4 is not a surprise.
-    setCodeCheck(addText.codeAccepted(result.hostName || result.label), "good");
+    state.add.accepted = result.hostName || result.label; setCodeCheck(addText.codeAccepted(state.add.accepted), "good");
     await new Promise(resolve => setTimeout(resolve, CODE_ACCEPTED_MS));
     if (state.add.checked !== code) return; // edited, cancelled or closed during the pause
     state.add.preview = { ...result, code }; render();
@@ -1879,7 +1881,7 @@ document.addEventListener("submit", event => {
       const result = await rpc("pairing.complete", { code: preview.code, label: values.label.trim() || preview.label });
       if (folderId !== (state.folders.members?.[preview.targetId] || "")) { await rpc("folders.assign", { targetId: preview.targetId, folderId: folderId || null }); }
       state.folders = await rpc("folders.list");
-      state.pairing = result; state.add.preview = null; state.add.code = "";
+      state.pairing = result; state.add.preview = null;
       await checkPairedMaster(result);
       await refreshPairings(); await refreshFleet(); render();
     }
