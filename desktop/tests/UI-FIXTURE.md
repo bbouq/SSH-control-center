@@ -4,7 +4,7 @@ The management UI (`desktop/ui`) can be exercised in a plain browser against an 
 
 ## Fixture
 
-`node desktop/tests/fixture.cjs` serves `desktop/ui` on `http://127.0.0.1:42197` (override with `SSHCC_UI_TEST_PORT`) and replaces the Tauri IPC bridge with an in-memory stub. It does not use local IPC, SSH, a real Target or production data. Its stub answers only these methods; anything else (method or native command) returns an error:
+`node desktop/tests/fixture.cjs` serves `desktop/ui` on `http://127.0.0.1:42197` (override with `SSHCC_UI_TEST_PORT`) and replaces the Tauri IPC bridge with an in-memory stub. It does not use local IPC, SSH, a real Target or production data. It also serves `strings.js` and the bundled fonts. Its stub answers only these methods; anything else (method or native command) returns an error:
 
 - `system.status`, `targets.list`, `targets.doctor`, `targets.update`, `fleet.health`
 - `jobs.*`, `files.list`, `files.read`, `files.write`, `enrollment.export`
@@ -57,6 +57,10 @@ It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, whi
     docker run --rm -v "$PWD":/src -v <node_modules with playwright>:/pw/node_modules:ro -e NODE_PATH=/pw/node_modules -w /src mcr.microsoft.com/playwright:v1.48.2-jammy node desktop/tests/add-host.cjs
 
 `desktop/tests/masters-page.cjs` opens the Masters page on the `masters-page` scenario (plain Chromium). It checks both sections ("Controlled from here" and "This Master is controlled by"), that the unmerged Master is listed with Merge without any search and that no `merges.discover` request is sent, that `peer-both` is one row with "Direct" and "Through merge" badges, that "Allow another Master…" sits in the incoming section, and that Merge, Disable merging, Allow again and Revoke send their requests. Screenshots at 1180px and 820px go to `artifacts/add-host-ui/`.
+
+`desktop/tests/language.cjs` checks the language switch EN | ไทย (plain Chromium). It checks that a `th-TH` browser opens in ไทย and `en-US` in EN; that one click on ไทย (1 decision) switches the open page, survives a reload and overrides the browser default; that switching keeps the page, the selected host, the open tab and typed input (Add host address, file filter); and that every page and dialog has no untranslated English in Thai: inventory, the tree's context menus, the current Master page, host summary with a connection check, the Jobs (with the new job form), Files, Containers and Monitoring tabs, the file menu, the delete and session dialogs, Service, Masters (`masters-page`) with the two-way dialog, and every Add host step (`empty`). The scan covers visible text plus `aria-label`, `title`, `placeholder` and select options, with every `<details>` opened. It skips code, logs, monospace values and text marked `data-raw` (shown as the service sends it). Master, Tag, Merge, SSH, technical words and every word in the fixture's own data are allowed. It also checks that a code from another Master shows the Thai sentence with the Master's English underneath (`.error-detail`), that an unmapped error (`merge-fails`) shows English with no detail line, and that every EN string key has a TH key and the other way round. It writes Thai screenshots at 1180px and 820px and `language-results.json` under `artifacts/language-ui/`.
+
+`node desktop/tests/strings-review.cjs` (no browser needed) writes `artifacts/language-ui/strings-review.html`: every string of `desktop/ui/strings.js` side by side in English and Thai, grouped by where it appears, with a box per row to write a fix and a button that copies all fixes as text. It is a translation review tool, not a check.
 
 ## Not covered
 

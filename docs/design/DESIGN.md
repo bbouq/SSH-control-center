@@ -47,6 +47,8 @@ Google Fonts: `Big+Shoulders+Display:wght@200;300;700;900`, `Geist:wght@400;500;
 | Body | Geist | 15–19 px / 400, line-height 1.5 |
 | Labels ("FIG. 01 — …"), IPs, terminal | Geist Mono | 11–13 px, letter-spacing .14–.18em for labels |
 
+Thai (ไทย): Bai Jamjuree (300 / 500 / 700) for display text and Anuphan for body and labels, bundled as Thai-only subsets so each stack keeps its Latin face and Thai falls through to the Thai one. Thai text has no letter-spacing (tone marks drift when letters are spaced), line-height 1.2 for h1/h2 and 1.3 for buttons and headings, and labels at 13 px instead of 11 px.
+
 ## Effects (copy as-is)
 
 ```css

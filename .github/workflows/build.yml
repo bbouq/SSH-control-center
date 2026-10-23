@@ -32,6 +32,8 @@ jobs:
         run: cargo test --locked -p sshcc-core -- --test-threads=1
       - name: Build CLI and desktop
         run: cargo build --locked -p sshcc -p sshcc-desktop
+      - name: Desktop tests
+        run: cargo test --locked -p sshcc-desktop
 
   windows:
     name: Windows · CLI + desktop
@@ -57,10 +59,15 @@ jobs:
       - name: Masters page
         run: node desktop/tests/masters-page.cjs
         env: { NODE_PATH: /tmp/pw/node_modules }
+      - name: Language EN | ไทย
+        run: node desktop/tests/language.cjs
+        env: { NODE_PATH: /tmp/pw/node_modules }
       - name: Keep screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui-screenshots
-          path: artifacts/add-host-ui/
+          path: |
+            artifacts/add-host-ui/
+            artifacts/language-ui/
           if-no-files-found: ignore
