@@ -6,6 +6,12 @@
 @font-face { font-family: "Big Shoulders Display"; src: url("fonts/big-shoulders-display.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Geist"; src: url("fonts/geist.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Geist Mono"; src: url("fonts/geist-mono.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+/* Thai (ไทย): Bai Jamjuree for display, Anuphan for body. Thai-only subsets, so Latin keeps the faces above and
+   Thai falls through each stack. */
+@font-face { font-family: "Bai Jamjuree"; src: url("fonts/bai-jamjuree-thai-300.woff2") format("woff2"); font-weight: 300; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
+@font-face { font-family: "Bai Jamjuree"; src: url("fonts/bai-jamjuree-thai-500.woff2") format("woff2"); font-weight: 500; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
+@font-face { font-family: "Bai Jamjuree"; src: url("fonts/bai-jamjuree-thai-700.woff2") format("woff2"); font-weight: 700; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
+@font-face { font-family: "Anuphan"; src: url("fonts/anuphan-thai.woff2") format("woff2"); font-weight: 300 700; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
 
 :root {
   color-scheme: dark;
@@ -22,9 +28,9 @@
   --rule: rgba(236, 232, 250, .28);
   --rule-soft: rgba(236, 232, 250, .14);
   --hover: rgba(236, 232, 250, .06);
-  --display: "Big Shoulders Display", "Arial Narrow", sans-serif;
-  --body: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --display: "Big Shoulders Display", "Bai Jamjuree", "Arial Narrow", sans-serif;
+  --body: "Geist", "Anuphan", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", "Anuphan", ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-family: var(--body);
   font-size: 15px;
   line-height: 1.5;
@@ -635,3 +641,23 @@ td .text-button.danger { font-size: 19px; }
 @media (max-width: 900px) { .add-step { grid-template-columns: 40px minmax(0, 1fr); gap: 12px; } .add-n { font-size: 36px; } }
 /* Narrow: Masters and unfinished-request buttons stack instead of hiding past the table's edge. */
 @media (max-width: 900px) { :is(.add-unfinished, .masters) td.actions .target-actions { flex-wrap: wrap; flex-direction: column; align-items: stretch; } :is(.add-unfinished, .masters) td.actions button { white-space: normal; text-align: center; } }
+/* Language switch (EN | ไทย) next to the current Master's name; the active language is acid, like other toggles. */
+.lang-switch { grid-column: 2; grid-row: 3; display: inline-flex; border: 1px solid var(--rule); }
+.lang-switch button { min-height: 28px; padding: 0 8px; border: 0; font-size: 13px; letter-spacing: .08em; color: var(--lilac); background: transparent; }
+.lang-switch button + button { border-left: 1px solid var(--rule); }
+.lang-switch button:lang(th) { letter-spacing: 0; text-transform: none; font-size: 14px; }
+.lang-switch button[aria-pressed="true"] { background: var(--acid); color: var(--ink-on-green); }
+/* A translated error keeps the Master's own English text in a small line under it (Thai only). */
+.error-detail { display: block; margin-top: 2px; font-family: var(--mono); font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--lilac); overflow-wrap: anywhere; }
+.notice .error-detail { margin-top: 4px; }
+/* Thai drops the uppercase letter-spacing (tone marks drift when letters are spaced) and needs taller lines for
+   marks above and below the letters. Latin-only text (logo, version, host key seal, EN) keeps its spacing. */
+html:lang(th) :is(.side-nav .nav, .side-foot .label, .side-foot strong, .inv-summary strong, h3, .label, .stat-label, th, .status-meta, .fig, button, label, .nav, .info-line,
+  .status-filter strong, td strong, .badge, .chip, .callout strong, summary, summary small, .facts dt, .live-label, .tabs button, .console-bar strong, .stepper strong,
+  .ctx-item, .dc-item, .dc-tag, .topo-group h3, .topo-meta, .topo-meta .text-button, .spark-empty, .check-head h2, .foil-sticker span) { letter-spacing: 0; }
+html:lang(th) :is(h1, h2) { line-height: 1.2; }
+html:lang(th) :is(h3, .callout strong, td strong, .badge, summary, button) { line-height: 1.3; }
+html:lang(th) .lang-switch button[lang="en"] { letter-spacing: .08em; }
+/* The 10–11 px mono labels are sized for uppercase Latin; Thai at that size is too small to read. */
+html:lang(th) :is(.label, .stat-label, th, .status-meta, .fig, label, .facts dt, .side-foot .label, .live-label, .chip, .info-line, summary small) { font-size: 13px; }
+html:lang(th) :is(.dc-tag, .dc-count, .dc-os) { font-size: 12px; }

@@ -8,50 +8,52 @@
   <link rel="stylesheet" href="app.css">
   <script src="app.js" type="module"></script>
 </head>
+<!-- Words marked data-i18n (text), data-i18n-aria / -title / -placeholder (attributes) come from strings.js. -->
 <body>
-  <aside class="app-side" aria-label="Navigation">
-    <button class="accent add-host" data-action="add-host">+ Add host</button>
-    <div class="search"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="dc-search" type="search" aria-label="Filter hosts" placeholder="Filter hosts…"></div>
-    <nav class="side-nav" aria-label="Main menu">
-      <div class="side-nav-row"><button data-page="datacenter" class="nav active">Inventory <span id="fleet-count" class="count">0</span></button><button class="icon-button tree-toggle" data-action="tree-toggle" aria-expanded="true" aria-controls="dc-tree" aria-label="Show or hide the host tree" title="Show or hide the host tree"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button></div>
+  <aside class="app-side" aria-label="Navigation" data-i18n-aria="side.nav">
+    <button class="accent add-host" data-action="add-host" data-i18n="side.addHost">+ Add host</button>
+    <div class="search"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="dc-search" type="search" aria-label="Filter hosts" placeholder="Filter hosts…" data-i18n-aria="side.filter" data-i18n-placeholder="side.filterPlaceholder"></div>
+    <nav class="side-nav" aria-label="Main menu" data-i18n-aria="side.menu">
+      <div class="side-nav-row"><button data-page="datacenter" class="nav active"><span data-i18n="side.inventory">Inventory</span> <span id="fleet-count" class="count">0</span></button><button class="icon-button tree-toggle" data-action="tree-toggle" aria-expanded="true" aria-controls="dc-tree" aria-label="Show or hide the host tree" title="Show or hide the host tree" data-i18n-aria="side.treeToggle" data-i18n-title="side.treeToggle"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button></div>
       <div id="dc-tree"></div>
-      <button data-page="masters" class="nav">Masters</button>
-      <button data-page="service" class="nav">Service</button>
+      <button data-page="masters" class="nav" data-i18n="side.masters">Masters</button>
+      <button data-page="service" class="nav" data-i18n="side.service">Service</button>
     </nav>
-    <div class="side-foot" title="This window operates from this Master"><span class="label"><span id="service-dot" class="dot pending"></span>Current Master</span><strong id="service-label">Connecting…</strong><small id="app-version" class="side-version">v0.4.0</small>
-      <button class="icon-button" id="refresh-all" aria-label="Refresh" title="Refresh"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"/><path d="M13.25 2.25v3.5h-3.5"/></svg></button></div>
+    <div class="side-foot" title="This window operates from this Master" data-i18n-title="side.footTitle"><span class="label"><span id="service-dot" class="dot pending"></span><span data-i18n="side.current">Current Master</span></span><strong id="service-label" data-i18n="side.connecting">Connecting…</strong><small id="app-version" class="side-version">v0.4.0</small>
+      <button class="icon-button" id="refresh-all" aria-label="Refresh" title="Refresh" data-i18n-aria="side.refresh" data-i18n-title="side.refresh"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"/><path d="M13.25 2.25v3.5h-3.5"/></svg></button>
+      <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria="side.language"><button type="button" data-lang="en" lang="en" aria-pressed="true">EN</button><button type="button" data-lang="th" lang="th" aria-pressed="false">ไทย</button></div></div>
   </aside>
   <div class="app-main">
-    <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button type="button" class="icon-button" id="notice-close" aria-label="Dismiss" title="Dismiss"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
-    <main id="main" tabindex="-1"><div class="empty-inline">Reading from the local service…</div></main>
+    <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button type="button" class="icon-button" id="notice-close" aria-label="Dismiss" title="Dismiss" data-i18n-aria="side.dismiss" data-i18n-title="side.dismiss"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
+    <main id="main" tabindex="-1"><div class="empty-inline" data-i18n="side.reading">Reading from the local service…</div></main>
   </div>
   <dialog id="shell-dialog">
     <form id="open-shell-session">
-      <h2>Choose a session on <span id="shell-machine"></span></h2>
-      <p class="help">The Owner is logged in to several sessions on this host. Choose one for the terminal</p>
+      <h2 id="shell-title"></h2>
+      <p class="help" data-i18n="shell.help">The Owner is logged in to several sessions on this host. Choose one for the terminal</p>
       <input id="shell-target" type="hidden" name="targetId">
-      <label>Owner session<select id="shell-session" name="ownerSessionId" required></select></label>
-      <div class="form-actions"><button type="submit" class="primary">Open terminal</button><button type="button" data-action="close-shell-dialog">Cancel</button></div>
+      <label><span data-i18n="shell.session">Owner session</span><select id="shell-session" name="ownerSessionId" required></select></label>
+      <div class="form-actions"><button type="submit" class="primary" data-i18n="shell.open">Open terminal</button><button type="button" data-action="close-shell-dialog" data-i18n="common.cancel">Cancel</button></div>
     </form>
   </dialog>
   <dialog id="delete-dialog">
     <form id="confirm-delete">
-      <h2>Delete this <span id="delete-kind">file</span>?</h2>
-      <dl class="facts"><dt>Host</dt><dd id="delete-host"></dd><dt>Path</dt><dd><code id="delete-path"></code></dd></dl>
-      <p class="help mt" id="delete-note">This cannot be undone.</p>
-      <label class="mt confirm-label">Type <code id="delete-name"></code> to confirm<input name="confirm" autocomplete="off" spellcheck="false" required></label>
-      <div class="form-actions"><button type="submit" class="danger" disabled>Delete</button><button type="button" data-action="close-delete" autofocus>Cancel</button></div>
+      <h2 id="delete-title"></h2>
+      <dl class="facts"><dt data-i18n="files.deleteHost">Host</dt><dd id="delete-host"></dd><dt data-i18n="files.deletePath">Path</dt><dd><code id="delete-path"></code></dd></dl>
+      <p class="help mt" id="delete-note"></p>
+      <label class="mt confirm-label"><span><span data-i18n="files.deleteTypeBefore">Type</span> <code id="delete-name"></code> <span data-i18n="files.deleteTypeAfter">to confirm</span></span><input name="confirm" autocomplete="off" spellcheck="false" required></label>
+      <div class="form-actions"><button type="submit" class="danger" disabled data-i18n="files.delete">Delete</button><button type="button" data-action="close-delete" autofocus data-i18n="common.cancel">Cancel</button></div>
     </form>
   </dialog>
   <dialog id="two-way-dialog">
     <form id="confirm-two-way">
-      <h2>Enable two-way with <span class="two-way-peer"></span></h2>
-      <p>Let <strong class="two-way-peer"></strong> control this Master’s target hosts, the same way this Master already controls its target hosts</p>
-      <p class="help">Windows asks for admin rights once to install on this host:</p>
-      <ul class="help dialog-list"><li>OpenSSH Server (if missing)</li><li>An sshcc-bridge account that only accepts Control Center requests</li><li>The key of <span class="two-way-peer"></span> in authorized_keys, and the Target role for the service</li></ul>
-      <details><summary>More details</summary><p class="help">This host is enrolled as a Target of that Master with the normal pairing flow · The firewall is unchanged; that Master must reach port 22 here · Undo later with “Disable merging” or by revoking the Master</p></details>
+      <h2 data-i18n-peer="twoWayDialog.title"></h2>
+      <p data-i18n-peer="twoWayDialog.lead"></p>
+      <p class="help" data-i18n="twoWayDialog.admin">Windows asks for admin rights once to install on this host:</p>
+      <ul class="help dialog-list"><li data-i18n-peer="twoWayDialog.list.0"></li><li data-i18n-peer="twoWayDialog.list.1"></li><li data-i18n-peer="twoWayDialog.list.2"></li></ul>
+      <details><summary data-i18n="twoWayDialog.more">More details</summary><p class="help" data-i18n="twoWayDialog.moreText">This host is enrolled as a Target of that Master with the normal pairing flow · The firewall is unchanged; that Master must reach port 22 here · Undo later with “Disable merging” or by revoking the Master</p></details>
       <input type="hidden" name="targetId">
-      <div class="form-actions"><button type="submit" class="primary">Install and enable two-way</button><button type="button" data-action="close-two-way-dialog" autofocus>Cancel</button></div>
+      <div class="form-actions"><button type="submit" class="primary" data-i18n="twoWayDialog.submit">Install and enable two-way</button><button type="button" data-action="close-two-way-dialog" autofocus data-i18n="twoWayDialog.cancel">Cancel</button></div>
     </form>
   </dialog>
 </body>

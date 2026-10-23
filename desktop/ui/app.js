@@ -1,8 +1,14 @@
+import { esc, table, LANGUAGES } from "./strings.js";
 const $ = (selector, parent = document) => parent.querySelector(selector);
-const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const pretty = value => JSON.stringify(value, null, 2);
 document.documentElement.dataset.theme = "dark";
-const titles = { datacenter: "Inventory", fleet: "All hosts", enroll: "Add host", masters: "Masters", service: "Local service" };
+/* Language EN | ไทย: the first run follows the OS language (the webview reports it), then the choice is remembered.
+   Each Master has its own window and webview data, so this is per Master. `T` is the current table (strings.js). */
+const LANGUAGE_KEY = "sshcc.language";
+const savedLanguage = () => { try { const value = localStorage.getItem(LANGUAGE_KEY); return LANGUAGES.includes(value) ? value : null; } catch { return null; } };
+const osLanguage = () => /^th(-|$)/i.test(navigator.language || "") ? "th" : "en";
+let lang = savedLanguage() || osLanguage(), T = table(lang), addText = T.add, mastersText = T.masters;
+document.documentElement.lang = lang;
 const state = {
   page: "datacenter", targets: [], masters: [], service: null, serviceError: "", selected: null,
   tab: "overview", query: "", group: "", status: "", diagnostics: new Map(), jobs: [], jobsError: "",
@@ -20,7 +26,7 @@ const state = {
 };
 addReset();
 const native = (command, args = {}) => {
-  if (!window.__TAURI__?.core?.invoke) throw new Error("Open the SSH Control Center app to connect to the local service");
+  if (!window.__TAURI__?.core?.invoke) throw new Error(T.common.openApp);
   return window.__TAURI__.core.invoke(command, args);
 };
 const rpc = (method, params = {}) => native("rpc", { method, params });
@@ -30,7 +36,7 @@ const osName = os => ({ windows: "Windows", linux: "Linux" })[os] || os || "";
 const timestamp = value => {
   if (!value) return "—";
   const date = new Date(typeof value === "number" ? value * 1000 : value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(T.locale, { dateStyle: "short", timeStyle: "short" });
 };
 const formatSize = bytes => {
   if (bytes == null || Number.isNaN(Number(bytes))) return "—";
@@ -41,9 +47,10 @@ const formatSize = bytes => {
 };
 const formatUptime = seconds => {
   const minutes = Math.floor((seconds || 0) / 60), hours = Math.floor(minutes / 60), days = Math.floor(hours / 24);
-  if (days) return days + "d " + (hours % 24) + "h";
-  if (hours) return hours + "h " + (minutes % 60) + "m";
-  return minutes + "m";
+  const text = T.monitor.uptime;
+  if (days) return text.d(days, hours % 24);
+  if (hours) return text.h(hours, minutes % 60);
+  return text.m(minutes);
 };
 const svg = paths => '<svg class="i" viewBox="0 0 16 16" aria-hidden="true">' + paths + "</svg>";
 const icons = {
@@ -69,46 +76,106 @@ const icons = {
   close: svg('<path d="m4 4 8 8M12 4l-8 8"/>')
 };
 const chip = text => '<span class="chip">' + esc(text) + "</span>";
-function notify(message, error = false) {
-  const notice = $("#notice");
-  $("#notice-text").textContent = String(message); notice.classList.toggle("error", error); notice.hidden = false;
+/** A notice; `detail` is the Master's English text under a translated error sentence (Thai only, see `explain`). */
+function notify(message, error = false, detail = "") {
+  const notice = $("#notice"), text = $("#notice-text");
+  text.textContent = String(message); notice.classList.toggle("error", error); notice.hidden = false;
+  if (detail) { const small = document.createElement("small"); small.className = "error-detail"; small.textContent = detail; text.append(small); }
 }
 function clearNotice() { $("#notice").hidden = true; }
-async function copyText(text, message = "Copied") {
+const notifyError = (error, pairing = false) => { const shown = explain(error, pairing); notify(shown.text, true, shown.detail); };
+async function copyText(text, message = T.common.copied) {
   try { await navigator.clipboard.writeText(String(text ?? "")); }
-  catch { throw new Error("Could not copy. Select the text and press Ctrl+C"); }
+  catch { throw new Error(T.common.copyFailed); }
   notify(message);
 }
 async function openShell(targetId, ownerSessionId) {
   const item = state.targets.find(row => row.id === targetId);
-  if (!item) throw new Error("This target host is not in the registry");
+  if (!item) throw new Error(T.common.notInRegistry);
   const result = await native("open_shell", { targetId, ownerSessionId: ownerSessionId || null });
   if (result.needsSession) {
-    $("#shell-machine").textContent = item.label || item.id;
+    const dialog = $("#shell-dialog");
+    dialog.dataset.machine = item.label || item.id; state.shellSessions = result.sessions;
     $("#shell-target").value = item.id;
-    $("#shell-session").innerHTML = '<option value="">Choose a session</option>' + result.sessions.map(session => '<option value="' + esc(session.id) + '">' + esc(session.account) + ' · session ' + esc(session.id) + ' · ' + esc(session.state) + '</option>').join("");
-    $("#shell-dialog").showModal();
+    fillShellDialog();
+    dialog.showModal();
     return;
   }
-  notify("Opened a terminal for " + (item.label || item.id) + " in a Terminal window");
+  notify(T.shell.opened(item.label || item.id));
 }
-const jobLabels = { succeeded: "Succeeded", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled", running: "Running", queued: "Queued" };
+/** The session dialog's words; also re-run when the language changes while it is open (the choice is kept). */
+function fillShellDialog() {
+  const dialog = $("#shell-dialog"), select = $("#shell-session"), chosen = select.value;
+  $("#shell-title").textContent = T.shell.title(dialog.dataset.machine || "");
+  select.innerHTML = '<option value="">' + esc(T.shell.choose) + "</option>" + (state.shellSessions || []).map(session => '<option value="' + esc(session.id) + '">' + esc(T.shell.option(session.account, session.id, session.state)) + "</option>").join("");
+  select.value = chosen;
+}
 function badge(status) {
   const styles = { succeeded: "good", failed: "bad", interrupted: "bad", cancelled: "", running: "running", queued: "pending" };
-  return '<span class="badge ' + (styles[status] || "") + '" title="' + esc(status) + '">' + esc(jobLabels[status] || status) + "</span>";
+  return '<span class="badge ' + (styles[status] || "") + '" title="' + esc(status) + '">' + esc(T.status.jobs[status] || status) + "</span>";
 }
 async function busy(button, work) {
   if (button?.disabled) return;
   if (button) button.disabled = true;
   clearNotice();
   try { return await work(); }
-  catch (error) { notify(state.page === "enroll" || state.dc.adding ? pairingError(error) : friendlyError(error), true); }
+  catch (error) { notifyError(error, state.page === "enroll" || Boolean(state.dc.adding)); }
   finally { if (button?.isConnected) button.disabled = button.hasAttribute("data-blocked"); }
+}
+/* The switch: every string comes from `T`, so changing language is a re-render from state. Static words in
+   index.html carry data-i18n keys; open dialogs are refilled; what the person typed is put back. */
+const lookup = path => path.split(".").reduce((node, key) => node?.[key], T);
+function applyStatic() {
+  for (const element of document.querySelectorAll("[data-i18n]")) element.textContent = lookup(element.dataset.i18n);
+  for (const [key, attribute] of [["i18nAria", "aria-label"], ["i18nTitle", "title"], ["i18nPlaceholder", "placeholder"]])
+    for (const element of document.querySelectorAll("[data-" + key.replace(/[A-Z]/g, c => "-" + c.toLowerCase()) + "]")) element.setAttribute(attribute, lookup(element.dataset[key]));
+  // Two-way dialog: the other Master's name goes where `{peer}` stands, bold in the lead sentence.
+  const peer = $("#two-way-dialog").dataset.peer || "";
+  for (const element of document.querySelectorAll("[data-i18n-peer]")) {
+    element.replaceChildren(...lookup(element.dataset.i18nPeer).split("{peer}").flatMap((part, i) => {
+      const name = document.createElement(element.tagName === "P" ? "strong" : "span");
+      name.className = "two-way-peer"; name.textContent = peer;
+      return i ? [name, part] : [part];
+    }));
+  }
+  for (const button of document.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.dataset.lang === lang));
+  if ($("#shell-dialog").open) fillShellDialog();
+  if ($("#delete-dialog").open) fillDeleteDialog();
+}
+/** Snapshot of the typed values, open disclosures and focus under `root`; the returned function puts them back
+ *  after a re-render (fields are matched by form and name). */
+function keepInput(root) {
+  const key = field => (field.form?.id || "") + "|" + (field.name || field.id);
+  const fields = element => [...element.querySelectorAll("input, textarea, select")].filter(field => !["hidden", "file"].includes(field.type));
+  const values = new Map(fields(root).map(field => [key(field), field.type === "checkbox" ? field.checked : field.value]));
+  const open = [...root.querySelectorAll("details")].map(details => details.open);
+  const focused = root.contains(document.activeElement) && document.activeElement.matches("input, textarea, select") ? key(document.activeElement) : "";
+  return () => {
+    for (const field of fields(root)) {
+      if (!values.has(key(field)) || field.readOnly) continue;
+      if (field.type === "checkbox") field.checked = values.get(key(field)); else field.value = values.get(key(field));
+      if (field.matches("[data-new-folder]")) field.form.elements.newFolder.hidden = field.value !== "__new__";
+    }
+    const details = root.querySelectorAll("details");
+    if (details.length === open.length) details.forEach((element, i) => { element.open = open[i]; });
+    if (focused) fields(root).find(field => key(field) === focused)?.focus();
+    // The address check line is redrawn in the new language.
+    const where = $("#create-pairing");
+    if (where?.address.value.trim()) onWhereInput(where);
+  };
+}
+function setLanguage(next) {
+  if (next === lang || !LANGUAGES.includes(next)) return;
+  lang = next; T = table(lang); addText = T.add; mastersText = T.masters;
+  try { localStorage.setItem(LANGUAGE_KEY, lang); } catch {}
+  document.documentElement.lang = lang;
+  const restore = keepInput($("#main"));
+  closeDcMenu(); clearNotice(); applyStatic(); render(); restore();
 }
 function renderHeader() {
   $("#fleet-count").textContent = String(hostCount());
   // Always say which Master this window operates from; merged Masters are reached through it.
-  $("#service-label").textContent = state.service ? state.service.label : "Service unavailable";
+  $("#service-label").textContent = state.service ? state.service.label : T.side.unavailable;
   if (state.service?.version && $("#app-version")) $("#app-version").textContent = "v" + state.service.version;
   $("#service-dot").className = "dot " + (state.service ? "good" : "bad");
   $("#dc-tree").hidden = state.dc.treeHidden === true;
@@ -138,7 +205,7 @@ async function refreshFleet() {
   ]);
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
-  if (!Array.isArray(rows)) throw new Error("The service returned Targets in an unsupported format");
+  if (!Array.isArray(rows)) throw new Error(T.common.badFormat);
   state.targets = rows; state.merges = merges; state.relays = relays;
   if (state.selected && !target()) state.selected = null;
   renderHeader();
@@ -184,7 +251,7 @@ async function navigate(page) {
     if (!state.health.size) void refreshHealth();
   }
   if (page === "service") { await refreshLocal(); if (state.page === page) render(); }
-  if (page === "enroll") { try { await refreshPairings(); if (state.page === page) render(); } catch (error) { notify(pairingError(error), true); } }
+  if (page === "enroll") { try { await refreshPairings(); if (state.page === page) render(); } catch (error) { notifyError(error, true); } }
 }
 function render() {
   renderHeader();
@@ -201,13 +268,13 @@ function heading(title, description, actions = "") {
 }
 function renderFleetTools() {
   return '<div id="fleet-table">' + renderFleetView() + "</div>" +
-    '<details class="fleet-hint"><summary>How online status is checked</summary><div><ul><li>The SSH port is probed every minute while this window is open</li><li>Refresh runs a full check over SSH</li><li>Use “Check connection” on a host for a detailed check</li><li>Up to 50 Targets per Master</li></ul></div></details>';
+    '<details class="fleet-hint"><summary>' + T.inv.hintTitle + "</summary><div><ul>" + T.inv.hint.map(line => "<li>" + esc(line) + "</li>").join("") + "</ul></div></details>";
 }
 function renderFleetView() {
   if (!state.targets.length) return renderFleetRows();
   return renderGraph();
 }
-const stateLabels = { online: "Online", offline: "Offline", checking: "Checking…", unknown: "Unknown", legacy: "Service not installed" };
+const stateLabel = status => T.status.hosts[status];
 const stateStyles = { online: "good", offline: "bad", checking: "pending", legacy: "pending" };
 function nodeState(item) {
   if (item.runnerInstalled === false) return "legacy";
@@ -220,12 +287,13 @@ const HOT = 85;
 const hostCount = () => state.targets.length + 1;
 const hostsOnline = () => state.targets.filter(item => nodeState(item) === "online").length + (state.service ? 1 : 0);
 function hostRole(item) {
-  if (!item) return "Master · current";
-  if (state.merges.some(merge => merge.targetId === item.id)) return "Master · merged";
-  return state.masterCheck.get(item.id) || state.health.get(item.id)?.isMaster ? "Master" : "Target host";
+  const role = T.inv.role;
+  if (!item) return role.current;
+  if (state.merges.some(merge => merge.targetId === item.id)) return role.merged;
+  return state.masterCheck.get(item.id) || state.health.get(item.id)?.isMaster ? role.master : role.target;
 }
 /** Every host page — target host or Master — has the same tabs. */
-const HOST_PAGE_TABS = [["summary", "Summary"], ["jobs", "Jobs & logs"], ["files", "Files"], ["containers", "Containers"], ["monitoring", "Monitoring"]];
+const hostPageTabs = () => ["summary", "jobs", "files", "containers", "monitoring"].map(id => [id, T.host.tabs[id]]);
 /** This Master registered as a target host of itself (needed for its own jobs, files and terminal). */
 const selfTarget = () => state.service ? state.targets.find(item => !item.relayed && item.nodeId === state.service.nodeId) : null;
 /** The target host behind the open page: the host itself, a merged Master, or this Master's self registration. */
@@ -254,20 +322,20 @@ function hostSite(item) {
 }
 function hostAddress(item) {
   const route = item.routes?.[0];
-  return item.relayed ? '<span class="muted">Via ' + esc(item.viaLabel || item.via) + "</span>"
+  return item.relayed ? '<span class="muted">' + esc(T.inv.via(item.viaLabel || item.via)) + "</span>"
     : route ? '<code title="' + esc(route.kind || "") + '">' + esc(route.address) + (route.port && route.port !== 22 ? ":" + esc(route.port) : "") + "</code>" : "—";
 }
-const terminalButton = item => item ? '<button class="small" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="Open terminal on ' + esc(item.label || item.id) + '"' + (!item.runnerInstalled ? ' disabled title="Install the Target service first"' : ' title="Open terminal"') + ">" + icons.shell + '<span class="btn-label">Open terminal</span></button>' : "";
-const HOST_HEAD = "<thead><tr><th>Host</th><th>Role</th><th>Address</th><th>CPU</th><th>MEM</th><th>Status</th><th></th></tr></thead>";
+const terminalButton = item => item ? '<button class="small" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(item.label || item.id)) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : ' title="' + esc(T.inv.openTerminal) + '"') + ">" + icons.shell + '<span class="btn-label">' + T.inv.openTerminal + "</span></button>" : "";
+const hostHead = () => { const h = T.inv.head; return "<thead><tr><th>" + h.host + "</th><th>" + h.role + "</th><th>" + h.address + "</th><th>" + h.cpu + "</th><th>" + h.mem + "</th><th>" + h.status + "</th><th></th></tr></thead>"; };
 /** One row per host; only the name links to its page. */
 function hostRow(item) {
-  if (!item) return '<tr data-host="local"><td><button class="row-button" data-action="dc-select" data-node="master:local">' + esc(state.service?.label || "This Master") + "</button><small>this window</small></td><td>Master · current</td>" +
+  if (!item) return '<tr data-host="local"><td><button class="row-button" data-action="dc-select" data-node="master:local">' + esc(state.service?.label || T.inv.thisMaster) + "</button><small>" + T.inv.thisWindow + "</small></td><td>" + T.inv.role.current + "</td>" +
     '<td><span class="muted">—</span></td><td>' + cpuCell({ id: "local" }) + "</td><td>" + memCell({ id: "local" }) + "</td><td>" + localStatus() + '</td><td class="actions">' + terminalButton(selfTarget()) + "</td></tr>";
   const check = state.diagnostics.get(item.id);
-  const status = !item.runnerInstalled ? '<span class="badge pending">Service not installed</span>' : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? "Connected" : "Problem found") + "</span><small>Checked " + esc(timestamp(check.checkedAt)) + "</small>" : statusBadge(item);
+  const status = !item.runnerInstalled ? '<span class="badge pending">' + T.status.hosts.legacy + "</span>" : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? T.inv.connected : T.inv.problem) + "</span><small>" + esc(T.common.checkedAt(timestamp(check.checkedAt))) + "</small>" : statusBadge(item);
   return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small></td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
 }
-const localStatus = () => '<span class="badge ' + (state.service ? "good" : "bad") + '">' + (state.service ? "Online" : "Unavailable") + "</span>";
+const localStatus = () => '<span class="badge ' + (state.service ? "good" : "bad") + '">' + (state.service ? T.status.hosts.online : T.status.unavailable) + "</span>";
 /** Latest CPU % from the Monitoring tab's own samples, or null when the machine was never watched. */
 function sampledCpu(id) {
   const samples = state.monitor.get(id)?.samples;
@@ -278,20 +346,20 @@ const cpuCell = item => { const cpu = sampledCpu(item.id); return cpu == null ? 
 const statusBucket = item => ({ online: "online", offline: "offline" })[nodeState(item)] || "other";
 function statusBadge(item) {
   const status = nodeState(item), error = state.health.get(item.id)?.error;
-  if (isHot(item)) return '<span class="badge hot" title="CPU ' + Math.round(sampledCpu(item.id)) + '% in the last Monitoring sample">High load</span>';
-  return '<span class="badge ' + (stateStyles[status] || "") + '"' + (error ? ' title="' + esc(error) + '"' : "") + ">" + esc(stateLabels[status]) + "</span>";
+  if (isHot(item)) return '<span class="badge hot" title="' + esc(T.inv.highLoadTitle(Math.round(sampledCpu(item.id)))) + '">' + T.inv.highLoad + "</span>";
+  return '<span class="badge ' + (stateStyles[status] || "") + '"' + (error ? ' title="' + esc(error) + '"' : "") + ">" + esc(stateLabel(status)) + "</span>";
 }
 function renderStatusBar() {
   const pool = state.targets.filter(item => matchesFilter(item, true));
   const count = bucket => pool.filter(item => statusBucket(item) === bucket).length;
   // The current Master is listed too (first row) whenever no search or tenant filter hides it.
-  const local = !state.query && state.service ? 1 : 0;
-  const filters = [["", "All", pool.length + local, ""], ["online", "Online", count("online") + local, "good"], ["offline", "Offline", count("offline"), "bad"], ["other", "Unknown", count("other"), "pending"]]
+  const local = !state.query && state.service ? 1 : 0, f = T.inv.filters;
+  const filters = [["", f.all, pool.length + local, ""], ["online", f.online, count("online") + local, "good"], ["offline", f.offline, count("offline"), "bad"], ["other", f.other, count("other"), "pending"]]
     .filter(([id, , total]) => id !== "other" || total || state.status === "other");
   const meta = state.healthError
-    ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + "Status check failed (hover for the reason)</span>"
-    : '<span class="status-meta">' + (state.healthAt ? "Last checked " + esc(timestamp(state.healthAt)) : "Checking every host…") + "</span>";
-  return '<div class="status-bar"><div class="status-filters" role="group" aria-label="Filter by status">' +
+    ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + T.inv.statusFailedHover + "</span>"
+    : '<span class="status-meta">' + (state.healthAt ? esc(T.inv.lastChecked(timestamp(state.healthAt))) : T.inv.checkingAll) + "</span>";
+  return '<div class="status-bar"><div class="status-filters" role="group" aria-label="' + esc(T.inv.filterBy) + '">' +
     filters.map(([id, label, total, dot]) => '<button class="status-filter" data-action="status-filter" data-status="' + id + '" aria-pressed="' + (state.status === id) + '">' + (dot ? '<span class="dot ' + dot + '"></span>' : "") + label + " <strong>" + total + "</strong></button>").join("") +
     "</div>" + meta + "</div>";
 }
@@ -304,14 +372,14 @@ function pcIcon(master) {
 }
 function graphNode(item, options = {}) {
   const status = options.status || nodeState(item), row = state.health.get(item.id), name = item.label || item.id, route = item.routes?.[0];
-  const hint = status === "offline" || status === "unknown" ? row?.error || "" : status === "online" && row?.checkedAt ? "Checked " + timestamp(row.checkedAt) : "";
+  const hint = status === "offline" || status === "unknown" ? row?.error || "" : status === "online" && row?.checkedAt ? T.common.checkedAt(timestamp(row.checkedAt)) : "";
   const sub = options.sub || [osName(item.os), !item.relayed && route?.address ? route.address : ""].filter(Boolean).join(" · ");
   const main = pcIcon(options.master) + '<span class="node-info"><span class="node-label">' + esc(name) +
-    (options.alsoDirect ? ' <span class="node-tag">Also direct</span>' : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
-    '<span class="node-state"><span class="dot"></span>' + esc(stateLabels[status]) + "</span></span>";
+    (options.alsoDirect ? ' <span class="node-tag">' + T.inv.alsoDirect + "</span>" : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
+    '<span class="node-state"><span class="dot"></span>' + esc(stateLabel(status)) + "</span></span>";
   return '<div class="node is-' + status + (options.master ? " is-master" : "") + (options.root ? " is-root" : "") + (state.flipped.has(item.id) ? " just-changed" : "") + '">' +
     (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
-    (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="Open terminal on ' + esc(name) + '" title="Open terminal">' + icons.shell + "</button>") + "</div>";
+    (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(name)) + '" title="' + esc(T.inv.openTerminal) + '">' + icons.shell + "</button>") + "</div>";
 }
 function matchesFilter(item, ignoreStatus = false) {
   const search = state.query.toLowerCase();
@@ -322,7 +390,7 @@ function isTwoWay(merge) {
   const peer = state.targets.find(item => item.id === merge?.targetId);
   return merge?.reverse?.status === "two-way" && state.relays.some(relay => relay.masterId === peer?.nodeId && !relay.revoked);
 }
-const noMatch = '<div class="empty"><h2>No matching hosts</h2><p>Try another name or IP, or clear the status filter</p><button data-action="clear-filter">Clear filters</button></div>';
+const noMatch = () => '<div class="empty"><h2>' + T.inv.noMatchTitle + "</h2><p>" + T.inv.noMatchText + '</p><button data-action="clear-filter">' + T.inv.clearFilters + "</button></div>";
 /* Topology: columns are hops from this window. Solid lines are SSH from this Master; dashed lines are
    requests relayed through a merged Master. Nodes open the machine (or Master) page. */
 /** Topology, top-down: this Master on top, then one group for hosts it reaches directly and one per merged Master. */
@@ -331,22 +399,22 @@ function renderGraph() {
   const online = entries => entries.filter(entry => nodeState(entry.item) === "online").length;
   const card = (item, options = {}) => {
     const status = item ? nodeState(item) : state.service ? "online" : "offline", name = item ? item.label || item.id : local.label;
-    const sub = item ? [options.role, osName(item.os), item.relayed ? "" : item.routes?.[0]?.address].filter(Boolean) : ["This window · current Master"];
+    const sub = item ? [options.role, osName(item.os), item.relayed ? "" : item.routes?.[0]?.address].filter(Boolean) : [T.inv.cardSelf];
     return '<div class="topo-card is-' + status + (options.wide ? " is-wide" : "") + (item && state.flipped.has(item.id) ? " just-changed" : "") + '" data-host="' + esc(item ? item.id : "local") + '">' +
       '<span class="topo-dot" aria-hidden="true"></span><div class="topo-text"><button class="row-button" data-action="dc-select" data-node="' + (item ? "node:" + esc(item.id) : "master:local") + '">' + esc(name) + "</button>" +
-      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabels[status] || status) + (options.alsoDirect ? " · also direct" : "") + "</span></div>" +
+      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabel(status) || status) + (options.alsoDirect ? " · " + T.inv.alsoDirectLower : "") + "</span></div>" +
       (item ? terminalButton(item) : "") + "</div>";
   };
-  const group = (title, entries, extra = "", head = "") => '<section class="topo-group"><header><h3>' + title + '</h3><span class="topo-meta">' + online(entries) + "/" + entries.length + " online" + extra + "</span></header>" +
-    head + (entries.length ? '<div class="topo-cards">' + entries.map(entry => card(entry.item, { alsoDirect: entry.alsoDirect })).join("") + "</div>" : '<p class="help">No hosts match</p>') + "</section>";
+  const group = (title, entries, extra = "", head = "") => '<section class="topo-group"><header><h3>' + title + '</h3><span class="topo-meta">' + esc(T.inv.online(online(entries), entries.length)) + extra + "</span></header>" +
+    head + (entries.length ? '<div class="topo-cards">' + entries.map(entry => card(entry.item, { alsoDirect: entry.alsoDirect })).join("") + "</div>" : '<p class="help">' + T.inv.noHostsMatch + "</p>") + "</section>";
   const direct = local.machines.filter(entry => !peerIds.has(entry.item.id) && matchesFilter(entry.item));
-  const groups = [group("Direct from " + esc(local.label), direct)];
+  const groups = [group(esc(T.inv.directFrom(local.label)), direct)];
   for (const peer of peers) {
     const children = peer.machines.filter(entry => matchesFilter(entry.item));
-    groups.push(group("Through " + esc(peer.label), children, " · " + (peer.twoWay ? "two-way" : "one-way") + ' <button class="text-button" data-page="masters">Manage merge</button>',
-      '<div class="topo-cards is-head' + (online(children) ? " is-live" : "") + '">' + card(peer.item, { role: "Master · " + peer.machines.length + " target hosts", wide: true }) + "</div>"));
+    groups.push(group(esc(T.inv.through(peer.label)), children, " · " + (peer.twoWay ? T.inv.twoWay : T.inv.oneWay) + ' <button class="text-button" data-page="masters">' + T.inv.manageMerge + "</button>",
+      '<div class="topo-cards is-head' + (online(children) ? " is-live" : "") + '">' + card(peer.item, { role: T.inv.peerRole(peer.machines.length), wide: true }) + "</div>"));
   }
-  if (!direct.length && !peers.length) return '<div class="empty"><h2>No hosts to draw</h2><p>Add a target host, or clear the filters</p></div>';
+  if (!direct.length && !peers.length) return '<div class="empty"><h2>' + T.inv.noDrawTitle + "</h2><p>" + T.inv.noDrawText + "</p></div>";
   const live = state.service ? "is-live" : "", peerOnline = peers.some(peer => online(peer.machines));
   return '<div class="topo-tree"><div class="topo-root">' + card(null) + '</div><span class="topo-stem ' + live + '" aria-hidden="true"></span>' +
     '<span class="topo-bus" aria-hidden="true"><i class="to-left' + (live && online(direct) ? " is-live" : "") + '"></i><i class="to-right' + (live && peerOnline ? " is-live" : "") + '"></i></span>' +
@@ -354,133 +422,131 @@ function renderGraph() {
 }
 function renderFleetRows() {
   const rows = state.targets.filter(item => matchesFilter(item));
-  if (!state.targets.length && !state.service) return '<div class="empty"><h2>Connect your first target host</h2><p>Use “+ Add host” at the top right</p></div>';
+  if (!state.targets.length && !state.service) return '<div class="empty"><h2>' + T.inv.firstTitle + "</h2><p>" + T.inv.firstText + "</p></div>";
   const showLocal = !state.query && (!state.status || state.status === "online");
-  if (!rows.length && !showLocal) return noMatch;
-  return '<div class="table-wrap"><table>' + HOST_HEAD + "<tbody>" + (showLocal ? hostRow(null) : "") + rows.map(hostRow).join("") + "</tbody></table></div>";
+  if (!rows.length && !showLocal) return noMatch();
+  return '<div class="table-wrap"><table>' + hostHead() + "<tbody>" + (showLocal ? hostRow(null) : "") + rows.map(hostRow).join("") + "</tbody></table></div>";
 }
 function stat(label, value, sub = "") {
   return '<div class="stat"><span class="stat-label">' + esc(label) + '</span><div class="stat-value">' + value + "</div>" + (sub ? "<small>" + esc(sub) + "</small>" : "") + "</div>";
 }
-const routeKinds = { lan: "LAN", tailscale: "Tailscale", public: "Public IP" };
 function healthStat(item) {
   const row = state.health.get(item.id), status = nodeState(item);
-  return stat("Last status", '<span class="dot ' + (stateStyles[status] || "") + '"></span>' + esc(stateLabels[status]), row?.checkedAt ? "Checked " + timestamp(row.checkedAt) : "");
+  return stat(T.host.lastStatus, '<span class="dot ' + (stateStyles[status] || "") + '"></span>' + esc(stateLabel(status)), row?.checkedAt ? T.common.checkedAt(timestamp(row.checkedAt)) : "");
 }
 function renderOverview(item) {
+  const t = T.host;
   if (item.relayed) {
-    return '<div class="stat-grid">' + stat("Connected via Master", esc(item.viaLabel || item.via)) + stat("Permissions", "Uses that Master’s rights") + healthStat(item) + "</div>" +
-      '<div class="disclosure-list"><details><summary>Technical details <small class="muted">Master ID, Node ID</small></summary><div><dl class="facts"><dt>Master ID</dt><dd><code>' + esc(item.via) + "</code></dd><dt>Node ID</dt><dd><code>" + esc(item.nodeId) + '</code></dd></dl><p class="help mt">Commands go through that Master. Change routes or remove this target host on Master ' + esc(item.viaLabel || item.via) + " · Remove the merge on the Masters page</p></div></details></div>";
+    return '<div class="stat-grid">' + stat(t.viaMaster, esc(item.viaLabel || item.via)) + stat(t.permissions, t.usesRights) + healthStat(item) + "</div>" +
+      '<div class="disclosure-list"><details><summary>' + t.technical + ' <small class="muted">' + t.technicalIds + "</small></summary><div><dl class=\"facts\"><dt>" + t.masterId + "</dt><dd><code>" + esc(item.via) + "</code></dd><dt>" + t.nodeId + "</dt><dd><code>" + esc(item.nodeId) + '</code></dd></dl><p class="help mt">' + esc(t.relayedHelp(item.viaLabel || item.via)) + "</p></div></details></div>";
   }
-  const routes = item.routes || [], primary = routes[0];
+  const routes = item.routes || [], primary = routes[0], head = t.routeHead;
   return '<div class="stat-grid">' +
-    stat("Primary address", primary ? "<code>" + esc(primary.address) + ":" + esc(primary.port || 22) + "</code>" : "—", primary ? (primary.proxyJump ? "Via " + primary.proxyJump.address : routeKinds[primary.kind] || primary.kind || "") : "") +
-    stat("Fallback routes", routes.length > 1 ? String(routes.length - 1) : "None") +
+    stat(t.primary, primary ? "<code>" + esc(primary.address) + ":" + esc(primary.port || 22) + "</code>" : "—", primary ? (primary.proxyJump ? t.via(primary.proxyJump.address) : t.routeKinds[primary.kind] || primary.kind || "") : "") +
+    stat(t.fallback, routes.length > 1 ? String(routes.length - 1) : t.noneRoutes) +
     healthStat(item) +
-    stat("Target service", item.runnerInstalled ? '<span class="dot good"></span>Installed' : '<span class="dot pending"></span>Not installed') +
+    stat(t.service, item.runnerInstalled ? '<span class="dot good"></span>' + t.installed : '<span class="dot pending"></span>' + t.notInstalled) +
     "</div>" +
     '<div class="disclosure-list">' +
-    '<details><summary>Technical details <small class="muted">Node ID, SSH user, all routes, host keys</small></summary><div><dl class="facts"><dt>Node ID</dt><dd><code>' + esc(item.nodeId || "Awaiting new registration") + "</code></dd><dt>SSH user</dt><dd>" + esc(item.user) + "</dd><dt>Bridge</dt><dd><code>" + esc(item.bridgePath || "—") + "</code></dd><dt>Target ID</dt><dd><code>" + esc(item.id) + "</code></dd></dl>" +
-    '<div class="table-wrap mt"><table><thead><tr><th>Order</th><th>Type</th><th>Destination</th><th>Jump host</th></tr></thead><tbody>' +
-    routes.map((route, i) => '<tr><td class="num">' + (i + 1) + "</td><td>" + esc(routeKinds[route.kind] || route.kind) + "</td><td><code>" + esc(route.address) + ":" + esc(route.port || 22) + "</code></td><td>" + (route.proxyJump?.address ? "<code>" + esc(route.proxyJump.address) + "</code>" : '<span class="muted">Direct</span>') + "</td></tr>").join("") +
-    '</tbody></table></div><h3 class="mt">Pinned host keys</h3><div class="output light mt"><pre>' + esc((item.hostKeys || []).join("\n") || "—") + "</pre></div></div></details>" +
-    '<details><summary>Edit name and routes</summary><form id="edit-target"><div class="form-grid"><label class="full">Host name<input name="label" required value="' + esc(item.label || item.id) + '"></label><label class="full">Routes JSON<textarea class="mono" name="routes" rows="7" required spellcheck="false">' + esc(pretty(routes)) + '</textarea><small>Routes are tried in order · ProxyJump needs hostKeys and identityFile</small></label></div><div class="form-actions"><button type="submit" class="primary">Save</button></div><p class="help">To change the tenant, remove the target host and enroll it again so it uses that tenant’s key</p></form></details>' +
-    '<details><summary>Remove this target host from this Master</summary><div><p class="help">Only removes the record on this Master; jobs and data on the host stay. To revoke access, use the Masters page on that host</p><button class="danger" data-action="remove-target">Remove ' + esc(item.label || item.id) + "</button></div></details>" +
+    "<details><summary>" + t.technical + ' <small class="muted">' + t.technicalMore + '</small></summary><div><dl class="facts"><dt>' + t.nodeId + "</dt><dd><code>" + esc(item.nodeId || t.awaiting) + "</code></dd><dt>" + t.sshUser + "</dt><dd>" + esc(item.user) + "</dd><dt>" + t.bridge + "</dt><dd><code>" + esc(item.bridgePath || "—") + "</code></dd><dt>" + t.targetId + "</dt><dd><code>" + esc(item.id) + "</code></dd></dl>" +
+    '<div class="table-wrap mt"><table><thead><tr><th>' + head.order + "</th><th>" + head.type + "</th><th>" + head.destination + "</th><th>" + head.jump + "</th></tr></thead><tbody>" +
+    routes.map((route, i) => '<tr><td class="num">' + (i + 1) + "</td><td>" + esc(t.routeKinds[route.kind] || route.kind) + "</td><td><code>" + esc(route.address) + ":" + esc(route.port || 22) + "</code></td><td>" + (route.proxyJump?.address ? "<code>" + esc(route.proxyJump.address) + "</code>" : '<span class="muted">' + t.direct + "</span>") + "</td></tr>").join("") +
+    '</tbody></table></div><h3 class="mt">' + t.pinnedKeys + '</h3><div class="output light mt"><pre>' + esc((item.hostKeys || []).join("\n") || "—") + "</pre></div></div></details>" +
+    "<details><summary>" + t.edit + '</summary><form id="edit-target"><div class="form-grid"><label class="full">' + t.hostName + '<input name="label" required value="' + esc(item.label || item.id) + '"></label><label class="full">' + t.routesJson + '<textarea class="mono" name="routes" rows="7" required spellcheck="false">' + esc(pretty(routes)) + "</textarea><small>" + t.routesHelp + '</small></label></div><div class="form-actions"><button type="submit" class="primary">' + t.save + '</button></div><p class="help">' + t.tenantHelp + "</p></form></details>" +
+    "<details><summary>" + t.removeTitle + '</summary><div><p class="help">' + t.removeHelp + '</p><button class="danger" data-action="remove-target">' + esc(t.remove(item.label || item.id)) + "</button></div></details>" +
     "</div>";
 }
 /* Connection check result, shown right under the host heading on every tab: one clear verdict, then each step. */
-const CHECK_STEPS = {
-  "local-registration": "Registered on this Master",
-  "local-key": "SSH key on this Master",
-  "runner-installed": "Target service installed",
-  "ssh-runner": "SSH to the host · host key and Target service",
-  executor: "Ready to run jobs"
-};
 function renderCheckPanel(item) {
-  const check = state.diagnostics.get(item.id), running = state.checking === item.id;
+  const check = state.diagnostics.get(item.id), running = state.checking === item.id, t = T.check;
   if (!running && (!check || state.checkHidden?.has(item.id))) return "";
-  const close = '<button class="icon-button" data-action="check-close" aria-label="Hide the check result" title="Hide">' + icons.close + "</button>";
-  if (running) return '<section class="check-panel is-running" role="status" aria-live="polite"><span class="check-mark" aria-hidden="true">…</span><div class="check-head"><h2>Checking connection…</h2>' +
-    "<p>Registration, SSH key, SSH to the host and the Target service · no job is started</p></div></section>";
+  const close = '<button class="icon-button" data-action="check-close" aria-label="' + esc(t.hide) + '" title="' + esc(t.hideShort) + '">' + icons.close + "</button>";
+  if (running) return '<section class="check-panel is-running" role="status" aria-live="polite"><span class="check-mark" aria-hidden="true">…</span><div class="check-head"><h2>' + t.running + "</h2>" +
+    "<p>" + t.runningText + "</p></div></section>";
   const stages = check.stages || [], passed = stages.filter(stage => stage.ok).length;
-  const raw = stage => stage.message || (stage.executor ? (stage.executor.reason || "Not ready") : "");
-  const where = stage => stage.route?.address ? stage.route.address + ":" + (stage.route.port || 22) : "the host";
+  const raw = stage => stage.message || (stage.executor ? (stage.executor.reason || t.notReady) : "");
+  const where = stage => stage.route?.address ? stage.route.address + ":" + (stage.route.port || 22) : t.theHost;
   // Plain words for the failures people meet most; the original text stays underneath.
   const plain = stage => {
     const text = raw(stage);
-    if (text === "TARGET_IDENTITY_MISMATCH" || /host key|REMOTE HOST IDENTIFICATION/i.test(text)) return "The host answered with a different identity than the one pinned at pairing. Don’t continue until you know why";
-    if (/timed out|timeout/i.test(text)) return "No answer from " + where(stage) + " in time. Is the host on, and is SSH reachable from this Master?";
-    if (/refused/i.test(text)) return where(stage) + " refused the connection. SSH may be stopped, or on another port";
-    if (/could not resolve|Name or service not known|nodename nor servname/i.test(text)) return "The name " + (stage.route?.address || "of the host") + " could not be found. Check the address";
-    if (/no route|unreachable/i.test(text)) return "This Master has no network path to " + where(stage);
-    if (/permission denied|publickey/i.test(text)) return "The host rejected this Master’s SSH key. It may have been removed on the host";
-    if (/E_OWNER_NOT_LOGGED_IN/.test(text)) return friendlyError(text);
+    if (text === "TARGET_IDENTITY_MISMATCH" || /host key|REMOTE HOST IDENTIFICATION/i.test(text)) return t.identity;
+    if (/timed out|timeout/i.test(text)) return t.timeout(where(stage));
+    if (/refused/i.test(text)) return t.refused(where(stage));
+    if (/could not resolve|Name or service not known|nodename nor servname/i.test(text)) return t.resolve(stage.route?.address || t.ofTheHost);
+    if (/no route|unreachable/i.test(text)) return t.noRoute(where(stage));
+    if (/permission denied|publickey/i.test(text)) return t.denied;
+    if (/E_OWNER_NOT_LOGGED_IN/.test(text)) return explain(text).text;
     return "";
   };
   const why = stage => { const text = plain(stage), detail = raw(stage); return text ? esc(text) + (detail && detail !== text ? '<small class="check-detail">' + esc(detail) + "</small>" : "") : esc(detail); };
-  const label = stage => (CHECK_STEPS[stage.name] || stage.name) + (stage.route?.address ? " (" + stage.route.address + ")" : "");
+  const label = stage => (t.steps[stage.name] || stage.name) + (stage.route?.address ? " (" + stage.route.address + ")" : "");
   const selected = check.result?.executor?.selected || stages.find(stage => stage.name === "executor")?.executor?.selected;
   const steps = stages.map(stage => '<li class="' + (stage.ok ? "is-ok" : "is-bad") + '"><span class="step-mark" aria-hidden="true">' + (stage.ok ? "✓" : "✕") + "</span><div><strong>" + esc(label(stage)) + "</strong>" +
     (stage.ok ? "" : "<p>" + why(stage) + "</p>") + "</div></li>").join("");
   return '<section class="check-panel ' + (check.ok ? "is-ok" : "is-bad") + '" role="status" aria-live="polite"><span class="check-mark" aria-hidden="true">' + (check.ok ? "✓" : "!") + "</span>" +
-    '<div class="check-head"><h2>' + (check.ok ? "Connection OK" : "Connection problem") + "</h2><p>" + passed + " of " + stages.length + " checks passed · " + esc(timestamp(check.checkedAt)) +
-    (selected?.ownerSessionId ? " · Owner session " + esc(selected.ownerSessionId) : "") + '</p></div><div class="check-actions"><button class="small" data-action="diagnose">' + icons.refresh + "Check again</button>" + close + "</div>" +
+    '<div class="check-head"><h2>' + (check.ok ? t.ok : t.bad) + "</h2><p>" + esc(t.passed(passed, stages.length)) + " · " + esc(timestamp(check.checkedAt)) +
+    (selected?.ownerSessionId ? " · " + esc(t.session(selected.ownerSessionId)) : "") + '</p></div><div class="check-actions"><button class="small" data-action="diagnose">' + icons.refresh + t.again + "</button>" + close + "</div>" +
     '<ol class="check-steps">' + steps + "</ol>" +
-    '<details class="check-raw"><summary>Raw result</summary><div><button class="small" data-action="copy-diagnostics">' + icons.copy + "Copy check JSON</button></div></details></section>";
+    '<details class="check-raw"><summary>' + t.raw + '</summary><div><button class="small" data-action="copy-diagnostics">' + icons.copy + t.copyJson + "</button></div></details></section>";
 }
 function renderJobs(item) {
-  const disabled = !item.runnerInstalled ? ' disabled title="Install the Target service first"' : "";
+  const t = T.jobs, disabled = !item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "";
   return (state.newJob ? renderNewJob(item) : "") +
-    '<section class="section"><div class="section-heading"><h2>Jobs on this host</h2><div class="page-actions">' +
-    (state.newJob ? "" : '<button class="primary" data-action="toggle-new-job"' + disabled + ">" + icons.plus + "New job</button>") +
-    '<button data-action="refresh-jobs">' + icons.refresh + 'Refresh</button></div></div><div class="job-layout"><div class="job-list" id="job-list">' + renderJobRows() + '</div><div class="job-detail" id="job-detail">' + renderJobDetail() + "</div></div></section>";
+    '<section class="section"><div class="section-heading"><h2>' + t.title + '</h2><div class="page-actions">' +
+    (state.newJob ? "" : '<button class="primary" data-action="toggle-new-job"' + disabled + ">" + icons.plus + t.newJob + "</button>") +
+    '<button data-action="refresh-jobs">' + icons.refresh + T.common.refresh + '</button></div></div><div class="job-layout"><div class="job-list" id="job-list">' + renderJobRows() + '</div><div class="job-detail" id="job-detail">' + renderJobDetail() + "</div></div></section>";
 }
 function renderNewJob(item) {
-  const windows = isWindows(item);
-  return '<form id="start-job" class="surface new-job"><h2>New job</h2><div class="form-grid">' +
-    '<label class="full">Working directory<input name="cwd" required class="mono" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
-    '<label class="full">Command or script<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
-    '<details><summary>Advanced options</summary><div class="form-grid"><label>Shell<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
-    '<label>Owner session ID<input name="ownerSessionId" placeholder="Leave empty to pick automatically"></label>' +
-    (!windows ? '<label class="check-label full"><input type="checkbox" name="asAdmin">Run as admin (root)</label>' : "") +
-    '<label class="full">Environment JSON <small>Variables for this job only</small><textarea name="env" rows="2" class="mono" spellcheck="false">{}</textarea></label></div></details>' +
-    '<div class="form-actions"><button type="submit" class="primary"' + (!item.runnerInstalled ? " disabled" : "") + ">Start job</button>" +
-    '<button type="button" data-action="toggle-new-job">Cancel</button><span class="help">Jobs keep running if you close the window · Resending after a timeout reuses the job ID and never runs twice</span></div></form>';
+  const windows = isWindows(item), t = T.jobs;
+  return '<form id="start-job" class="surface new-job"><h2>' + t.newJob + '</h2><div class="form-grid">' +
+    '<label class="full">' + t.cwd + '<input name="cwd" required class="mono" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
+    '<label class="full">' + t.script + '<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
+    "<details><summary>" + t.advanced + '</summary><div class="form-grid"><label>' + t.shell + '<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
+    "<label>" + t.session + '<input name="ownerSessionId" placeholder="' + esc(t.sessionPlaceholder) + '"></label>' +
+    (!windows ? '<label class="check-label full"><input type="checkbox" name="asAdmin">' + t.asAdmin + "</label>" : "") +
+    '<label class="full">' + t.env + " <small>" + t.envHelp + '</small><textarea name="env" rows="2" class="mono" spellcheck="false">{}</textarea></label></div></details>' +
+    '<div class="form-actions"><button type="submit" class="primary"' + (!item.runnerInstalled ? " disabled" : "") + ">" + t.start + "</button>" +
+    '<button type="button" data-action="toggle-new-job">' + T.common.cancel + '</button><span class="help">' + t.help + "</span></div></form>";
 }
 function renderJobRows() {
   if (state.jobsError) return '<div class="error-inline">' + esc(state.jobsError) + "</div>";
-  if (!state.jobs.length) return '<div class="empty-inline">No jobs on this host yet<br>Press “New job” to send a command</div>';
+  if (!state.jobs.length) return '<div class="empty-inline">' + T.jobs.empty + "<br>" + T.jobs.emptyHint + "</div>";
   return state.jobs.map(job => '<button class="job-row ' + (state.job?.id === job.id ? "active" : "") + '" data-action="select-job" data-id="' + esc(job.id) + '"><div>' + badge(job.status) + "<small>" + esc(timestamp(job.createdAt)) + "</small></div><code>" + esc(job.script) + "</code></button>").join("");
 }
 function renderJobDetail() {
-  const job = state.job;
-  if (!job) return '<div class="empty-inline">Select a job to see its output<br><small>stdout, stderr and exit code are stored on the host</small></div>';
+  const job = state.job, t = T.jobs;
+  if (!job) return '<div class="empty-inline">' + t.select + "<br><small>" + t.selectHint + "</small></div>";
   const running = ["running", "queued"].includes(job.status);
-  return '<div class="job-head"><h3>Job <code title="Job ID ' + esc(job.id) + " · Master " + esc(job.masterId) + '">' + esc(job.id.slice(0, 8)) + "</code></h3>" + badge(job.status) +
-    (job.exitCode != null ? '<span class="chip">Exit ' + esc(job.exitCode) + "</span>" : "") +
-    (running ? '<button class="danger small right" data-action="cancel-job">Cancel job</button>' : "") + "</div>" +
+  return '<div class="job-head"><h3>' + t.job + ' <code title="' + esc(t.idTitle(job.id, job.masterId)) + '">' + esc(job.id.slice(0, 8)) + "</code></h3>" + badge(job.status) +
+    (job.exitCode != null ? '<span class="chip">' + esc(t.exit(job.exitCode)) + "</span>" : "") +
+    (running ? '<button class="danger small right" data-action="cancel-job">' + t.cancel + "</button>" : "") + "</div>" +
     '<div class="output light"><pre>' + esc(job.script) + "</pre></div>" +
     '<div class="job-meta"><span>' + icons.folder + "<code>" + esc(job.cwd) + "</code></span><span>" + esc(timestamp(job.startedAt || job.createdAt)) + "</span></div>" +
-    '<div class="console"><div class="console-bar"><div class="segmented" role="group" aria-label="Log stream">' +
+    '<div class="console"><div class="console-bar"><div class="segmented" role="group" aria-label="' + esc(t.stream) + '">' +
     ["stdout", "stderr"].map(stream => '<button data-action="log-stream" data-stream="' + stream + '" aria-pressed="' + (state.stream === stream) + '">' + stream + "</button>").join("") +
-    '</div><button class="small" data-action="read-logs">' + (state.eof ? "Load more" : "Next page") + '</button><button class="small" data-action="copy-log">' + icons.copy + "Copy</button>" +
-    (running ? '<small><span class="dot good"></span>Updates every 5 seconds</small>' : "") +
-    '</div><div class="output" id="log-output" tabindex="0" aria-label="Job logs"><pre>' + esc(state.log || "No output yet") + "</pre></div></div>";
+    '</div><button class="small" data-action="read-logs">' + (state.eof ? t.more : t.next) + '</button><button class="small" data-action="copy-log">' + icons.copy + T.common.copy + "</button>" +
+    (running ? '<small><span class="dot good"></span>' + t.updates + "</small>" : "") +
+    '</div><div class="output" id="log-output" tabindex="0" aria-label="' + esc(t.logs) + '"><pre>' + esc(state.log || t.noOutput) + "</pre></div></div>";
 }
 const joinPath = (folder, name) => folder.replace(/[\\/]+$/, "") + (/^[A-Za-z]:/.test(folder) ? "\\" : "/") + name;
 /** Delete safety layers: right-click only, a dialog naming host and full path, typing the exact name, and the service refusing non-empty folders. */
 function openDeleteDialog(path, name, isDirectory) {
-  const host = state.targets.find(row => row.id === state.selected);
-  $("#delete-kind").textContent = isDirectory ? "folder" : "file";
-  $("#delete-name").textContent = name;
-  $("#delete-path").textContent = path;
-  $("#delete-host").textContent = host ? host.label || host.id : "this host";
-  $("#delete-note").textContent = isDirectory ? "Only an empty folder can be deleted. This cannot be undone." : "This cannot be undone.";
   const form = $("#confirm-delete");
-  form.reset(); form.dataset.path = path; form.dataset.name = name;
+  form.reset(); form.dataset.path = path; form.dataset.name = name; form.dataset.dir = isDirectory ? "1" : "";
+  fillDeleteDialog();
   form.querySelector('[type="submit"]').disabled = true;
   $("#delete-dialog").showModal();
   form.querySelector('[name="confirm"]').focus();
+}
+/** The delete dialog's words; also re-run when the language changes while it is open (what was typed stays). */
+function fillDeleteDialog() {
+  const form = $("#confirm-delete"), t = T.files, dir = form.dataset.dir === "1";
+  const host = state.targets.find(row => row.id === state.selected);
+  $("#delete-title").textContent = t.deleteTitle(dir);
+  $("#delete-name").textContent = form.dataset.name || "";
+  $("#delete-path").textContent = form.dataset.path || "";
+  $("#delete-host").textContent = host ? host.label || host.id : T.common.thisHost;
+  $("#delete-note").textContent = dir ? t.deleteDirNote : t.deleteNote;
 }
 function parentPath(path) {
   const value = String(path || "").trim().replace(/[\\/]+$/, "");
@@ -493,105 +559,58 @@ function parentPath(path) {
 }
 /** WinSCP-like browser: path box with a folder dropdown, Up, New folder, Upload; drop files to upload; right-click to delete. */
 function renderFiles(item) {
-  const path = state.files?.path || "~";
-  return '<div class="section-heading"><div><h2>Files on this host</h2><p class="help">Click a folder to open it, a file to edit it · drop files to upload · ⋮ to download or delete</p></div></div>' +
-    '<div class="file-bar"><button type="button" class="icon-button" data-action="parent-folder" aria-label="Up one folder" title="Up one folder"' + (state.files ? "" : " disabled") + ">" + icons.up + "</button>" +
-    '<form id="browse-files" class="path-pick"><input name="path" id="file-path" aria-label="Folder path · press Enter to open" class="mono" required value="' + esc(path) + '">' +
-    '<button type="button" class="icon-button" data-action="path-menu" aria-label="Choose a folder" title="Choose a folder">' + icons.chevron + "</button></form>" +
-    '<div class="search file-search"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="file-filter" type="search" aria-label="Search this folder" placeholder="Search this folder…" value="' + esc(state.fileQuery || "") + '"' + (state.files ? "" : " disabled") + "></div>" +
-    '<button type="button" data-action="mkdir"' + (state.files ? "" : " disabled") + ">" + icons.plus + 'New folder</button><button type="button" class="accent" data-action="upload-pick"' + (state.files ? "" : " disabled") + ">" + icons.up + 'Upload…</button><input type="file" id="upload-input" multiple hidden></div>' +
+  const path = state.files?.path || "~", t = T.files;
+  return '<div class="section-heading"><div><h2>' + t.title + '</h2><p class="help">' + t.help + "</p></div></div>" +
+    '<div class="file-bar"><button type="button" class="icon-button" data-action="parent-folder" aria-label="' + esc(t.up) + '" title="' + esc(t.up) + '"' + (state.files ? "" : " disabled") + ">" + icons.up + "</button>" +
+    '<form id="browse-files" class="path-pick"><input name="path" id="file-path" aria-label="' + esc(t.path) + '" class="mono" required value="' + esc(path) + '">' +
+    '<button type="button" class="icon-button" data-action="path-menu" aria-label="' + esc(t.choose) + '" title="' + esc(t.choose) + '">' + icons.chevron + "</button></form>" +
+    '<div class="search file-search"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="file-filter" type="search" aria-label="' + esc(t.search) + '" placeholder="' + esc(t.searchPlaceholder) + '" value="' + esc(state.fileQuery || "") + '"' + (state.files ? "" : " disabled") + "></div>" +
+    '<button type="button" data-action="mkdir"' + (state.files ? "" : " disabled") + ">" + icons.plus + t.newFolder + '</button><button type="button" class="accent" data-action="upload-pick"' + (state.files ? "" : " disabled") + ">" + icons.up + t.upload + '</button><input type="file" id="upload-input" multiple hidden></div>' +
     '<div id="upload-status">' + renderUploadStatus() + '</div><div id="files-output" class="file-drop">' + renderFileList() + '</div><div id="file-editor">' + renderFileEditor() + "</div>";
 }
-const fileTime = seconds => seconds ? new Date(seconds * 1000).toLocaleString("en-GB", { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+const fileTime = seconds => seconds ? new Date(seconds * 1000).toLocaleString(T.locale, { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 function renderFileList() {
-  if (!state.files && state.filesError) return '<div class="callout pending">' + icons.alert + "<div><strong>Can’t open files yet</strong><p>" + esc(state.filesError) + "</p></div></div>";
-  if (!state.files) return '<div class="empty-inline">Reading folders…</div>';
+  const t = T.files;
+  if (!state.files && state.filesError) return '<div class="callout pending">' + icons.alert + "<div><strong>" + t.cantOpen + "</strong><p>" + errorHtml(explain(state.filesError)) + "</p></div></div>";
+  if (!state.files) return '<div class="empty-inline">' + t.reading + "</div>";
   const query = (state.fileQuery || "").trim().toLowerCase();
   const entries = [...state.files.entries].filter(entry => !query || String(entry.name).toLowerCase().includes(query)).sort((a, b) => (b.isDirectory ? 1 : 0) - (a.isDirectory ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
   const up = parentPath(state.files.path), atRoot = up === state.files.path;
-  const parent = atRoot ? "" : '<tr><td><button class="row-button file-name folder" data-action="open-folder" data-path="' + esc(up) + '">' + icons.up + '..</button></td><td class="num muted">—</td><td class="muted">Parent folder</td><td></td></tr>';
-  return '<div class="table-wrap"><table class="file-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>' + parent +
-    entries.map(entry => '<tr data-file="' + esc(entry.path) + '" data-name="' + esc(entry.name) + '" data-dir="' + (entry.isDirectory ? "1" : "") + '"><td><button class="row-button file-name' + (entry.isDirectory ? " folder" : "") + '" data-action="' + (entry.isDirectory ? "open-folder" : "open-file") + '" data-path="' + esc(entry.path) + '">' + (entry.isDirectory ? icons.folder : icons.file) + esc(entry.name) + "</button>" + (entry.isSymlink ? " " + chip("link") : "") +
-      '</td><td class="num muted" title="' + esc(entry.size ?? "") + ' bytes">' + (entry.isDirectory ? "—" : esc(formatSize(entry.size))) + '</td><td class="muted">' + esc(fileTime(entry.modified)) + '</td><td class="row-more-cell"><button type="button" class="icon-button row-more" data-action="file-more" aria-haspopup="menu" aria-label="More actions for ' + esc(entry.name) + '" title="More actions">' + icons.more + "</button></td></tr>").join("") +
-    (entries.length ? "" : '<tr><td colspan="4" class="muted">' + (query ? "Nothing here matches “" + esc(state.fileQuery.trim()) + "”" : "This folder is empty · drop files here to upload") + "</td></tr>") + "</tbody></table></div>";
+  const parent = atRoot ? "" : '<tr><td><button class="row-button file-name folder" data-action="open-folder" data-path="' + esc(up) + '">' + icons.up + '..</button></td><td class="num muted">—</td><td class="muted">' + t.parent + "</td><td></td></tr>";
+  return '<div class="table-wrap"><table class="file-table"><thead><tr><th>' + t.head.name + "</th><th>" + t.head.size + "</th><th>" + t.head.modified + '</th><th><span class="sr-only">' + t.head.actions + "</span></th></tr></thead><tbody>" + parent +
+    entries.map(entry => '<tr data-file="' + esc(entry.path) + '" data-name="' + esc(entry.name) + '" data-dir="' + (entry.isDirectory ? "1" : "") + '"><td><button class="row-button file-name' + (entry.isDirectory ? " folder" : "") + '" data-action="' + (entry.isDirectory ? "open-folder" : "open-file") + '" data-path="' + esc(entry.path) + '">' + (entry.isDirectory ? icons.folder : icons.file) + esc(entry.name) + "</button>" + (entry.isSymlink ? " " + chip(t.link) : "") +
+      '</td><td class="num muted" title="' + esc(t.bytes(entry.size ?? "")) + '">' + (entry.isDirectory ? "—" : esc(formatSize(entry.size))) + '</td><td class="muted">' + esc(fileTime(entry.modified)) + '</td><td class="row-more-cell"><button type="button" class="icon-button row-more" data-action="file-more" aria-haspopup="menu" aria-label="' + esc(t.more(entry.name)) + '" title="' + esc(t.moreShort) + '">' + icons.more + "</button></td></tr>").join("") +
+    (entries.length ? "" : '<tr><td colspan="4" class="muted">' + (query ? esc(t.noMatch(state.fileQuery.trim())) : t.empty) + "</td></tr>") + "</tbody></table></div>";
 }
 function renderFileEditor() {
   if (!state.file) return "";
-  return '<div class="file-editor surface"><div class="section-heading"><h3><code>' + esc(state.file.path) + '</code></h3><button class="icon-button" data-action="close-file" aria-label="Close file" title="Close file">' + icons.close + "</button></div>" +
-    '<form id="save-file"><textarea name="content" aria-label="File content" class="mono" rows="14" spellcheck="false"' + (!state.file.editable ? " readonly" : "") + ">" + esc(state.file.content) + '</textarea><div class="form-actions"><button type="submit" class="primary"' + (!state.file.editable ? " disabled" : "") + '>Save file</button><span class="help">' + (state.file.editable ? "SHA-256 is checked before saving so changes made elsewhere are not overwritten" : "Partial or not UTF-8 · use the CLI for large or binary files") + "</span></div></form></div>";
+  const t = T.files;
+  return '<div class="file-editor surface"><div class="section-heading"><h3><code>' + esc(state.file.path) + '</code></h3><button class="icon-button" data-action="close-file" aria-label="' + esc(t.closeFile) + '" title="' + esc(t.closeFile) + '">' + icons.close + "</button></div>" +
+    '<form id="save-file"><textarea name="content" aria-label="' + esc(t.content) + '" class="mono" rows="14" spellcheck="false"' + (!state.file.editable ? " readonly" : "") + ">" + esc(state.file.content) + '</textarea><div class="form-actions"><button type="submit" class="primary"' + (!state.file.editable ? " disabled" : "") + ">" + t.save + '</button><span class="help">' + (state.file.editable ? t.shaHelp : t.readOnly) + "</span></div></form></div>";
 }
 function pairingState(item) {
   return addText.states[item?.state] || addText.preparing;
 }
-/** Plain-language versions of errors people can act on; anything else is shown as is. */
-function friendlyError(error) {
+/** Plain-language versions of errors people can act on (strings.js `errors`), the first matching code wins:
+ *  `{text, detail}`. `pairing` adds the add flow's pairing codes. Anything unmapped is shown as is, in English.
+ *  In Thai, a mapped error keeps the Master's English text (without its `E_…:` prefix) as `detail`, shown in a small
+ *  line under the sentence so it can still be searched or pasted into a bug report. */
+function explain(error, pairing = false) {
   const text = String(error?.message || error);
-  const host = state.targets.find(row => row.id === state.selected), name = host ? host.label || host.id : "this host";
-  if (text.includes("E_OWNER_NOT_LOGGED_IN")) return "Nobody is logged in as the Owner on " + name + ". Files, jobs and the terminal run in the Owner’s login session · log in on that host (at its screen or over SSH), then try again";
-  if (text.includes("E_OWNER_NOT_ADMIN")) return "The Owner on " + name + " is logged in without administrator rights · log in with an administrator session, then try again";
-  return text;
+  const host = state.targets.find(row => row.id === state.selected), name = host ? host.label || host.id : T.common.thisHost;
+  const rows = [...(pairing ? T.errors.pairing : []), ...T.errors.common];
+  const found = rows.find(([code]) => text.includes(code))?.[1];
+  if (!found) return { text, detail: "" };
+  return { text: typeof found === "function" ? found(name) : found, detail: lang === "en" ? "" : text.replace(/^(Error:\s*)?E_[A-Z_]+:\s*/, "") };
 }
-function pairingError(error) {
-  const text = String(error?.message || error);
-  return addText.errors.find(([code]) => text.includes(code))?.[1] || text;
-}
+/** An error from `explain` (or its text) as markup: the sentence, then the English detail line when there is one. */
+const errorHtml = shown => typeof shown === "string" ? esc(shown) : esc(shown.text) + (shown.detail ? '<small class="error-detail">' + esc(shown.detail) + "</small>" : "");
 async function refreshPairings() {
   const rows = await rpc("pairing.status");
-  if (!Array.isArray(rows)) throw new Error("Could not read pairing requests");
+  if (!Array.isArray(rows)) throw new Error(T.errors.pairingRead);
   state.pairings = rows;
   if (state.pairing) state.pairing = rows.find(item => item.requestId === state.pairing.requestId) || state.pairing;
 }
-/* Add flow ("+ Add host"): every on-screen string in one place for the language switch (roadmap entry 2). */
-const addText = {
-  title: "Add host", close: "Close", cancel: "Cancel",
-  lead: "Type the new host’s address, save the installer, then paste the code the new host shows",
-  inFolder: name => "Folder " + name, inSite: name => "Datacenter " + name + " · used if the new host is a Master",
-  steps: ["Where is the new host?", "Install on the new host", "Paste the code", "Check and finish"],
-  address: "IP or host name", addressPlaceholder: "e.g. 192.0.2.20 or a Tailscale name", addressHelp: "An address this Master can reach · with Tailscale, sign in on the new host first",
-  checking: "Checking the address…", sshAnswers: os => "SSH answers" + (os ? " · " + os : ""), bannerOs: { windows: "Windows", linux: "Ubuntu or Debian" }, // what a banner can tell
-  noSsh: "No SSH answer yet. That is normal for a new Windows machine: the installer turns SSH on", alreadyAs: "Already added as", openIt: "Open it", resumeIt: "Resume it",
-  os: "Operating system", osDetect: "Detect from the address (both installers if unknown)", osNames: { windows: "Windows / Windows Server", linux: "Ubuntu 24.04 — Desktop or Server" },
-  optional: "Optional", name: "Name", namePlaceholder: "Shown as its address if left empty", folder: "Folder", none: "None", newFolder: "+ New folder…", newFolderName: "New folder name",
-  advanced: "Advanced", group: "Key group", groupHelp: "Hosts in the same key group share one SSH key on this Master. Keep the default unless you separate keys per group or team",
-  hostId: "Host ID", generated: "Generated automatically", port: "SSH port", network: "Network type", detect: "Detect from address", lan: "LAN", tailscale: "Tailscale", publicIp: "Public IP",
-  bridge: "Bridge account", routes: "Fallback routes / ProxyJump", routesPlaceholder: "Leave empty for the default", routesHelp: "For administrators: routes JSON in the existing format",
-  save: "Save installer…", saveHelp: "The installer holds only public data. This Master can control the new host only after someone clicks Approve there",
-  haveInstaller: "I already have the installer", cancelRequest: "Cancel request",
-  open: file => "Open <strong>" + esc(file) + "</strong> on the new host and click <strong>Approve</strong>", openAny: "Open the installer on the new host and click <strong>Approve</strong>",
-  openEither: (exe, deb) => "Open <strong>" + esc(exe) + "</strong> (Windows) or <strong>" + esc(deb) + "</strong> (Ubuntu) on the new host, whichever matches it, and click <strong>Approve</strong>",
-  bothHelp: "Both installers are for this host. The one you use first wins; the other stops working", eitherOs: "Windows or Ubuntu",
-  savedTo: "Saved to", serverHint: "Ubuntu Server without a desktop?", serverCommand: file => "sudo apt install --no-install-recommends ./" + file + " && sshcc-setup",
-  code: "Code from the new host", codeHelp: "After Approve, the new host shows a code that starts with SSHCC1. Copy all of it and paste it here",
-  codeIdle: "Checked the moment you paste", codeChecking: "Checking…", codeDone: "Code accepted", codeAccepted: name => "✓ Code accepted · this is " + name,
-  hostName: "Host name", osName: "OS", shownAs: "Shown as", hostKey: "Host key (SHA-256)",
-  reviewHelp: "Read from the code. Nothing is added until you press Finish", finish: "Finish",
-  readyTitle: "Service and host identity verified", readyText: "Agents can use this host now", openHost: "Open this host", another: "Add another host", done: "Done",
-  attentionTitle: "Installed, but the connection check failed", attentionText: "No need to reinstall. Fix the address and check again",
-  retryHelp: "Only the address changes; identity and host key stay the same", retry: "Check again", back: "Back",
-  unfinished: "Unfinished", refresh: "Refresh", host: "Host", status: "Status", resume: "Resume",
-  states: { awaiting_approval: "Waiting for Approve on the new host", needs_attention: "Installed · connection check failed", ready: "Ready" }, preparing: "Preparing",
-  cancelConfirm: "Cancel this request? An installer already sent for it will no longer work.", cancelled: "Request cancelled",
-  isMaster: n => "This host is a Master · " + n + " hosts merged", isMasterMerging: "This host is a Master · merging…",
-  mergeGloss: "Merged: see and control its hosts from here. Its hosts are in the tree now; nothing changes on them",
-  mergeFailed: "This host is a Master, but it could not be merged", mergeFailedText: "The host is added. Merge it later on the Masters page (Merge: see and control its hosts from here)",
-  mergeReason: "Reason:", openMasters: "Open Masters", twoWay: "Two-way", twoWayHelp: "Optional · lets that Master control this Master’s hosts too",
-  admin: "For administrators (import from a file)",
-  // Plain sentences for errors people can act on; the first matching code wins, anything else is shown as is.
-  errors: [
-    ["SETUP_TEMPLATES_MISSING", "Installer templates are missing. Install or update this Master with the full package, then save the installer again"],
-    ["SETUP_TEMPLATE_MISMATCH", "The installer template does not match the verified release. Reinstall the Master package"],
-    ["HOST_KEY_MISMATCH", "The host key differs from the pinned one, so the connection was stopped. Confirm it is the same host first"],
-    ["E_PAIRING_MASTER", "This code was made for a different Master. Paste it on the Master whose installer you used"],
-    ["E_PAIRING_CODE", "This code is damaged or incomplete. Copy all of it again from the new host, starting with SSHCC1."],
-    ["E_PAIRING_DIGEST: pairing code", "This code is damaged or incomplete. Copy all of it again from the new host, starting with SSHCC1."],
-    ["E_PAIRING_VERSION", "This is not a code from the new host. Copy all of it again, starting with SSHCC1."],
-    ["E_PAIRING_REPLACED", "This installer was replaced by the other one you already used"],
-    ["unknown setup request", "This code belongs to a request that no longer exists on this Master. Save a new installer and run it on the new host"],
-    ["E_PAIRING_CONFLICT", "A different host already answered this request. Save a new installer for this host"],
-    ["PAIRING", "This code does not match the request. Check that you copied all of it from the host you just installed, on the right Master"],
-    ["64 KiB", "The code is too long. Copy only the code"],
-  ]
-};
 /** The add column's current step, from the request, whether its installer was saved and the pasted code:
  *  no request → 1; request not saved → 1 (Save installer… is in step 1); saved → 3; code previewed (nothing
  *  saved yet) → 4 "review"; after Finish (ready / needs_attention) → 4 "result". Step 2 is never current: it is
@@ -618,7 +637,7 @@ function renderAddHost(options = {}) {
   return '<div id="add-host" class="add-flow">' + heading(addText.title, [folder && addText.inFolder(folder.name), site && addText.inSite(site.name), addText.lead].filter(Boolean).join(" · "), '<button data-action="enroll-close">' + icons.close + addText.close + "</button>") +
     '<div class="add-column">' + card(1, addWhere(request, now, options, folders)) + card(2, addInstall(request, saved)) + card(3, addPaste(now)) + card(4, now.phase === "review" ? addReview(preview, folders) : request ? addResult(request) : "") + "</div>" +
     addUnfinished(requests) + "</div>" +
-    '<details class="mt"><summary>' + addText.admin + '</summary><div><p class="help">Import a registration or a v1 registry; host keys are still checked as usual</p><div class="page-actions"><button data-action="import-registration">Import registration file…</button><button data-action="import-v1-registry">Import v1 registry…</button></div><form id="paste-registration" class="mt"><label>Registration JSON<textarea name="document" class="mono" rows="4" required spellcheck="false"></textarea></label><div class="form-actions"><button type="submit">Import</button></div></form></div></details>';
+    '<details class="mt"><summary>' + addText.admin + '</summary><div><p class="help">' + addText.adminHelp + '</p><div class="page-actions"><button data-action="import-registration">' + addText.importFile + '</button><button data-action="import-v1-registry">' + addText.importV1 + '</button></div><form id="paste-registration" class="mt"><label>' + addText.registrationJson + '<textarea name="document" class="mono" rows="4" required spellcheck="false"></textarea></label><div class="form-actions"><button type="submit">' + addText.import + "</button></div></form></div></details>";
 }
 /** The address a pairing request was made for (its first route). */
 const requestAddress = request => (request?.envelope?.bundle?.routes || [])[0]?.address || "";
@@ -704,17 +723,18 @@ function addPaste(now) {
     '<p class="add-check good">' + esc(addText.codeAccepted(state.add.accepted)) + '</p><p class="help">' + addText.codeHelp + "</p>" : '<p class="add-check">' + icons.check + addText.codeDone + "</p>";
   const error = state.add.error;
   return '<label>' + addText.code + '<textarea id="add-code" class="mono" rows="3" maxlength="65536" autocomplete="off" spellcheck="false" placeholder="SSHCC1.…" data-focus>' + esc(state.add.code) + "</textarea></label>" +
-    '<p class="add-check' + (error ? " bad" : "") + '" id="add-code-check" aria-live="polite">' + esc(error || addText.codeIdle) + '</p><p class="help">' + addText.codeHelp + "</p>";
+    '<p class="add-check' + (error ? " bad" : "") + '" id="add-code-check" aria-live="polite">' + (error ? errorHtml(explain(error, true)) : esc(addText.codeIdle)) + '</p><p class="help">' + addText.codeHelp + "</p>";
 }
 /** Save installer…: the native save dialog; once saved, step 2 is done and the flow moves to step 3. */
 async function saveInstaller() {
   const request = state.pairing;
   if (!request) return;
-  const saved = await native("save_setup", { requestId: request.requestId });
+  const saved = await native("save_setup", { requestId: request.requestId, title: T.dialogs.installerFile, folderTitle: T.dialogs.installerFolder });
   if (saved) for (const id of [request.requestId, request.sibling].filter(Boolean)) state.saved.set(id, saved);
   render();
 }
-function setCodeCheck(text, tone = "") { const line = $("#add-code-check"); if (line) { line.textContent = text; line.className = "add-check" + (tone ? " " + tone : ""); } }
+/** The line under the code box: plain text, or an error from `explain` (sentence plus the English detail in Thai). */
+function setCodeCheck(text, tone = "") { const line = $("#add-code-check"); if (line) { line.innerHTML = errorHtml(text); line.className = "add-check" + (tone ? " " + tone : ""); } }
 let codeTimer = 0;
 const CODE_ACCEPTED_MS = 700;
 /** A paste is checked at once; typing waits for a pause. Each distinct value is sent once. */
@@ -738,7 +758,7 @@ async function checkCode(code) {
     state.add.preview = { ...result, code }; render();
   } catch (error) {
     if (state.add.checked !== code) return; // a newer value is being checked
-    state.add.error = pairingError(error); setCodeCheck(state.add.error, "bad");
+    state.add.error = String(error?.message || error); setCodeCheck(explain(error, true), "bad");
   }
 }
 /** Step 4 review: facts read from the code, with name and folder editable; Finish saves. */
@@ -759,7 +779,7 @@ function addResult(item) {
     return '<div class="callout good">' + icons.check + '<div><strong class="ready-message">' + addText.readyTitle + "</strong><p>" + addText.readyText + "</p></div></div>" + offer +
       '<div class="form-actions"><button class="primary" data-action="open-paired-target" data-id="' + esc(item.targetId) + '" data-focus>' + addText.openHost + '</button><button data-action="new-pairing">' + icons.plus + addText.another + '</button><button data-action="enroll-close">' + addText.done + "</button></div>";
   }
-  return '<div class="callout pending">' + icons.alert + "<div><strong>" + addText.attentionTitle + "</strong><p>" + addText.attentionText + "</p>" + (failed.length ? "<ul>" + failed.map(stage => "<li>" + esc(pairingError(stage.message)) + "</li>").join("") + "</ul>" : "") + "</div></div>" +
+  return '<div class="callout pending">' + icons.alert + "<div><strong>" + addText.attentionTitle + "</strong><p>" + addText.attentionText + "</p>" + (failed.length ? "<ul>" + failed.map(stage => "<li>" + errorHtml(explain(stage.message, true)) + "</li>").join("") + "</ul>" : "") + "</div></div>" +
     '<form id="retry-pairing"><label>' + addText.address + '<input name="address" required value="' + esc(routes[0]?.address || "") + '" data-focus><small>' + addText.retryHelp + '</small></label><div class="form-actions"><button type="submit" class="primary">' + addText.retry + '</button><button type="button" data-action="pairing-back">' + icons.back + addText.back + "</button></div></form>";
 }
 /** A sibling pair (unknown OS) is one row: the Windows request stands for both, so its listed partner is hidden. */
@@ -816,37 +836,6 @@ async function checkPairedMaster(pairing) {
   }
   await refreshMasters().catch(() => {});
 }
-/* Masters page (Merges both ways) and its notifications: every on-screen string in one place for the language switch
-   (roadmap entry 2), like `addText`. */
-const mastersText = {
-  title: "Masters", lead: "Merge another Master to see and control its hosts from here, and choose which Masters may control this one", refresh: "Refresh",
-  outTitle: "Controlled from here", outLead: "Masters merged into this one · Merge: see and control its hosts from here",
-  master: "Master", status: "Status", direction: "Direction", none: "—",
-  sync: "Sync", removeMerge: "Remove merge", merge: "Merge", mergeTitle: "See and control its hosts from here", tryAgain: "Try again", enableTwoWay: "Enable two-way",
-  outEmpty: "No Masters yet · a host you add that is itself a Master shows up here",
-  howTitle: "How merging works", how: "Merged hosts appear under All hosts with IDs like <code>master/machine</code> · Commands go through that Master with its rights<br>Enable two-way so that Master can also control this Master’s hosts",
-  merging: "Merging…", notMerged: "Not merged",
-  mergeStates: { merged: n => "Merged · " + n + " hosts", outdated: "Remote Master needs an upgrade", "not-master": "Not a Master", disabled: "Remote Master disabled merging", error: "Error" },
-  lastSync: when => "Last sync " + when, previousList: n => " · still using the previous list of " + n,
-  enablingTwoWay: "Enabling two-way…", twoWay: "Two-way", canControl: name => name + " can control this Master’s hosts",
-  oneWay: "One-way", mergingDisabledHere: "Merging is disabled on this host", oneWayOnly: "This Master controls that Master’s hosts one way only",
-  reverseStates: { "two-way": "Waiting for merge back", "needs-attention": "Paired, but merge back failed", error: "Two-way setup failed", pending: "Unfinished" },
-  windowsOnly: "Currently supported only on Windows Masters",
-  inTitle: "This Master is controlled by", inLead: "Masters that reach this one directly, or through a Merge (they see and control its hosts from there)",
-  allowAnother: "Allow another Master…", allowTitle: "Choose a public enrollment bundle from another Master", reaches: "Reaches this Master",
-  direct: "Direct", throughMerge: "Through merge", revoked: "Revoked", mergingDisabled: "Merging disabled", lastUsed: when => "Last used " + when,
-  revoke: "Revoke", allowAgain: "Allow again", disableMerging: "Disable merging", inEmpty: "No other Master controls this one",
-  inHelp: "Revoke and Disable merging affect new requests; cancel running jobs separately from the Jobs tab",
-  // Confirmations and notifications.
-  revokeConfirm: id => "Revoke Master " + id + " on this host?", revokedNote: "Master revoked",
-  notChecked: (name, error) => name + " could not be checked: " + error, notMaster: name => name + " is not a Master, so there is nothing to merge",
-  mergedNote: (name, n) => "Merged " + name + " · " + n + " hosts added to the tree",
-  removeConfirm: id => "Remove the merge with " + id + "? Its hosts will disappear from this Master", removedNote: "Merge removed",
-  disableConfirm: "Disable merging for this Master? It cannot control hosts through this Master until allowed again", disabledNote: "Merging disabled", allowedNote: "Merging allowed again",
-  allowConfirm: name => "Allow Master " + name + " to run work with system rights on this host?", allowedMaster: "Master added. If its SSH key is not in authorized_keys yet, run the installer with this bundle",
-  twoWayOn: (name, n) => "Two-way enabled with " + name + " · it can now control " + n + " of this Master’s hosts",
-  twoWayFailed: (name, reason) => "Enrolled with " + name + ", but the merge back failed: " + reason,
-};
 function renderMasters() {
   const t = mastersText;
   return heading(t.title, t.lead, '<button data-action="refresh-masters">' + icons.refresh + t.refresh + "</button>") +
@@ -915,56 +904,58 @@ function renderRelays() {
     '<p class="help mt">' + t.inHelp + "</p></section>";
 }
 function copyRow(command) {
-  return '<div class="copy-row"><code>' + esc(command) + '</code><button class="icon-button" data-action="copy" data-copy="' + esc(command) + '" aria-label="Copy ' + esc(command) + '" title="Copy">' + icons.copy + "</button></div>";
+  return '<div class="copy-row"><code>' + esc(command) + '</code><button class="icon-button" data-action="copy" data-copy="' + esc(command) + '" aria-label="' + esc(T.common.copyCommand(command)) + '" title="' + esc(T.common.copy) + '">' + icons.copy + "</button></div>";
 }
 function linkBadge(status) {
   const styles = { connected: "good", pathMismatch: "pending", disconnected: "", missingClient: "" };
-  const labels = { connected: "Connected", pathMismatch: "Path mismatch", disconnected: "Not connected", missingClient: "Not installed" };
-  return '<span class="badge ' + (styles[status] || "") + '">' + esc(labels[status] || status) + "</span>";
+  return '<span class="badge ' + (styles[status] || "") + '">' + esc(T.service.links[status] || status) + "</span>";
 }
 function renderClientLink(link) {
   const canConnect = link.detected && link.status === "disconnected";
   const canUpdate = link.detected && link.status === "pathMismatch";
+  const t = T.service;
   const actions =
-    (canConnect ? '<button class="primary small" data-action="connect-client" data-id="' + esc(link.id) + '">Connect</button>' : "") +
-    (canUpdate ? '<button class="small" data-action="update-client-path" data-id="' + esc(link.id) + '">Update path</button>' : "") +
-    (link.status === "connected" ? '<span class="help">' + icons.check + "Ready</span>" : "") +
-    (!link.detected ? '<button class="primary small" disabled title="Not installed on this host">Connect</button>' : "");
+    (canConnect ? '<button class="primary small" data-action="connect-client" data-id="' + esc(link.id) + '">' + t.connect + "</button>" : "") +
+    (canUpdate ? '<button class="small" data-action="update-client-path" data-id="' + esc(link.id) + '">' + t.updatePath + "</button>" : "") +
+    (link.status === "connected" ? '<span class="help">' + icons.check + t.linkReady + "</span>" : "") +
+    (!link.detected ? '<button class="primary small" disabled title="' + esc(t.notInstalledHere) + '">' + t.connect + "</button>" : "");
+  // `data-raw`: text from the service, shown as it comes (English).
   return '<article class="client-link surface">' +
-    '<div class="card-head"><div><h3>' + esc(link.label) + "</h3><p>" + esc(link.message) + "</p></div>" + linkBadge(link.status) + "</div>" +
-    '<dl class="facts"><dt>Config</dt><dd><code>' + esc(link.configPath) + "</code></dd>" +
-    (link.command ? "<dt>Current command</dt><dd><code>" + esc(link.command) + "</code></dd>" : "") +
-    "<dt>Expected command</dt><dd><code>" + esc(link.expectedCommand) + "</code></dd></dl>" +
+    '<div class="card-head"><div><h3>' + esc(link.label) + "</h3><p data-raw>" + esc(link.message) + "</p></div>" + linkBadge(link.status) + "</div>" +
+    '<dl class="facts"><dt>' + t.config + "</dt><dd><code>" + esc(link.configPath) + "</code></dd>" +
+    (link.command ? "<dt>" + t.current + "</dt><dd><code>" + esc(link.command) + "</code></dd>" : "") +
+    "<dt>" + t.expected + "</dt><dd><code>" + esc(link.expectedCommand) + "</code></dd></dl>" +
     '<div class="form-actions">' + actions + "</div>" +
-    "<details><summary>Copy snippet</summary><div>" + copyRow(link.snippet) + "</div></details>" +
+    "<details><summary>" + t.snippet + "</summary><div>" + copyRow(link.snippet) + "</div></details>" +
     "</article>";
 }
 function renderClientLinks() {
+  const t = T.service;
   const body = state.clientLinksError
-    ? '<div class="callout bad">' + icons.alert + "<div><strong>Could not read MCP client status</strong><p>" + esc(state.clientLinksError) + "</p></div></div>"
+    ? '<div class="callout bad">' + icons.alert + "<div><strong>" + t.linksFailed + "</strong><p data-raw>" + esc(state.clientLinksError) + "</p></div></div>"
     : (state.clientLinks.length
       ? '<div class="client-link-grid">' + state.clientLinks.map(renderClientLink).join("") + "</div>"
-      : '<p class="help">Checking Cursor, Claude Code and Codex…</p>');
-  return '<section class="section mt"><div class="section-heading"><div><h2>Connect AI clients</h2><p class="help">Registers the user-level MCP server <code>ssh_control_center</code> · uses the same local service through <code>sshcc mcp</code></p></div></div>' +
+      : '<p class="help">' + t.checkingClients + "</p>");
+  return '<section class="section mt"><div class="section-heading"><div><h2>' + t.aiTitle + '</h2><p class="help">' + t.aiLead + "</p></div></div>" +
     body +
-    '<details class="mt"><summary>General CLI</summary><div><p class="help">Check the service directly without an AI client</p>' +
+    '<details class="mt"><summary>' + t.cli + '</summary><div><p class="help">' + t.cliHelp + "</p>" +
     copyRow("sshcc request system.status") + copyRow("sshcc mcp") + "</div></details></section>";
 }
 function renderService() {
-  const service = state.service;
-  const head = heading("Local service", "The service starts at boot and runs independently of this window", '<button data-action="refresh-service">' + icons.refresh + "Check again</button>");
+  const service = state.service, t = T.service;
+  const head = heading(t.title, t.lead, '<button data-action="refresh-service">' + icons.refresh + t.again + "</button>");
   if (!service) {
-    return head + '<div class="callout bad">' + icons.alert + "<div><strong>Cannot reach the service</strong><p>Check that SSH Control Center is installed and the tray runs as the Owner chosen during install</p><ul><li>Windows: look for the SSHControlCenter service in Services</li><li>Linux: <code>systemctl status sshcc</code></li></ul></div></div>" +
-      '<details><summary>Error message</summary><div class="output light"><pre>' + esc(state.serviceError || "—") + "</pre></div></details>" +
+    return head + '<div class="callout bad">' + icons.alert + "<div><strong>" + t.downTitle + "</strong><p>" + t.downText + "</p><ul><li>" + t.downWindows + "</li><li>" + t.downLinux + "<code>systemctl status sshcc</code></li></ul></div></div>" +
+      "<details><summary>" + t.error + '</summary><div class="output light"><pre>' + esc(state.serviceError || "—") + "</pre></div></details>" +
       renderClientLinks();
   }
   return head + '<div class="stat-grid">' +
-    stat("Status", '<span class="dot good"></span>Ready') +
-    stat("Host name", esc(service.label)) +
-    stat("Roles", esc(service.roles?.join(" + ") || "—")) +
-    stat("Uptime", esc(formatUptime(service.uptimeSeconds)), service.version ? "Version " + service.version : "") +
+    stat(t.status, '<span class="dot good"></span>' + t.ready) +
+    stat(t.hostName, esc(service.label)) +
+    stat(t.roles, esc(service.roles?.join(" + ") || "—")) +
+    stat(t.uptime, esc(formatUptime(service.uptimeSeconds)), service.version ? t.version(service.version) : "") +
     "</div>" +
-    '<div class="disclosure-list"><details><summary>More details <small class="muted">Node ID, connection</small></summary><div><dl class="facts"><dt>Node ID</dt><dd><code>' + esc(service.nodeId) + "</code></dd><dt>Connection</dt><dd>Local named pipe / Unix socket</dd><dt>This window</dt><dd>Close the window to free WebView memory, or quit the tray icon to close only the tray</dd></dl></div></details></div>" +
+    "<div class=\"disclosure-list\"><details><summary>" + t.more + ' <small class="muted">' + t.moreIds + '</small></summary><div><dl class="facts"><dt>' + t.nodeId + "</dt><dd><code>" + esc(service.nodeId) + "</code></dd><dt>" + t.connection + "</dt><dd>" + t.pipe + "</dd><dt>" + t.window + "</dt><dd>" + t.windowText + "</dd></dl></div></details></div>" +
     renderClientLinks();
 }
 /* Inventory: optional Datacenters → Masters (current or merged) → optional folders → machines. Built from the same
@@ -973,7 +964,7 @@ const dcKey = item => item ? item.id : "local";
 function dcModel() {
   const direct = state.targets.filter(item => !item.relayed), byNode = new Map(direct.map(item => [item.nodeId, item]));
   const peers = state.merges.map(merge => ({ merge, peer: direct.find(item => item.id === merge.targetId) })).filter(entry => entry.peer);
-  const masters = [{ id: "local", label: state.service?.label || "This host", current: true, item: null, machines: direct.map(item => ({ item })) }];
+  const masters = [{ id: "local", label: state.service?.label || T.inv.thisHostLabel, current: true, item: null, machines: direct.map(item => ({ item })) }];
   for (const { merge, peer } of peers) {
     const machines = (merge.children || []).map(child => byNode.has(child.nodeId)
       ? { item: byNode.get(child.nodeId), alsoDirect: true }
@@ -1010,8 +1001,8 @@ const siteIcon = svg('<path d="M2.5 14V4.5l5-2.5v12M7.5 14V6.5l6 2V14M1.5 14h13M
 const dcFolderOf = id => (state.folders.folders || []).find(folder => folder.id === (state.folders.members || {})[id]);
 const dcOnline = entries => entries.filter(entry => nodeState(entry.item) === "online").length;
 function dcPath(item, master) {
-  if (!item.relayed) return "SSH from " + (state.service?.label || "this Master");
-  return "Through " + (item.viaLabel || master?.label || item.via);
+  if (!item.relayed) return T.inv.sshFrom(state.service?.label || T.inv.thisMasterLower);
+  return T.inv.through(item.viaLabel || master?.label || item.via);
 }
 function dcMatches(item) {
   const search = state.dc.query.toLowerCase();
@@ -1020,7 +1011,7 @@ function dcMatches(item) {
 function dcRow(node, depth, content, options = {}) {
   const selected = state.page === "datacenter" && state.dc.node === node;
   const toggle = options.branch
-    ? '<button class="dc-toggle" data-action="dc-toggle" data-node="' + esc(node) + '" aria-label="' + (options.open ? "Collapse" : "Expand") + '" aria-expanded="' + options.open + '">' + icons.chevron + "</button>"
+    ? '<button class="dc-toggle" data-action="dc-toggle" data-node="' + esc(node) + '" aria-label="' + (options.open ? T.inv.collapse : T.inv.expand) + '" aria-expanded="' + options.open + '">' + icons.chevron + "</button>"
     : '<span class="dc-toggle-space"></span>';
   const drop = (options.drop ? ' data-drop="' + esc(options.drop) + '" data-drop-folder="' + esc(options.dropFolder || "") + '"' : "") +
     (options.dropSite ? ' data-drop-site="' + esc(options.dropSite) + '"' : "");
@@ -1036,7 +1027,7 @@ function dcMachineRow(entry, depth) {
   const item = entry.item, isMaster = state.merges.some(merge => merge.targetId === item.id);
   const cpu = sampledCpu(item.id), hot = isHot(item);
   return dcRow("node:" + item.id, depth, '<span class="dot ' + (hot ? "hot" : stateStyles[nodeState(item)] || "") + '"></span><span class="dc-name">' + esc(item.label || item.id) + "</span>" +
-    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (entry.alsoDirect ? '<span class="dc-tag" title="Also connected directly from this Master">also direct</span>' : "") +
+    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
     (cpu == null ? '<span class="dc-os">' + esc(osName(item.os)) + "</span>" : '<span class="dc-os' + (hot ? " is-hot" : "") + '" title="' + esc(osName(item.os)) + '">' + Math.round(cpu) + "%</span>"), { drag: entry.alsoDirect ? "" : item.id });
 }
 function dcMasterRows(master, depth, rows, open) {
@@ -1044,16 +1035,16 @@ function dcMasterRows(master, depth, rows, open) {
   // Masters start folded so the sidebar opens short; after that the person's choice sticks.
   if (!state.dc.seen.has(node)) { state.dc.seen.add(node); state.dc.collapsed.add(node); }
   if (state.dc.query && !master.machines.some(entry => dcMatches(entry.item))) return;
-  const tag = master.current ? '<span class="dc-tag is-current">current</span>' : "";
+  const tag = master.current ? '<span class="dc-tag is-current">' + T.inv.current + "</span>" : "";
   const status = master.current ? (state.service ? "good" : "bad") : stateStyles[nodeState(master.item)] || "";
   rows.push(dcRow(node, depth, '<span class="dot ' + status + '"></span><span class="dc-name">' + esc(master.label) + "</span>" + tag + '<span class="dc-count">' + dcOnline(master.machines) + "/" + master.machines.length + "</span>",
     { branch: true, open: open(node) || editing?.master === master.id, drop: master.id }));
   if (!open(node) && editing?.master !== master.id) return;
-  if (editing?.mode === "new" && editing.master === master.id) rows.push(dcEditRow(depth + 1, "", "New folder name"));
+  if (editing?.mode === "new" && editing.master === master.id) rows.push(dcEditRow(depth + 1, "", T.inv.newFolderName));
   for (const folder of master.folders) {
     const folderNode = "folder:" + folder.id, machines = folder.machines.filter(entry => dcMatches(entry.item));
     if (state.dc.query && !machines.length) continue;
-    if (editing?.mode === "rename" && editing.id === folder.id) rows.push(dcEditRow(depth + 1, folder.name, "Rename folder"));
+    if (editing?.mode === "rename" && editing.id === folder.id) rows.push(dcEditRow(depth + 1, folder.name, T.inv.renameFolder));
     else rows.push(dcRow(folderNode, depth + 1, '<span class="dc-icon">' + icons.folder + '</span><span class="dc-name">' + esc(folder.name) + '</span><span class="dc-count">' + dcOnline(folder.machines) + "/" + folder.machines.length + "</span>",
       { branch: folder.machines.length > 0, open: open(folderNode), drop: master.id, dropFolder: folder.id }));
     if (open(folderNode)) for (const entry of machines) rows.push(dcMachineRow(entry, depth + 2));
@@ -1063,11 +1054,11 @@ function dcMasterRows(master, depth, rows, open) {
 function renderDcTree() {
   const rows = [], open = node => !state.dc.collapsed.has(node) || Boolean(state.dc.query);
   for (const master of dcModel()) dcMasterRows(master, 0, rows, open);
-  return rows.length ? '<ul class="dc-list" role="tree">' + rows.join("") + "</ul>" : '<p class="help tree-empty">No hosts match</p>';
+  return rows.length ? '<ul class="dc-list" role="tree">' + rows.join("") + "</ul>" : '<p class="help tree-empty">' + T.inv.noHostsMatch + "</p>";
 }
 function dcTabs(tabs) {
   if (!tabs.some(([id]) => id === state.dc.tab)) state.dc.tab = tabs[0][0];
-  return '<div class="tabs" role="tablist" aria-label="Sections">' + tabs.map(([id, label]) => '<button role="tab" aria-selected="' + (id === state.dc.tab) + '" class="tab ' + (id === state.dc.tab ? "active" : "") + '" data-action="dc-tab" data-tab="' + id + '">' + label + "</button>").join("") + "</div>";
+  return '<div class="tabs" role="tablist" aria-label="' + esc(T.inv.sections) + '">' + tabs.map(([id, label]) => '<button role="tab" aria-selected="' + (id === state.dc.tab) + '" class="tab ' + (id === state.dc.tab ? "active" : "") + '" data-action="dc-tab" data-tab="' + id + '">' + label + "</button>").join("") + "</div>";
 }
 /** Every host in a datacenter: each Master followed by its target hosts, each host once. */
 function siteHostTable(masters) {
@@ -1077,11 +1068,11 @@ function siteHostTable(masters) {
     if (!seen.has(key)) { seen.add(key); rows.push(hostRow(master.item)); }
     for (const { item } of master.machines) if (!seen.has(item.id)) { seen.add(item.id); rows.push(hostRow(item)); }
   }
-  return '<div class="table-wrap"><table>' + HOST_HEAD + "<tbody>" + rows.join("") + "</tbody></table></div>";
+  return '<div class="table-wrap"><table>' + hostHead() + "<tbody>" + rows.join("") + "</tbody></table></div>";
 }
 function dcMachineTable(entries) {
-  if (!entries.length) return '<div class="empty-inline">No target hosts</div>';
-  return '<div class="table-wrap"><table>' + HOST_HEAD + "<tbody>" + entries.map(({ item }) => hostRow(item)).join("") + "</tbody></table></div>";
+  if (!entries.length) return '<div class="empty-inline">' + T.inv.noTargets + "</div>";
+  return '<div class="table-wrap"><table>' + hostHead() + "<tbody>" + entries.map(({ item }) => hostRow(item)).join("") + "</tbody></table></div>";
 }
 /** The engraved host-key seal; clicking it sweeps a light across once. */
 function foilSticker(item) {
@@ -1089,7 +1080,7 @@ function foilSticker(item) {
   if (!key) return "";
   const type = String(key).split(/\s+/).find(part => /^(ssh-|ecdsa-|sk-)/.test(part)) || "ssh";
   const short = type.replace(/^ssh-|^sk-/, "").replace(/^ecdsa-sha2-/, "").replace(/@.*$/, "").toUpperCase();
-  return '<div class="foil-sticker" data-egg="foil" tabindex="0" role="img" aria-label="Host key pinned · ' + esc(short) + '"><b>HOST KEY</b><span>Pinned</span><span>' + esc(short) + "</span></div>";
+  return '<div class="foil-sticker" data-egg="foil" tabindex="0" role="img" aria-label="' + esc(T.inv.keyPinned(short)) + '"><b>' + T.inv.hostKey + "</b><span>" + T.inv.pinned + "</span><span>" + esc(short) + "</span></div>";
 }
 /** The header scene as a thin banner over the topology: its circle is the logo ring, its towers light up for hovered hosts. */
 function renderBanner() {
@@ -1101,15 +1092,15 @@ function renderBanner() {
 function renderSummaryLine() {
   const problems = state.targets.filter(item => isHot(item) || ["offline", "unknown", "legacy"].includes(nodeState(item)));
   const checking = state.targets.filter(item => nodeState(item) === "checking").length;
-  const when = state.healthError ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + "Status check failed</span>"
-    : '<span class="status-meta">' + (state.healthAt ? "Checked " + esc(timestamp(state.healthAt)) : "Checking…") + "</span>";
-  const why = item => isHot(item) ? "high load" : nodeState(item) === "legacy" ? "service not installed" : (stateLabels[nodeState(item)] || "").toLowerCase();
+  const when = state.healthError ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + T.inv.statusFailed + "</span>"
+    : '<span class="status-meta">' + (state.healthAt ? esc(T.common.checkedAt(timestamp(state.healthAt))) : T.inv.checking) + "</span>";
+  const why = item => isHot(item) ? T.inv.why.hot : nodeState(item) === "legacy" ? T.inv.why.legacy : (stateLabel(nodeState(item)) || "").toLowerCase();
   const body = problems.length
-    ? '<span class="summary-icon is-bad" aria-hidden="true">!</span><strong>' + problems.length + " of " + hostCount() + " hosts need a look</strong>" +
+    ? '<span class="summary-icon is-bad" aria-hidden="true">!</span><strong>' + esc(T.inv.needLook(problems.length, hostCount())) + "</strong>" +
       problems.map(item => '<button class="text-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + " · " + esc(why(item)) + "</button>").join("")
-    : checking ? '<span class="summary-icon" aria-hidden="true">…</span><strong>Checking ' + checking + " hosts</strong>"
-    : '<span class="summary-icon is-good" aria-hidden="true">✓</span><strong>All ' + hostCount() + " hosts online</strong>";
-  return '<div id="inv-summary" class="inv-summary" role="status">' + body + when + '<button class="icon-button" data-action="refresh-fleet" aria-label="Check every host again" title="Check every host over SSH again">' + icons.refresh + "</button></div>";
+    : checking ? '<span class="summary-icon" aria-hidden="true">…</span><strong>' + esc(T.inv.checkingN(checking)) + "</strong>"
+    : '<span class="summary-icon is-good" aria-hidden="true">✓</span><strong>' + esc(T.inv.allOnline(hostCount())) + "</strong>";
+  return '<div id="inv-summary" class="inv-summary" role="status">' + body + when + '<button class="icon-button" data-action="refresh-fleet" aria-label="' + esc(T.inv.checkAgain) + '" title="' + esc(T.inv.checkAgainTitle) + '">' + icons.refresh + "</button></div>";
 }
 function renderDcPanel() {
   if (state.dc.adding) return renderAddHost(state.dc.adding);
@@ -1121,83 +1112,87 @@ function renderDcPanel() {
   }
   if (found.kind === "master") {
     const master = found.master, target = pageTarget();
-    const tabs = dcTabs(HOST_PAGE_TABS);
+    const tabs = dcTabs(hostPageTabs());
     const actions = target ? terminalButton(target).replace('class="small"', 'class="primary"') : "";
-    const head = heading(master.label, (master.current ? "Current Master · this window operates from here" : "Merged Master · this window reaches its target hosts through it"), actions);
-    const needsSelf = '<div class="callout">' + icons.info + "<div><strong>Make this Master a target host of itself</strong><p>Jobs, files and the terminal run through the same secure target-host path as every other host. Pair this Master with itself once (address 127.0.0.1) to use them here</p>" +
-      '<div class="form-actions"><button class="primary" data-action="dc-add" data-self="1">Set up…</button></div></div></div>';
+    const t = T.host;
+    const head = heading(master.label, (master.current ? t.currentLead : t.mergedLead), actions);
+    const needsSelf = '<div class="callout">' + icons.info + "<div><strong>" + t.selfTitle + "</strong><p>" + t.selfText + "</p>" +
+      '<div class="form-actions"><button class="primary" data-action="dc-add" data-self="1">' + t.setUp + "</button></div></div></div>";
     const body = state.dc.tab === "summary"
-      ? '<div class="stat-grid">' + stat("Role", master.current ? "Current Master" : "Merged Master") + stat("Target hosts", String(master.machines.length)) + stat("Online", String(dcOnline(master.machines))) + "</div>" +
-        '<section class="section mt"><div class="section-heading"><h2>Target hosts</h2></div>' + dcMachineTable(master.machines) + "</section>"
+      ? '<div class="stat-grid">' + stat(t.role, master.current ? t.currentMaster : t.mergedMaster) + stat(t.targetHosts, String(master.machines.length)) + stat(t.online, String(dcOnline(master.machines))) + "</div>" +
+        '<section class="section mt"><div class="section-heading"><h2>' + t.targetHosts + "</h2></div>" + dcMachineTable(master.machines) + "</section>"
       : state.dc.tab === "jobs" ? (target ? renderJobs(target) : needsSelf)
       : state.dc.tab === "files" ? (target ? renderFiles(target) : needsSelf)
       : state.dc.tab === "monitoring" ? renderMonitorTab(dcKey(master.item), master.label) : renderContainerTab(dcKey(master.item), master.label);
     return head + tabs + body;
   }
+  const t = T.host;
   if (found.kind === "site") {
     const { site, masters } = found, machines = masters.flatMap(master => master.machines);
-    return heading(site.name, "Datacenter · groups Masters for organizing only; drag Masters in or out in the tree",
-      '<button data-action="site-rename" data-id="' + esc(site.id) + '">Rename</button><button class="danger" data-action="site-delete" data-id="' + esc(site.id) + '">Delete datacenter</button>') +
-      '<div class="stat-grid">' + stat("Masters", String(masters.length)) + stat("Target hosts", String(machines.length)) + stat("Online", String(dcOnline(machines))) + "</div>" +
-      '<section class="section mt"><div class="section-heading"><h2>Hosts</h2></div>' + (masters.length ? siteHostTable(masters)
-        : '<div class="empty-inline">No Masters yet · drag a Master here from the tree</div>') + "</section>";
+    return heading(site.name, t.siteLead,
+      '<button data-action="site-rename" data-id="' + esc(site.id) + '">' + T.common.rename + '</button><button class="danger" data-action="site-delete" data-id="' + esc(site.id) + '">' + t.deleteSite + "</button>") +
+      '<div class="stat-grid">' + stat(t.masters, String(masters.length)) + stat(t.targetHosts, String(machines.length)) + stat(t.online, String(dcOnline(machines))) + "</div>" +
+      '<section class="section mt"><div class="section-heading"><h2>' + t.hosts + "</h2></div>" + (masters.length ? siteHostTable(masters)
+        : '<div class="empty-inline">' + t.siteEmpty + "</div>") + "</section>";
   }
   if (found.kind === "folder") {
     const { folder, master } = found;
-    const actions = '<button data-action="folder-rename" data-id="' + esc(folder.id) + '">Rename</button><button class="danger" data-action="folder-delete" data-id="' + esc(folder.id) + '">Delete folder</button>';
-    return heading(folder.name, "Folder on " + master.label + " · for organizing only; drag machines in or out in the tree", actions) +
-      '<div class="stat-grid">' + stat("Master", esc(master.label)) + stat("Target hosts", String(folder.machines.length)) + stat("Online", String(dcOnline(folder.machines))) + "</div>" +
-      '<section class="section mt">' + (folder.machines.length ? dcMachineTable(folder.machines) : '<div class="empty-inline">Empty folder · drag target hosts here from the tree</div>') + "</section>";
+    const actions = '<button data-action="folder-rename" data-id="' + esc(folder.id) + '">' + T.common.rename + '</button><button class="danger" data-action="folder-delete" data-id="' + esc(folder.id) + '">' + t.deleteFolder + "</button>";
+    return heading(folder.name, t.folderLead(master.label), actions) +
+      '<div class="stat-grid">' + stat(t.master, esc(master.label)) + stat(t.targetHosts, String(folder.machines.length)) + stat(t.online, String(dcOnline(folder.machines))) + "</div>" +
+      '<section class="section mt">' + (folder.machines.length ? dcMachineTable(folder.machines) : '<div class="empty-inline">' + t.folderEmpty + "</div>") + "</section>";
   }
   const item = found.item;
   const head = '<div class="page-heading"><div class="target-title"><span class="live-label">● ' + esc(dcPath(item)) + "</span><h1>" + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) + (item.os ? chip(osName(item.os)) : "") + "</div></div>" +
-    '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="Install the Target service first"' : "") + ">" + icons.shell + 'Open terminal</button><button data-action="diagnose">' + icons.pulse + "Check connection</button></div></div>" +
-    (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>Imported with a v1 registry</strong><p>Install the Target service and import a new registration to run jobs on this host</p></div></div>" : "");
-  const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs([["summary", "Summary"], ["jobs", "Jobs & logs"], ["files", "Files"], ["containers", "Containers"], ["monitoring", "Monitoring"]]);
+    '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
+    (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
+  const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs(hostPageTabs());
   const body = state.dc.tab === "summary" ? renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
     : state.dc.tab === "monitoring" ? renderMonitorTab(item.id, item.label || item.id) : renderContainerTab(item.id, item.label || item.id);
   return head + tabs + body;
 }
-function ctBadge(state) {
+function ctBadge(status) {
   const styles = { running: "good", exited: "", created: "pending", paused: "pending", restarting: "running", dead: "bad", removing: "pending" };
-  return '<span class="badge ' + (styles[state] || "") + '">' + esc(state || "unknown") + "</span>";
+  return '<span class="badge ' + (styles[status] || "") + '">' + esc(T.containers.states[status] || status || T.containers.unknown) + "</span>";
 }
 function renderContainerTab(key, label) {
-  const entry = state.containers.get(key), data = entry?.data;
-  const view = '<div class="segmented" role="group" aria-label="Show">' + [["containers", "Containers"], ["images", "Images"]].map(([id, text]) => '<button data-action="ct-view" data-view="' + id + '" aria-pressed="' + (state.dc.ctView === id) + '">' + text + "</button>").join("") + "</div>";
+  const entry = state.containers.get(key), data = entry?.data, t = T.containers;
+  const view = '<div class="segmented" role="group" aria-label="' + esc(t.show) + '">' + [["containers", t.containers], ["images", t.images]].map(([id, text]) => '<button data-action="ct-view" data-view="' + id + '" aria-pressed="' + (state.dc.ctView === id) + '">' + text + "</button>").join("") + "</div>";
   const bar = '<div class="toolbar">' + view + (state.dc.ctView === "containers"
-    ? '<div class="segmented" role="group" aria-label="Filter containers">' + [["running", "Running"], ["all", "All"]].map(([id, text]) => '<button data-action="ct-filter" data-filter="' + id + '" aria-pressed="' + (state.dc.filter === id) + '">' + text + "</button>").join("") + "</div>"
-    : "") + (data?.runtime ? chip(data.runtime) : "") + '<span class="status-meta">' + (entry?.loading ? "Loading…" : entry?.at ? "Updated " + esc(timestamp(entry.at)) : "") + "</span>" +
-    '<button data-action="ct-refresh" data-key="' + esc(key) + '">' + icons.refresh + "Refresh</button></div>";
-  if (!entry || (entry.loading && !data)) return bar + '<div class="empty-inline">Reading containers on ' + esc(label) + "…</div>";
-  if (entry.error) return bar + '<div class="callout bad">' + icons.alert + "<div><strong>Could not read containers</strong><p>" + esc(entry.error) + "</p></div></div>";
-  if (!data.runtime) return bar + '<div class="callout">' + icons.info + "<div><strong>No container runtime</strong><p>Neither docker nor podman was found on " + esc(label) + ".</p></div></div>";
-  if (data.error) return bar + '<div class="callout bad">' + icons.alert + "<div><strong>" + esc(data.runtime) + " is not answering</strong><p>" + esc(data.error) + "</p></div></div>";
-  const note = data.truncated ? '<p class="help">Showing the first 500 entries.</p>' : "";
+    ? '<div class="segmented" role="group" aria-label="' + esc(t.filter) + '">' + [["running", t.running], ["all", t.all]].map(([id, text]) => '<button data-action="ct-filter" data-filter="' + id + '" aria-pressed="' + (state.dc.filter === id) + '">' + text + "</button>").join("") + "</div>"
+    : "") + (data?.runtime ? chip(data.runtime) : "") + '<span class="status-meta">' + (entry?.loading ? t.loading : entry?.at ? esc(t.updated(timestamp(entry.at))) : "") + "</span>" +
+    '<button data-action="ct-refresh" data-key="' + esc(key) + '">' + icons.refresh + T.common.refresh + "</button></div>";
+  if (!entry || (entry.loading && !data)) return bar + '<div class="empty-inline">' + esc(t.reading(label)) + "</div>";
+  if (entry.error) return bar + '<div class="callout bad">' + icons.alert + "<div><strong>" + t.failed + "</strong><p data-raw>" + esc(entry.error) + "</p></div></div>";
+  if (!data.runtime) return bar + '<div class="callout">' + icons.info + "<div><strong>" + t.noRuntime + "</strong><p>" + esc(t.noRuntimeText(label)) + "</p></div></div>";
+  if (data.error) return bar + '<div class="callout bad">' + icons.alert + "<div><strong>" + esc(t.notAnswering(data.runtime)) + "</strong><p data-raw>" + esc(data.error) + "</p></div></div>";
+  const note = data.truncated ? '<p class="help">' + t.first500 + "</p>" : "";
   if (state.dc.ctView === "images") {
-    if (!data.images.length) return bar + '<div class="empty-inline">No images</div>';
-    return bar + '<div class="table-wrap"><table><thead><tr><th>Repository</th><th>Tag</th><th>Image ID</th><th>Size</th><th>Created</th></tr></thead><tbody>' +
-      data.images.map(image => "<tr><td><code>" + esc(image.repository) + "</code></td><td>" + chip(image.tag) + "</td><td><code>" + esc(String(image.id).replace(/^sha256:/, "").slice(0, 12)) + '</code></td><td class="num">' + esc(image.size || formatSize(image.sizeBytes)) + '</td><td class="muted">' + esc(image.created) + "</td></tr>").join("") +
+    if (!data.images.length) return bar + '<div class="empty-inline">' + t.noImages + "</div>";
+    const h = t.imageHead;
+    return bar + '<div class="table-wrap"><table><thead><tr><th>' + h.repository + "</th><th>" + h.tag + "</th><th>" + h.id + "</th><th>" + h.size + "</th><th>" + h.created + "</th></tr></thead><tbody>" +
+      data.images.map(image => "<tr><td><code>" + esc(image.repository) + "</code></td><td>" + chip(image.tag) + "</td><td><code>" + esc(String(image.id).replace(/^sha256:/, "").slice(0, 12)) + '</code></td><td class="num">' + esc(image.size || formatSize(image.sizeBytes)) + '</td><td class="muted" data-raw>' + esc(image.created) + "</td></tr>").join("") +
       "</tbody></table></div>" + note;
   }
   const running = data.containers.filter(row => row.state === "running").length;
   const rows = state.dc.filter === "running" ? data.containers.filter(row => row.state === "running") : data.containers;
-  const summary = '<p class="info-line">' + running + " running · " + data.containers.length + " total · " + data.images.length + " images</p>";
+  const summary = '<p class="info-line">' + esc(t.summary(running, data.containers.length, data.images.length)) + "</p>";
+  const h = t.head;
   const table = rows.length
-    ? '<div class="table-wrap"><table><thead><tr><th>Container</th><th>State</th><th>Status</th><th>Ports</th><th></th></tr></thead><tbody>' +
+    ? '<div class="table-wrap"><table><thead><tr><th>' + h.container + "</th><th>" + h.state + "</th><th>" + h.status + "</th><th>" + h.ports + "</th><th></th></tr></thead><tbody>" +
       rows.map(row => {
         const ref = esc(row.name || row.id), on = row.state === "running";
         const act = (action, text, danger) => '<button class="small' + (danger ? " danger" : "") + '" data-action="ct-action" data-key="' + esc(key) + '" data-container="' + ref + '" data-verb="' + action + '">' + text + "</button>";
         // Image sits under the name so long references never squeeze a column of their own.
-        return '<tr><td class="ct-name"><strong title="' + esc(row.name) + '">' + esc(row.name) + '</strong><small class="ct-image" title="' + esc(row.image) + '"><code>' + esc(row.image) + "</code></small><small><code>" + esc(String(row.id).slice(0, 12)) + "</code></small></td><td>" + ctBadge(row.state) + '</td><td class="muted ct-status">' + esc(row.status) + '</td><td class="wrap"><code>' + esc(row.ports || "—") + "</code></td>" +
-          '<td class="actions"><div class="target-actions"><button class="small" data-action="ct-logs" data-key="' + esc(key) + '" data-container="' + ref + '">Logs</button>' +
-          (on ? act("restart", "Restart") + act("stop", "Stop", true) : act("start", "Start")) + "</div></td></tr>";
+        return '<tr><td class="ct-name"><strong title="' + esc(row.name) + '">' + esc(row.name) + '</strong><small class="ct-image" title="' + esc(row.image) + '"><code>' + esc(row.image) + "</code></small><small><code>" + esc(String(row.id).slice(0, 12)) + "</code></small></td><td>" + ctBadge(row.state) + '</td><td class="muted ct-status" data-raw>' + esc(row.status) + '</td><td class="wrap"><code>' + esc(row.ports || "—") + "</code></td>" +
+          '<td class="actions"><div class="target-actions"><button class="small" data-action="ct-logs" data-key="' + esc(key) + '" data-container="' + ref + '">' + t.logs + "</button>" +
+          (on ? act("restart", t.restart) + act("stop", t.stop, true) : act("start", t.start)) + "</div></td></tr>";
       }).join("") + "</tbody></table></div>"
-    : '<div class="empty-inline">' + (state.dc.filter === "running" ? "No running containers · switch to All to see stopped ones" : "No containers") + "</div>";
+    : '<div class="empty-inline">' + (state.dc.filter === "running" ? t.noRunning : t.none) + "</div>";
   const logs = state.ctLogs?.key === key
-    ? '<div class="console mt"><div class="console-bar"><strong>Logs · ' + esc(state.ctLogs.container) + "</strong><small>last 200 lines</small>" +
-      '<button class="small" data-action="ct-logs" data-key="' + esc(key) + '" data-container="' + esc(state.ctLogs.container) + '">' + icons.refresh + 'Reload</button><button class="small" data-action="ct-logs-close">Close</button></div>' +
-      '<div class="output" tabindex="0" aria-label="Container logs"><pre>' + esc(state.ctLogs.loading ? "Loading…" : state.ctLogs.error || state.ctLogs.content || "No log output") + "</pre></div></div>"
+    ? '<div class="console mt"><div class="console-bar"><strong>' + esc(t.logsOf(state.ctLogs.container)) + "</strong><small>" + t.last200 + "</small>" +
+      '<button class="small" data-action="ct-logs" data-key="' + esc(key) + '" data-container="' + esc(state.ctLogs.container) + '">' + icons.refresh + t.reload + '</button><button class="small" data-action="ct-logs-close">' + T.common.close + "</button></div>" +
+      '<div class="output" tabindex="0" aria-label="' + esc(t.logsLabel) + '"><pre>' + esc(state.ctLogs.loading ? t.loading : state.ctLogs.error || state.ctLogs.content || t.noLog) + "</pre></div></div>"
     : "";
   return bar + summary + table + note + logs;
 }
@@ -1228,11 +1223,11 @@ function monitorSeries(samples) {
   return rows;
 }
 const formatRate = value => value == null ? "—" : formatSize(value) + "/s";
-const clock = at => new Date(at).toLocaleTimeString("en-GB");
+const clock = at => new Date(at).toLocaleTimeString(T.locale);
 /** One-axis sparkline: thin line, faint area, endpoint marker, a native tooltip per sample. */
 function sparkline(rows, series, max) {
   const w = 300, h = 56, n = rows.length;
-  if (n < 2) return '<div class="spark-empty">Collecting…</div>';
+  if (n < 2) return '<div class="spark-empty">' + T.monitor.collecting + "</div>";
   const top = max ?? Math.max(1, ...rows.flatMap(row => series.map(s => row[s.key] ?? 0)));
   const x = i => (i / (n - 1)) * w, y = v => h - 2 - (Math.min(v, top) / top) * (h - 6);
   const lines = series.map((s, index) => {
@@ -1246,7 +1241,7 @@ function sparkline(rows, series, max) {
   }).join("");
   const hits = rows.map((row, i) => '<rect class="spark-hit" x="' + (x(i) - w / (2 * (n - 1))).toFixed(1) + '" y="0" width="' + (w / (n - 1)).toFixed(1) + '" height="' + h + '"><title>' +
     esc(clock(row.at) + " · " + series.map(s => s.label + " " + s.format(row[s.key])).join(" · ")) + "</title></rect>").join("");
-  return '<svg class="spark" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none" role="img" aria-label="' + esc(series.map(s => s.label).join(" and ")) + ' over time">' +
+  return '<svg class="spark" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none" role="img" aria-label="' + esc(T.monitor.over(series.map(s => s.label).join(T.monitor.and))) + '">' +
     '<line class="spark-grid" x1="0" x2="' + w + '" y1="' + (h - 2) + '" y2="' + (h - 2) + '"/>' + lines + hits + "</svg>";
 }
 function meter(percent) {
@@ -1254,9 +1249,9 @@ function meter(percent) {
   return '<svg class="meter" viewBox="0 0 100 10" preserveAspectRatio="none" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(value) + '"><rect class="meter-track" width="100" height="10"/><rect class="meter-fill' + (value >= HOT ? " is-hot" : "") + '" width="' + value.toFixed(1) + '" height="10"/></svg>';
 }
 function renderMonitorBody(key) {
-  const entry = state.monitor.get(key);
-  if (!entry || (!entry.samples.length && !entry.error)) return '<div class="empty-inline">Reading counters…</div>';
-  if (!entry.samples.length) return '<div class="callout bad">' + icons.alert + "<div><strong>Could not read utilization</strong><p>" + esc(entry.error) + "</p></div></div>";
+  const entry = state.monitor.get(key), t = T.monitor;
+  if (!entry || (!entry.samples.length && !entry.error)) return '<div class="empty-inline">' + t.reading + "</div>";
+  if (!entry.samples.length) return '<div class="callout bad">' + icons.alert + "<div><strong>" + t.failed + "</strong><p data-raw>" + esc(entry.error) + "</p></div></div>";
   const latest = entry.samples[entry.samples.length - 1], rows = monitorSeries(entry.samples), now = rows[rows.length - 1] || {};
   const pct = value => value == null ? "—" : value.toFixed(value < 10 ? 1 : 0) + "%";
   const memUsed = latest.memory.total - latest.memory.available;
@@ -1267,25 +1262,29 @@ function renderMonitorBody(key) {
   const cores = latest.cpu.count, load = latest.load;
   const net = (key, label) => latest.net ? sparkline(rows, [{ key, label, format: formatRate }]) : "";
   const tiles = [
-    tile("CPU", pct(now.cpu), cores + " cores", sparkline(rows, [{ key: "cpu", label: "CPU", format: pct }], 100)),
-    tile("Memory", pct(now.memory ?? 100 * memUsed / latest.memory.total), esc(formatSize(memUsed) + " of " + formatSize(latest.memory.total)) + (latest.swap?.total ? " · swap " + esc(formatSize(latest.swap.total - latest.swap.free)) : ""),
-      sparkline(rows, [{ key: "memory", label: "Memory", format: pct }], 100)),
-    tile("Disk " + esc(disk?.path || ""), disk ? pct(100 * diskUsed / disk.total) : "—", disk ? esc(formatSize(diskUsed) + " of " + formatSize(disk.total) + " · " + formatSize(disk.free) + " free") : "Not reported", disk ? meter(100 * diskUsed / disk.total) : ""),
-    tile("↓ Download", latest.net ? esc(formatRate(now.rx)) : "—", latest.net ? "Received by this host · all interfaces" : "Not reported on this OS", net("rx", "Download")),
-    tile("↑ Upload", latest.net ? esc(formatRate(now.tx)) : "—", latest.net ? "Sent by this host · all interfaces" : "Not reported on this OS", net("tx", "Upload")),
-    tile("Load · 1 min", load?.length ? load[0].toFixed(2) : "—", load?.length ? "of " + cores + " cores · 5 min " + load[1].toFixed(2) + " · 15 min " + load[2].toFixed(2) : "Not reported on Windows",
-      load?.length ? sparkline(rows, [{ key: "load", label: "Load", format: v => v == null ? "—" : v.toFixed(2) }], Math.max(cores, ...rows.map(row => row.load ?? 0))) : "",
-      "Processes running or waiting for the CPU, averaged. Below the number of cores (" + cores + ") the CPU keeps up; above it, work queues.")
+    tile(t.cpu, pct(now.cpu), esc(t.cores(cores)), sparkline(rows, [{ key: "cpu", label: t.cpu, format: pct }], 100)),
+    tile(t.memory, pct(now.memory ?? 100 * memUsed / latest.memory.total), esc(t.of(formatSize(memUsed), formatSize(latest.memory.total))) + (latest.swap?.total ? esc(t.swap(formatSize(latest.swap.total - latest.swap.free))) : ""),
+      sparkline(rows, [{ key: "memory", label: t.memory, format: pct }], 100)),
+    tile(esc(t.disk(disk?.path || "")), disk ? pct(100 * diskUsed / disk.total) : "—", disk ? esc(t.free(formatSize(diskUsed), formatSize(disk.total), formatSize(disk.free))) : t.notReported, disk ? meter(100 * diskUsed / disk.total) : ""),
+    tile(t.download, latest.net ? esc(formatRate(now.rx)) : "—", latest.net ? t.received : t.notOnOs, net("rx", t.downloadLabel)),
+    tile(t.upload, latest.net ? esc(formatRate(now.tx)) : "—", latest.net ? t.sent : t.notOnOs, net("tx", t.uploadLabel)),
+    tile(t.load, load?.length ? load[0].toFixed(2) : "—", load?.length ? esc(t.loadSub(cores, load[1].toFixed(2), load[2].toFixed(2))) : t.notOnWindows,
+      load?.length ? sparkline(rows, [{ key: "load", label: t.loadLabel, format: v => v == null ? "—" : v.toFixed(2) }], Math.max(cores, ...rows.map(row => row.load ?? 0))) : "",
+      t.loadHint(cores))
   ];
-  return (entry.error ? '<div class="callout bad">' + icons.alert + "<div><strong>Last poll failed</strong><p>" + esc(entry.error) + "</p></div></div>" : "") + '<div class="mon-grid">' + tiles.join("") + "</div>";
+  return (entry.error ? '<div class="callout bad">' + icons.alert + "<div><strong>" + t.lastFailed + "</strong><p data-raw>" + esc(entry.error) + "</p></div></div>" : "") + '<div class="mon-grid">' + tiles.join("") + "</div>";
+}
+/** The status line beside Pause: interval or Paused, then when the last sample came and the host's uptime. */
+function monitorMeta(at, uptimeSeconds, history = "") {
+  const t = T.monitor;
+  return (state.dc.monPaused ? t.paused : t.while(state.dc.monInterval / 1000)) + (at ? t.updated(clock(at)) : "") + history + (uptimeSeconds != null ? t.up(formatUptime(uptimeSeconds)) : "");
 }
 function renderMonitorTab(key) {
-  const entry = state.monitor.get(key), seconds = state.dc.monInterval / 1000;
-  const history = entry?.samples.length > 1 ? " · history " + formatUptime((entry.samples[entry.samples.length - 1].at - entry.samples[0].at) / 1000) : "";
-  return '<div class="toolbar"><div class="segmented" role="group" aria-label="Update every">' + [2000, 5000, 10000].map(ms => '<button data-action="mon-interval" data-ms="' + ms + '" aria-pressed="' + (!state.dc.monPaused && state.dc.monInterval === ms) + '">' + ms / 1000 + " s</button>").join("") +
-    '</div><button data-action="mon-pause" aria-pressed="' + state.dc.monPaused + '">' + (state.dc.monPaused ? "Resume" : "Pause") + '</button><span class="status-meta" id="mon-meta">' +
-    (state.dc.monPaused ? "Paused" : "Every " + seconds + " s while this tab is open") + (entry?.samples.length ? " · updated " + esc(clock(entry.samples[entry.samples.length - 1].at)) : "") + history +
-    (entry?.samples.length ? " · up " + esc(formatUptime(entry.samples[entry.samples.length - 1].uptimeSeconds)) : "") + "</span></div>" +
+  const entry = state.monitor.get(key), t = T.monitor, last = entry?.samples[entry.samples.length - 1];
+  const history = entry?.samples.length > 1 ? t.history(formatUptime((last.at - entry.samples[0].at) / 1000)) : "";
+  return '<div class="toolbar"><div class="segmented" role="group" aria-label="' + esc(t.every) + '">' + [2000, 5000, 10000].map(ms => '<button data-action="mon-interval" data-ms="' + ms + '" aria-pressed="' + (!state.dc.monPaused && state.dc.monInterval === ms) + '">' + esc(t.seconds(ms / 1000)) + "</button>").join("") +
+    '</div><button data-action="mon-pause" aria-pressed="' + state.dc.monPaused + '">' + (state.dc.monPaused ? t.resume : t.pause) + '</button><span class="status-meta" id="mon-meta">' +
+    esc(monitorMeta(last?.at, last?.uptimeSeconds, history)) + "</span></div>" +
     '<div id="mon-body">' + renderMonitorBody(key) + "</div>";
 }
 function refreshMonitorView() {
@@ -1308,7 +1307,7 @@ async function loadStats(key) {
     $("#mon-body") && ($("#mon-body").innerHTML = renderMonitorBody(key));
     const meta = $("#mon-meta");
     const last = entry.samples[entry.samples.length - 1];
-    if (meta) meta.textContent = (state.dc.monPaused ? "Paused" : "Every " + state.dc.monInterval / 1000 + " s while this tab is open") + " · updated " + clock(Date.now()) + (last ? " · up " + formatUptime(last.uptimeSeconds) : "");
+    if (meta) meta.textContent = monitorMeta(Date.now(), last?.uptimeSeconds);
   }
 }
 function dcTargetParams(key) { return key === "local" ? {} : { targetId: key }; }
@@ -1377,7 +1376,7 @@ async function refreshSelectedJob(reset = false) {
 }
 async function importRegistration(registration) {
   const imported = await rpc("targets.import", { registration });
-  await refreshFleet(); await selectTarget(imported.id || registration.id); notify("Target imported");
+  await refreshFleet(); await selectTarget(imported.id || registration.id); notify(T.host.imported);
 }
 async function browseFiles(path) {
   const targetId = state.selected;
@@ -1394,7 +1393,7 @@ async function browseFiles(path) {
 async function loadFilesIfShown() {
   if (!machineTab("files") || state.files || state.filesError) return;
   try { await browseFiles("~"); }
-  catch (error) { state.filesError = friendlyError(error); if (machineTab("files")) render(); }
+  catch (error) { state.filesError = String(error?.message || error); if (machineTab("files")) render(); }
 }
 const UPLOAD_MAX = 2 * 1024 ** 3, UPLOAD_CHUNK = 1024 * 1024;
 const randomId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -1402,15 +1401,15 @@ const randomId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(byte 
 function renderUploadStatus() {
   const up = state.upload;
   if (!up) return "";
-  const file = up.files[up.index], count = up.files.length > 1 ? " (" + (up.index + 1) + " of " + up.files.length + ")" : "";
-  if (up.ask) return '<div class="upload-status is-ask" role="alert"><p><code>' + esc(file.name) + "</code> already exists in this folder" + esc(count) + "</p>" +
-    '<div class="upload-ask"><button type="button" class="small" data-action="upload-answer" data-answer="replace">Replace</button><button type="button" class="small" data-action="upload-answer" data-answer="skip">Skip</button>' +
-    '<button type="button" class="small" data-action="upload-cancel">Cancel all</button></div></div>';
+  const t = T.files, file = up.files[up.index], count = up.files.length > 1 ? t.count(up.index + 1, up.files.length) : "";
+  if (up.ask) return '<div class="upload-status is-ask" role="alert"><p>' + t.exists(file.name) + esc(count) + "</p>" +
+    '<div class="upload-ask"><button type="button" class="small" data-action="upload-answer" data-answer="replace">' + t.replace + '</button><button type="button" class="small" data-action="upload-answer" data-answer="skip">' + t.skip + "</button>" +
+    '<button type="button" class="small" data-action="upload-cancel">' + t.cancelAll + "</button></div></div>";
   const percent = up.total ? Math.floor(up.sent / up.total * 100) : 0;
-  return '<div class="upload-status" role="status"><p><span>' + (up.cancelling ? "Cancelling…" : "Uploading <code>" + esc(file.name) + "</code>" + esc(count)) + '</span><span class="upload-numbers">' +
-    esc(formatSize(up.sent)) + " of " + esc(formatSize(up.total)) + " · " + percent + "%</span></p>" +
-    '<div class="upload-row"><div class="upload-bar" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '"><i></i></div>' +
-    '<button type="button" class="icon-button upload-cancel" data-action="upload-cancel" aria-label="Cancel upload" title="Cancel upload"' + (up.cancelling ? " disabled" : "") + ">" + icons.close + "</button></div></div>";
+  return '<div class="upload-status" role="status"><p><span>' + (up.cancelling ? t.cancelling : t.uploading(file.name) + esc(count)) + '</span><span class="upload-numbers">' +
+    esc(t.progress(formatSize(up.sent), formatSize(up.total), percent)) + "</span></p>" +
+    '<div class="upload-row"><div class="upload-bar" role="progressbar" aria-label="' + esc(t.progressLabel) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '"><i></i></div>' +
+    '<button type="button" class="icon-button upload-cancel" data-action="upload-cancel" aria-label="' + esc(t.cancelUpload) + '" title="' + esc(t.cancelUpload) + '"' + (up.cancelling ? " disabled" : "") + ">" + icons.close + "</button></div></div>";
 }
 function paintUpload() {
   const box = $("#upload-status");
@@ -1427,10 +1426,10 @@ function askReplace() {
 /** Upload files into the open folder in 1 MiB chunks (files.upload); a file appears only when complete and never replaces one without asking. */
 async function uploadFiles(files) {
   const targetId = state.selected, folder = state.files?.path;
-  if (!folder) throw new Error("Open a folder first");
-  if (state.upload) { notify("Another upload is running · wait for it or cancel it first", true); return; }
+  if (!folder) throw new Error(T.files.openFirst);
+  if (state.upload) { notify(T.files.busy, true); return; }
   const big = files.filter(file => file.size > UPLOAD_MAX);
-  if (big.length) notify(big.map(file => file.name).join(", ") + " is larger than 2 GiB · use a job or the CLI", true);
+  if (big.length) notify(T.files.tooBig(big.map(file => file.name).join(", ")), true);
   files = files.filter(file => file.size <= UPLOAD_MAX);
   if (!files.length) return;
   const up = state.upload = { files, index: 0, sent: 0, total: files.reduce((sum, file) => sum + file.size, 0), cancelled: false };
@@ -1469,14 +1468,14 @@ async function uploadFiles(files) {
     const cancelled = up.cancelled;
     state.upload = null; paintUpload();
     if (targetId === state.selected && state.files?.path === folder) await browseFiles(folder).catch(() => {});
-    if (cancelled) notify("Upload cancelled · " + (done ? done + " file" + (done === 1 ? "" : "s") + " finished before that; " : "") + "the unfinished file was not saved");
-    else if (done) notify("Uploaded " + done + " file" + (done === 1 ? "" : "s") + " to " + folder + (skipped ? " · skipped " + skipped : ""));
+    if (cancelled) notify(T.files.uploadCancelled(done));
+    else if (done) notify(T.files.uploaded(done, folder, skipped));
   }
 }
 /** Saves through the native dialog; the app fetches the bytes itself, so any size works. */
 async function downloadFile(path, name) {
-  const saved = await native("save_remote_file", { targetId: state.selected, path, name });
-  if (saved) notify("Downloaded " + name + " to " + saved);
+  const saved = await native("save_remote_file", { targetId: state.selected, path, name, title: T.dialogs.download });
+  if (saved) notify(T.files.downloaded(name, saved));
 }
 async function readFile(path) {
   const targetId = state.selected;
@@ -1485,8 +1484,8 @@ async function readFile(path) {
   const bytes = Uint8Array.from(atob(result.contentBase64), c => c.charCodeAt(0));
   let content, validUtf8 = true;
   try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-  catch { validUtf8 = false; content = "This file is binary or not UTF-8"; }
-  if (content?.includes("\0")) { validUtf8 = false; content = "This file contains binary data"; }
+  catch { validUtf8 = false; content = T.files.binary; }
+  if (content?.includes("\0")) { validUtf8 = false; content = T.files.binaryData; }
   state.file = { path, content, sha256: result.sha256, editable: validUtf8 && result.eof, size: result.size };
   if (machineTab("files")) render();
 }
@@ -1499,13 +1498,13 @@ async function saveFolderEdit(input) {
   const name = input.value.trim();
   try {
     if (name && editing.mode === "new-site") {
-      await rpc("datacenters.create", { name }); await refreshDatacenters(); notify("Datacenter " + name + " created · drag Masters into it");
+      await rpc("datacenters.create", { name }); await refreshDatacenters(); notify(T.tree.siteCreated(name));
     } else if (name && editing.mode === "rename-site") {
       await rpc("datacenters.rename", { id: editing.id, name }); await refreshDatacenters();
     } else if (name && editing.mode === "new") {
       const folder = await rpc("folders.create", { name, master: editing.master });
       state.dc.collapsed.delete("master:" + editing.master);
-      await refreshFolders(); notify("Folder " + folder.name + " created · drag machines into it");
+      await refreshFolders(); notify(T.tree.folderCreated(folder.name));
     } else if (name && editing.mode === "rename") {
       await rpc("folders.rename", { id: editing.id, name }); await refreshFolders();
     }
@@ -1522,10 +1521,10 @@ async function runDiagnose(targetId) {
   } finally { state.checking = null; paint(); }
 }
 async function removeTarget(targetId) {
-  if (!confirm("Remove Target " + targetId + " from this Master’s registry?")) return;
+  if (!confirm(T.host.removeConfirm(targetId))) return;
   await rpc("targets.remove", { targetId });
   if (state.selected === targetId) { state.selected = null; state.dc.node = "dc"; state.dc.tab = "summary"; }
-  await refreshFleet(); render(); notify("Target removed from the registry");
+  await refreshFleet(); render(); notify(T.host.removed);
 }
 const encodeBase64 = text => bytesToBase64(new TextEncoder().encode(text));
 function bytesToBase64(bytes) {
@@ -1547,6 +1546,8 @@ document.addEventListener("keydown", event => {
 });
 document.addEventListener("click", event => {
   if (event.target.closest("#notice-close")) { clearNotice(); return; }
+  const pick = event.target.closest("[data-lang]");
+  if (pick) { setLanguage(pick.dataset.lang); return; }
   const egg = event.target.closest("[data-egg]");
   if (egg && !event.target.closest(".marker")) { playEgg(egg); return; }
   const nav = event.target.closest("[data-page]");
@@ -1561,13 +1562,13 @@ document.addEventListener("click", event => {
     if (action === "close-two-way-dialog") { $("#two-way-dialog").close(); return; }
     if (action === "open-two-way") {
       const dialog = $("#two-way-dialog"), merge = state.merges.find(row => row.targetId === button.dataset.id);
-      dialog.querySelectorAll(".two-way-peer").forEach(item => { item.textContent = merge?.label || button.dataset.id; });
+      dialog.dataset.peer = merge?.label || button.dataset.id; applyStatic();
       dialog.querySelector('[name="targetId"]').value = button.dataset.id;
       dialog.showModal(); return;
     }
     if (action === "copy") return copyText(button.dataset.copy);
-    if (action === "copy-log") return copyText(state.log, "Log copied");
-    if (action === "copy-diagnostics") return copyText(pretty(state.diagnostics.get(state.selected)), "Check result copied");
+    if (action === "copy-log") return copyText(state.log, T.jobs.logCopied);
+    if (action === "copy-diagnostics") return copyText(pretty(state.diagnostics.get(state.selected)), T.check.copiedJson);
     if (action === "add") return navigate("enroll");
     if (action === "new-pairing") { state.pairing = null; addReset(); render(); }
     if (action === "refresh-pairings") { await refreshPairings(); render(); }
@@ -1580,7 +1581,7 @@ document.addEventListener("click", event => {
     if (action === "add-host" || action === "dc-add") {
       state.page = "datacenter"; state.dc.adding = { folder: button.dataset.folder || "", site: button.dataset.site || "", self: Boolean(button.dataset.self) };
       state.pairing = null; state.pairedMaster = null; addReset(); render();
-      try { await refreshPairings(); render(); } catch (error) { notify(pairingError(error), true); }
+      try { await refreshPairings(); render(); } catch (error) { notifyError(error, true); }
     }
     if (action === "enroll-close") {
       state.pairing = null; addReset();
@@ -1620,19 +1621,19 @@ document.addEventListener("click", event => {
     }
     if (action === "folder-delete") {
       const folder = (state.folders.folders || []).find(row => row.id === button.dataset.id);
-      if (!confirm("Delete folder " + (folder?.name || "") + "? Its target hosts stay and move back under the Master.")) return;
+      if (!confirm(T.tree.folderDeleteConfirm(folder?.name || ""))) return;
       await rpc("folders.delete", { id: button.dataset.id });
       if (state.dc.node === "folder:" + button.dataset.id) state.dc.node = "master:" + (folder?.master || "local");
-      await refreshFolders(); render(); notify("Folder deleted");
+      await refreshFolders(); render(); notify(T.tree.folderDeleted);
     }
     if (action === "site-new") { state.dc.editing = { mode: "new-site" }; state.dc.collapsed.delete("dc"); $("#dc-tree").innerHTML = renderDcTree(); $("#dc-edit")?.focus(); }
     if (action === "site-rename") { state.dc.editing = { mode: "rename-site", id: button.dataset.id }; $("#dc-tree").innerHTML = renderDcTree(); $("#dc-edit")?.select(); }
     if (action === "site-delete") {
       const site = (state.datacenters.datacenters || []).find(row => row.id === button.dataset.id);
-      if (!confirm("Delete datacenter " + (site?.name || "") + "? Its Masters and target hosts stay and move back under Inventory.")) return;
+      if (!confirm(T.tree.siteDeleteConfirm(site?.name || ""))) return;
       await rpc("datacenters.delete", { id: button.dataset.id });
       if (state.dc.node === "site:" + button.dataset.id) state.dc.node = "dc";
-      await refreshDatacenters(); render(); notify("Datacenter deleted");
+      await refreshDatacenters(); render(); notify(T.tree.siteDeleted);
     }
     if (action === "site-unassign") { await rpc("datacenters.assign", { master: button.dataset.master, datacenterId: null }); await refreshDatacenters(); render(); }
     if (action === "folder-unfile") { await rpc("folders.assign", { targetId: button.dataset.id, folderId: null }); await refreshFolders(); render(); }
@@ -1687,9 +1688,9 @@ document.addEventListener("click", event => {
     }
     if (action === "ct-action") {
       const key = button.dataset.key, container = button.dataset.container, verb = button.dataset.verb;
-      if (verb !== "start" && !confirm(verb[0].toUpperCase() + verb.slice(1) + " container " + container + "?")) return;
+      if (verb !== "start" && !confirm(T.containers.confirm(verb, container))) return;
       await rpc("containers.action", { ...dcTargetParams(key), container, action: verb });
-      notify(container + ": " + verb + " done");
+      notify(T.containers.done(container, verb));
       await loadContainers(key);
     }
     if (action === "select-target") await selectTarget(button.dataset.id);
@@ -1698,19 +1699,19 @@ document.addEventListener("click", event => {
     if (action === "check-close") { (state.checkHidden ||= new Set()).add(state.selected); $("#check-slot") && ($("#check-slot").innerHTML = ""); return; }
     if (action === "remove-target") await removeTarget(state.selected);
     if (action === "import-registration") {
-      const registration = await native("open_json");
+      const registration = await native("open_json", { title: T.dialogs.openJson });
       if (registration) await importRegistration(registration);
     }
     if (action === "import-v1-registry") {
-      const document = await native("open_json");
+      const document = await native("open_json", { title: T.dialogs.openJson });
       if (document) {
         const result = await rpc("targets.import_legacy", { document });
-        await refreshFleet(); notify("v1 registry imported: " + pretty(result));
+        await refreshFleet(); notify(T.tree.registryImported(pretty(result)));
       }
     }
     if (action === "save-enrollment") {
-      const path = await native("save_json", { document: state.export });
-      if (path) notify("Enrollment saved: " + path);
+      const path = await native("save_json", { document: state.export, title: T.dialogs.saveJson });
+      if (path) notify(T.tree.enrollmentSaved(path));
     }
     if (action === "refresh-masters") { await refreshMasters(); render(); }
     if (action === "revoke-master") {
@@ -1745,7 +1746,7 @@ document.addEventListener("click", event => {
       notify(revoke ? mastersText.disabledNote : mastersText.allowedNote);
     }
     if (action === "accept-enrollment") {
-      const bundle = await native("open_json");
+      const bundle = await native("open_json", { title: T.dialogs.openJson });
       if (!bundle) return;
       if (!confirm(mastersText.allowConfirm(bundle.master?.label || bundle.master?.id || ""))) return;
       await rpc("enrollment.accept", { bundle }); await refreshMasters(); render();
@@ -1755,12 +1756,12 @@ document.addEventListener("click", event => {
     if (action === "connect-client") {
       await native("client_connect", { client: button.dataset.id });
       await refreshLocal(); render();
-      notify("Connected " + (state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id) + " · start a new session in that client to load the tools");
+      notify(T.service.connectedNote(state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id));
     }
     if (action === "update-client-path") {
       await native("client_update_path", { client: button.dataset.id });
       await refreshLocal(); render();
-      notify("Updated the path for " + (state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id) + " · start a new session to load the tools");
+      notify(T.service.updatedNote(state.clientLinks.find(item => item.id === button.dataset.id)?.label || button.dataset.id));
     }
     if (action === "refresh-jobs") { await refreshJobs(); await refreshSelectedJob(); }
     if (action === "select-job") {
@@ -1777,11 +1778,11 @@ document.addEventListener("click", event => {
     if (action === "read-logs") await refreshSelectedJob();
     if (action === "cancel-job") {
       const targetId = state.selected, jobId = state.job.id;
-      if (!confirm("Cancel job " + jobId + " and its child processes?")) return;
+      if (!confirm(T.jobs.cancelConfirm(jobId))) return;
       const job = await rpc("jobs.cancel", { targetId, jobId });
       if (targetId !== state.selected || jobId !== state.job?.id) return;
       state.job = job;
-      await refreshJobs(); await refreshSelectedJob(); notify("Cancel request sent");
+      await refreshJobs(); await refreshSelectedJob(); notify(T.jobs.cancelSent);
     }
     if (action === "upload-cancel") { if (state.upload) { state.upload.cancelled = state.upload.cancelling = true; state.upload.answer?.("cancel"); paintUpload(); } return; }
     if (action === "upload-answer") { state.upload?.answer?.(button.dataset.answer); return; }
@@ -1789,7 +1790,7 @@ document.addEventListener("click", event => {
     if (action === "path-menu") {
       const box = button.getBoundingClientRect(), chain = [];
       for (let path = state.files?.path; path && !chain.includes(path); path = parentPath(path)) chain.unshift(path);
-      const items = [{ label: "~  Home", action: "open-folder", data: { path: "~" }, mono: true }, "-",
+      const items = [{ label: T.files.home, action: "open-folder", data: { path: "~" }, mono: true }, "-",
         ...chain.map((path, depth) => ({ label: depth ? path.split(/[\\/]/).filter(Boolean).pop() : path, action: "open-folder", data: { path }, indent: depth, mono: true }))];
       const recent = (state.recentPaths || []).filter(path => !chain.includes(path));
       if (recent.length) items.push("-", ...recent.map(path => ({ label: path, action: "open-folder", data: { path }, mono: true })));
@@ -1805,11 +1806,11 @@ document.addEventListener("click", event => {
     if (action === "open-folder") await browseFiles(button.dataset.path);
     if (action === "mkdir") {
       const folder = state.files?.path, targetId = state.selected;
-      const name = (prompt("New folder name in " + folder) || "").trim();
+      const name = (prompt(T.files.newFolderPrompt(folder)) || "").trim();
       if (!name) return;
-      if (/[\\/]/.test(name) || name === "." || name === "..") throw new Error("Use a plain folder name without / or \\");
+      if (/[\\/]/.test(name) || name === "." || name === "..") throw new Error(T.files.plainName);
       await rpc("files.mkdir", { targetId, path: joinPath(folder, name) });
-      if (targetId === state.selected) { await browseFiles(folder); notify("Folder " + name + " created"); }
+      if (targetId === state.selected) { await browseFiles(folder); notify(T.files.created(name)); }
     }
     if (action === "close-file") { state.file = null; $("#file-editor").innerHTML = ""; }
   });
@@ -1841,7 +1842,7 @@ document.addEventListener("submit", event => {
     if (form.id === "confirm-two-way") {
       $("#two-way-dialog").close();
       const targetId = values.targetId;
-      state.twoWay.set(targetId, { step: "request", message: "Starting" }); render();
+      state.twoWay.set(targetId, { step: "request", message: T.twoWayDialog.starting }); render();
       try {
         const result = await native("merge_two_way", { targetId });
         const label = state.merges.find(row => row.targetId === targetId)?.label || targetId;
@@ -1893,28 +1894,28 @@ document.addEventListener("submit", event => {
       const result = await rpc("pairing.status", { requestId: submittedPairing.requestId, retry: true, routes });
       if (state.pairing?.requestId === submittedPairing.requestId) state.pairing = result;
       await checkPairedMaster(result);
-      await refreshPairings(); await refreshFleet(); render(); notify(result.state === "ready" ? "Ready" : "Still failing. See the details above", result.state !== "ready");
+      await refreshPairings(); await refreshFleet(); render(); notify(result.state === "ready" ? T.tree.ready : T.tree.stillFailing, result.state !== "ready");
     }
     if (form.id === "edit-target") {
       const routes = JSON.parse(values.routes);
-      if (!Array.isArray(routes) || !routes.length) throw new Error("Routes must be an array with at least one route");
+      if (!Array.isArray(routes) || !routes.length) throw new Error(T.host.routesArray);
       await rpc("targets.update", { target: { ...target(), label: values.label, routes } });
-      await refreshFleet(); render(); notify("Target saved");
+      await refreshFleet(); render(); notify(T.host.saved);
     }
     if (form.id === "paste-registration") await importRegistration(JSON.parse(values.document));
     if (form.id === "export-enrollment") {
       const routes = values.routes.trim() ? JSON.parse(values.routes) : [{ kind: values.kind, address: values.address, port: Number(values.port) }];
-      if (!Array.isArray(routes) || !routes.length) throw new Error("Routes must be an array with at least one route");
+      if (!Array.isArray(routes) || !routes.length) throw new Error(T.host.routesArray);
       state.export = await rpc("enrollment.export", { targetId: values.targetId, label: values.label || values.targetId, tenant: values.tenant, os: values.os, user: values.user, routes });
       if (state.page === "enroll") {
         $("#enrollment-result").innerHTML = renderEnrollmentResult();
         $("#enrollment-result").scrollIntoView({ block: "nearest" });
       }
-      notify("Public enrollment created");
+      notify(T.tree.enrollmentCreated);
     }
     if (form.id === "start-job") {
       const env = JSON.parse(values.env || "{}");
-      if (!env || Array.isArray(env) || typeof env !== "object" || Object.values(env).some(value => typeof value !== "string")) throw new Error("Environment must be a JSON object with string values");
+      if (!env || Array.isArray(env) || typeof env !== "object" || Object.values(env).some(value => typeof value !== "string")) throw new Error(T.jobs.envObject);
       const params = { targetId: state.selected, script: values.script, cwd: values.cwd, shell: values.shell, env };
       if(values.ownerSessionId) params.ownerSessionId=values.ownerSessionId;
       if(values.asAdmin === 'on') params.asAdmin=true;
@@ -1923,11 +1924,11 @@ document.addEventListener("submit", event => {
       const jobId = state.pendingJob.jobId;
       let job;
       try { job = await rpc("jobs.start", { ...params, jobId }); }
-      catch (error) { throw new Error(String(error) + "\nJob ID: " + jobId + " — resend the same command to check or reattach without running it again"); }
+      catch (error) { throw new Error(T.jobs.retry(String(error), jobId)); }
       state.pendingJob = null;
       if (params.targetId !== state.selected) return;
       state.job = job; state.log = ""; state.offset = 0; state.eof = true; state.stream = "stdout"; state.newJob = false;
-      render(); await refreshJobs(); await refreshSelectedJob(true); notify("Started job " + job.id);
+      render(); await refreshJobs(); await refreshSelectedJob(true); notify(T.jobs.started(job.id));
     }
     if (form.id === "browse-files") await browseFiles(values.path.trim());
     if (form.id === "confirm-delete") {
@@ -1935,13 +1936,13 @@ document.addEventListener("submit", event => {
       if (values.confirm !== name) return;
       $("#delete-dialog").close();
       await rpc("files.remove", { targetId, path });
-      if (targetId === state.selected) { await browseFiles(folder); notify("Deleted " + name); }
+      if (targetId === state.selected) { await browseFiles(folder); notify(T.files.deleted(name)); }
     }
     if (form.id === "save-file") {
       if (!state.file?.editable) return;
       const path = state.file.path, targetId = state.selected;
       await rpc("files.write", { targetId, path, contentBase64: encodeBase64(values.content), expectedSha256: state.file.sha256 });
-      if (targetId === state.selected) { await readFile(path); notify("File saved"); }
+      if (targetId === state.selected) { await readFile(path); notify(T.files.saved); }
     }
   });
 });
@@ -1957,7 +1958,7 @@ setInterval(async () => {
   if (document.hidden || state.polling || !machineTab("jobs") || !target()?.runnerInstalled) return;
   state.polling = true;
   try { await refreshJobs(); await refreshSelectedJob(); }
-  catch (error) { notify("Could not update jobs: " + error, true); }
+  catch (error) { notify(T.common.jobsFailed(error), true); }
   finally { state.polling = false; }
 }, 5000);
 setInterval(() => {
@@ -2074,32 +2075,32 @@ function dcMenuItems(node) {
   if (!found) return [];
   const item = (label, action, data = {}, extra = {}) => ({ label, action, data, ...extra });
   const local = found.kind === "dc" || found.master?.current;
-  const remoteNote = found.master && !found.master.current ? "Add hosts on " + found.master.label + "; this Master reaches them through it" : "";
-  if (found.kind === "site") return [item("Add host…", "dc-add", { site: found.site.id }), "-", item("Rename", "site-rename", { id: found.site.id }), item("Delete datacenter", "site-delete", { id: found.site.id }, { danger: true })];
-  if (found.kind === "dc") return [item("Add host…", "dc-add"), "-", item("Topology", "dc-goto", { node: "dc" }), "-", item("Refresh", "refresh-fleet")];
+  const m = T.menu, remoteNote = found.master && !found.master.current ? m.remoteNote(found.master.label) : "";
+  if (found.kind === "site") return [item(m.addHost, "dc-add", { site: found.site.id }), "-", item(m.rename, "site-rename", { id: found.site.id }), item(m.deleteSite, "site-delete", { id: found.site.id }, { danger: true })];
+  if (found.kind === "dc") return [item(m.addHost, "dc-add"), "-", item(m.topology, "dc-goto", { node: "dc" }), "-", item(m.refresh, "refresh-fleet")];
   if (found.kind === "master") return [
-    item("Add host…", "dc-add", {}, { disabled: !local, title: remoteNote }),
-    item("New folder", "folder-new", { master: found.master.id }),
+    item(m.addHost, "dc-add", {}, { disabled: !local, title: remoteNote }),
+    item(m.newFolder, "folder-new", { master: found.master.id }),
     "-",
-    item("Open terminal", "open-shell", { id: found.master.item?.id || "" }, found.master.current ? { disabled: true, title: "This is the computer you are using; open its own terminal" } : { disabled: !found.master.item?.runnerInstalled }),
-    item("Containers", "dc-goto", { node, tab: "containers", view: "containers" }), item("Monitoring", "dc-goto", { node, tab: "monitoring" }),
-    ...(local ? [] : ["-", item("Manage merge", "manage-merge")]), "-", item("Refresh", "refresh-fleet"),
-    ...(local ? [] : ["-", item("Remove merge…", "remove-merge", { id: found.master.id }, { danger: true })])];
+    item(m.openTerminal, "open-shell", { id: found.master.item?.id || "" }, found.master.current ? { disabled: true, title: m.selfTerminal } : { disabled: !found.master.item?.runnerInstalled }),
+    item(m.containers, "dc-goto", { node, tab: "containers", view: "containers" }), item(m.monitoring, "dc-goto", { node, tab: "monitoring" }),
+    ...(local ? [] : ["-", item(m.manageMerge, "manage-merge")]), "-", item(m.refresh, "refresh-fleet"),
+    ...(local ? [] : ["-", item(m.removeMerge, "remove-merge", { id: found.master.id }, { danger: true })])];
   if (found.kind === "folder") return [
-    item("Add host here…", "dc-add", { folder: found.folder.id }, { disabled: !local, title: remoteNote }),
-    "-", item("Rename", "folder-rename", { id: found.folder.id }), item("Delete folder", "folder-delete", { id: found.folder.id }, { danger: true })];
+    item(m.addHere, "dc-add", { folder: found.folder.id }, { disabled: !local, title: remoteNote }),
+    "-", item(m.rename, "folder-rename", { id: found.folder.id }), item(m.deleteFolder, "folder-delete", { id: found.folder.id }, { danger: true })];
   const target = found.item;
   return [
-    item("Open terminal", "open-shell", { id: target.id }, { disabled: !target.runnerInstalled }),
-    item("Check connection", "ctx-diagnose", { id: target.id }),
+    item(m.openTerminal, "open-shell", { id: target.id }, { disabled: !target.runnerInstalled }),
+    item(m.checkConnection, "ctx-diagnose", { id: target.id }),
     "-",
-    item("Jobs & logs", "dc-goto", { node, tab: "jobs" }), item("Files", "dc-goto", { node, tab: "files" }),
-    item("Containers", "dc-goto", { node, tab: "containers", view: "containers" }), item("Images", "dc-goto", { node, tab: "containers", view: "images" }),
-    item("Monitoring", "dc-goto", { node, tab: "monitoring" }),
+    item(m.jobs, "dc-goto", { node, tab: "jobs" }), item(m.files, "dc-goto", { node, tab: "files" }),
+    item(m.containers, "dc-goto", { node, tab: "containers", view: "containers" }), item(m.images, "dc-goto", { node, tab: "containers", view: "images" }),
+    item(m.monitoring, "dc-goto", { node, tab: "monitoring" }),
     // Health only reads the SSH banner, so whether a machine is a Master is asked on click (one SSH call).
-    ...(!target.relayed && state.masterCheck.get(target.id) !== false && !state.merges.some(merge => merge.targetId === target.id) ? ["-", item("Merge its target hosts (if a Master)", "ctx-merge", { id: target.id })] : []),
-    ...(dcFolderOf(target.id) ? ["-", item("Remove from folder " + dcFolderOf(target.id).name, "folder-unfile", { id: target.id })] : []),
-    ...(target.relayed ? [] : ["-", item("Remove from this Master…", "ctx-remove", { id: target.id }, { danger: true })])];
+    ...(!target.relayed && state.masterCheck.get(target.id) !== false && !state.merges.some(merge => merge.targetId === target.id) ? ["-", item(m.mergeIfMaster, "ctx-merge", { id: target.id })] : []),
+    ...(dcFolderOf(target.id) ? ["-", item(m.unfile(dcFolderOf(target.id).name), "folder-unfile", { id: target.id })] : []),
+    ...(target.relayed ? [] : ["-", item(m.removeHost, "ctx-remove", { id: target.id }, { danger: true })])];
 }
 function closeDcMenu() { $("#dc-menu")?.remove(); }
 function openDcMenu(node, x, y) { openMenu(dcMenuItems(node), x, y); }
@@ -2125,9 +2126,10 @@ function openMenu(items, x, y, above) {
 /** One menu for a file row, from its ⋮ button or a right-click. */
 function openFileMenu(row, x, y, above) {
   const { file: path, name, dir } = row.dataset;
-  openMenu([{ label: dir ? "Open folder" : "Open", action: dir ? "open-folder" : "open-file", data: { path } },
-    ...(dir ? [] : [{ label: "Download…", action: "file-download", data: { path, name } }]), "-",
-    { label: "Delete…", action: "file-delete", data: { path, name, dir }, danger: true }], x, y, above);
+  const t = T.files;
+  openMenu([{ label: dir ? t.openFolder : t.open, action: dir ? "open-folder" : "open-file", data: { path } },
+    ...(dir ? [] : [{ label: t.download, action: "file-download", data: { path, name } }]), "-",
+    { label: t.deleteMenu, action: "file-delete", data: { path, name, dir }, danger: true }], x, y, above);
 }
 document.addEventListener("contextmenu", event => {
   const file = event.target.closest("tr[data-file]");
@@ -2180,6 +2182,7 @@ window.__TAURI__?.event?.listen("management-window-shown", async () => {
   try { await refreshFleet(); if (state.page === "datacenter" && !holdsForm() && !state.dc.adding) render(); } catch (error) { notify(error, true); }
   void refreshHealth();
 });
+applyStatic();
 await refreshLocal();
 try { await refreshFleet(); } catch (error) { notify(error, true); }
 render();
