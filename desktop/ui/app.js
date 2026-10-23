@@ -843,7 +843,7 @@ const mastersText = {
 function renderMasters() {
   const t = mastersText;
   return heading(t.title, t.lead, '<button data-action="refresh-masters">' + icons.refresh + t.refresh + "</button>") +
-    '<div class="stack">' + (state.service?.roles?.includes("master") ? renderMerges() : "") + renderRelays() + "</div>";
+    '<div class="stack masters">' + (state.service?.roles?.includes("master") ? renderMerges() : "") + renderRelays() + "</div>";
 }
 function mergeStatus(targetId) {
   const t = mastersText;

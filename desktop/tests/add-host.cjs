@@ -19,11 +19,14 @@ const step = (page, n) => column(page).locator('.add-step[data-step="' + n + '"]
 async function assertCurrent(page, n) {
   await step(page, n).and(page.locator('[aria-current="step"]')).waitFor();
   assert.equal(await column(page).locator('[aria-current="step"]').count(), 1, "one current step");
-  const acid = await page.evaluate(() => { const probe = document.createElement("i"); probe.style.color = "var(--acid)"; document.body.append(probe); const c = getComputedStyle(probe).color; probe.remove(); return c; });
-  const colors = await column(page).locator(".add-step .add-n").evaluateAll(els => els.map(el => getComputedStyle(el).color));
-  assert.deepEqual(colors.map(c => c === acid), [1, 2, 3, 4].map(i => i === n), "acid only on step " + n);
+  // One evaluate per read: the column can re-render between a locator's query and its evaluateAll (detached → "").
+  const { acid, colors } = await page.evaluate(() => {
+    const probe = document.createElement("i"); probe.style.color = "var(--acid)"; document.body.append(probe); const acid = getComputedStyle(probe).color; probe.remove();
+    return { acid, colors: [...document.querySelectorAll("#add-host .add-step .add-n")].map(el => getComputedStyle(el).color) };
+  });
+  assert.deepEqual(colors.map(c => c === acid), [1, 2, 3, 4].map(i => i === n), "acid only on step " + n + ": " + colors.join(" | "));
   // DESIGN.md rule 8: done/later steps are dimmed with colour tokens, never opacity (text stays ≥ --lilac contrast).
-  const faded = await column(page).locator(".add-step, .add-step *").evaluateAll(els => els.filter(el => !el.matches(":disabled") && parseFloat(getComputedStyle(el).opacity) < 1).length);
+  const faded = await page.evaluate(() => [...document.querySelectorAll("#add-host .add-step, #add-host .add-step *")].filter(el => !el.matches(":disabled") && parseFloat(getComputedStyle(el).opacity) < 1).length);
   assert.equal(faded, 0, "no step dimmed with opacity");
 }
 async function assertNoTargetNoun(page, where) {
@@ -357,7 +360,8 @@ const checks = {
   async "reduced-motion"(page, url) {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(url); await page.locator('[data-action="add-host"]').click();
-    const motion = await column(page).locator(".add-step, .add-step *").evaluateAll(els => els.filter(el => { const s = getComputedStyle(el); return s.animationName !== "none" || s.transitionDuration.split(",").some(v => parseFloat(v) > 0); }).length);
+    await assertCurrent(page, 1);
+    const motion = await page.evaluate(() => [...document.querySelectorAll("#add-host .add-step, #add-host .add-step *")].filter(el => { const s = getComputedStyle(el); return s.animationName !== "none" || s.transitionDuration.split(",").some(v => parseFloat(v) > 0); }).length);
     assert.equal(motion, 0, "nothing animates");
   },
 };

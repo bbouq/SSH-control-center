@@ -196,6 +196,7 @@ main { display: block; padding: 24px clamp(20px, 3vw, 44px) 72px; outline: none;
 .surface { padding: 18px 0 0; border-top: 1px solid var(--white); }
 .surface + .surface, .section + .section, .surface + .section, .section + .surface { margin-top: 28px; }
 .stack { display: grid; gap: 28px; }
+.stack > * { min-width: 0; } /* a wide table scrolls in its .table-wrap instead of widening the page */
 .section-heading, .card-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .section-heading p, .card-head p { margin: 4px 0 0; font-size: 14px; color: var(--lilac); }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 22px; }
@@ -632,3 +633,5 @@ td .text-button.danger { font-size: 19px; }
 .add-check.bad { color: var(--rose); }
 .add-unfinished { max-width: 760px; margin-top: 28px; }
 @media (max-width: 900px) { .add-step { grid-template-columns: 40px minmax(0, 1fr); gap: 12px; } .add-n { font-size: 36px; } }
+/* Narrow: Masters and unfinished-request buttons stack instead of hiding past the table's edge. */
+@media (max-width: 900px) { :is(.add-unfinished, .masters) td.actions .target-actions { flex-wrap: wrap; flex-direction: column; align-items: stretch; } :is(.add-unfinished, .masters) td.actions button { white-space: normal; text-align: center; } }

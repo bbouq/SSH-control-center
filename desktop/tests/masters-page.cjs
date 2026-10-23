@@ -39,7 +39,11 @@ const artifacts = path.resolve(__dirname, "../../artifacts/add-host-ui"); fs.mkd
     assert.equal(await incoming.locator("tbody tr", { hasText: "fixture-master" }).count(), 1);
     const relayOnly = incoming.locator("tbody tr", { hasText: "peer-relay" });
     assert.equal(await relayOnly.locator(".badge", { hasText: /^Direct$/i }).count(), 0);
-    for (const width of [1180, 820]) { await page.setViewportSize({ width, height: 900 }); await page.screenshot({ path: path.join(artifacts, "masters-page-" + width + ".png"), fullPage: true }); }
+    for (const width of [1180, 820]) {
+      await page.setViewportSize({ width, height: 900 }); await page.screenshot({ path: path.join(artifacts, "masters-page-" + width + ".png"), fullPage: true });
+      // Wide action cells must not widen the page (they wrap inside the table instead).
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "no sideways scroll at " + width + " px");
+    }
     await page.setViewportSize({ width: 1180, height: 900 });
 
     // Actions from the rows.
