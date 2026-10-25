@@ -29,7 +29,7 @@ function reset(list) {
   s = {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
     jobs: [], pairings: [], folders: [], folderMembers: {}, datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
-    backup: { lastBackupAt: flags.has("backed-up") ? "2026-10-20T09:30:00Z" : null, restoredAt: null }
+    backup: { lastBackupAt: flags.has("backed-up") ? "2026-10-20T09:30:00Z" : null, restoredAt: null, keysChangedAt: null }, rotation: null
   };
   if (flags.has("masters-page")) {
     const host = (id, label, address) => ({ schemaVersion: 2, id, nodeId: id + "-node", label, tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address, port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
@@ -132,7 +132,7 @@ function restoreBackup({ file, passphrase }) {
   if (!isEmpty()) throw new Error("E_RESTORE_NOT_EMPTY: this Master already has hosts; restore only works on a fresh install");
   const backup = openBackup(file, passphrase);
   Object.assign(s, structuredClone(backup.fleet));
-  s.backup = { lastBackupAt: backup.createdAt, restoredAt: now() };
+  s.backup = { lastBackupAt: backup.createdAt, restoredAt: now(), keysChangedAt: null }; s.rotation = null;
   // As the Master does: two-way Merges come back one-way, and the Masters that reach this one are listed.
   const twoWayAgain = s.merges.filter(m => m.reverse?.status === "two-way").map(m => ({ targetId: m.targetId, label: m.label }));
   for (const merge of s.merges) merge.reverse = null;
@@ -141,11 +141,26 @@ function restoreBackup({ file, passphrase }) {
   for (const r of s.relays.filter(r => !r.revoked)) { const row = reached.get(r.masterId) || { masterId: r.masterId, label: r.label, ways: [] }; row.ways.push("merge"); reached.set(r.masterId, row); }
   return { ...backupSummary(backup), restartRequired: true, reachedBy: [...reached.values()], twoWayAgain, checkPaths: [] };
 }
+/* Change keys: every direct host starts on the old key; each keys.rotation_status call moves the next one. */
+function rotationStatus() {
+  const r = s.rotation;
+  if (!r) return { active: false };
+  const next = r.hosts.find(h => h.state === "pending");
+  if (next && r.started) { next.state = "moved"; next.error = null; }
+  r.started = true;
+  const moved = r.hosts.filter(h => h.state === "moved").length, oldKey = r.hosts.filter(h => h.state === "pending").length;
+  if (moved === r.hosts.length && !r.finishedAt) { r.finishedAt = now(); s.backup.keysChangedAt = r.finishedAt; }
+  return { active: !r.finishedAt, startedAt: r.startedAt, finishedAt: r.finishedAt || null, total: r.hosts.length, moved, oldKey, hosts: r.hosts.map(h => ({ ...h })) };
+}
 function rpc(method, p = {}) {
   switch (method) {
+    case "keys.rotate":
+      if (!s.rotation || s.rotation.finishedAt) s.rotation = { startedAt: now(), finishedAt: null, started: false, hosts: s.targets.filter(t => !t.relayed).map(t => ({ targetId: t.id, label: t.label, state: "pending", error: null })) };
+      return rotationStatus();
+    case "keys.rotation_status": return rotationStatus();
     case "system.status": return { label: "UI fixture (no real service)", nodeId: "fixture", roles: ["master", "target"], version: "test", uptimeSeconds: 120 };
-    case "backup.status": return { ...s.backup, empty: isEmpty(), owner: true };
-    case "backup.create": { const file = makeBackup(p.passphrase); s.backup.lastBackupAt = now(); return { file }; }
+    case "backup.status": return { ...s.backup, backupBeforeKeys: Boolean(s.backup.keysChangedAt && (!s.backup.lastBackupAt || s.backup.lastBackupAt < s.backup.keysChangedAt)), empty: isEmpty(), owner: true };
+    case "backup.create": { const file = makeBackup(p.passphrase); s.backup.lastBackupAt = new Date(Date.now() + 1).toISOString(); return { file }; }
     case "backup.inspect": return backupSummary(openBackup(p.file, p.passphrase));
     case "backup.restore": return restoreBackup(p);
     case "targets.list": return [...s.targets, ...relayedTargets()];

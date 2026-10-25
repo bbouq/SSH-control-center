@@ -61,6 +61,8 @@ struct Contents {
 struct Record {
     last_backup_at: Option<String>,
     restored_at: Option<String>,
+    #[serde(default)]
+    keys_changed_at: Option<String>,
 }
 
 fn now() -> String {
@@ -420,7 +422,7 @@ pub fn restore(state: &Path, config: &Config, bytes: &[u8], passphrase: &str) ->
         return Err(error);
     }
     let _ = fs::remove_dir_all(&stage);
-    write_record(state, &Record { last_backup_at: Some(contents.created_at.clone()), restored_at: Some(now()) })?;
+    write_record(state, &Record { last_backup_at: Some(contents.created_at.clone()), restored_at: Some(now()), keys_changed_at: None })?;
     let mut result = summary(version, &contents);
     result["restartRequired"] = json!(true);
     result["reachedBy"] = json!(reached);
@@ -429,10 +431,21 @@ pub fn restore(state: &Path, config: &Config, bytes: &[u8], passphrase: &str) ->
     Ok(result)
 }
 
+/// Called when a change of keys finishes: backups made before it no longer control any host.
+pub(crate) fn keys_changed(state: &Path, when: &str) -> Result<()> {
+    let mut record = read_record(state)?;
+    record.keys_changed_at = Some(when.into());
+    write_record(state, &record)
+}
+
 pub fn status(state: &Path, owner: bool) -> Result<Value> {
     let record = read_record(state)?;
     let db = folders::database(state)?;
-    Ok(json!({"lastBackupAt":record.last_backup_at,"restoredAt":record.restored_at,"empty":is_empty(&db)?,"owner":owner}))
+    // RFC 3339 times in UTC compare as text.
+    let stale = matches!((&record.keys_changed_at, &record.last_backup_at), (Some(changed), Some(backup)) if backup < changed)
+        || (record.keys_changed_at.is_some() && record.last_backup_at.is_none());
+    Ok(json!({"lastBackupAt":record.last_backup_at,"restoredAt":record.restored_at,"keysChangedAt":record.keys_changed_at,
+        "backupBeforeKeys":stale,"empty":is_empty(&db)?,"owner":owner}))
 }
 
 /// Service entry point; `owner` is true when the local caller is this Master's Owner (or the system).

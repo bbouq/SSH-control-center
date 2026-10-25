@@ -24,7 +24,7 @@ const state = {
   monitor: new Map(),
   containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} },
   // Backup and restore: the service's status line, and the open flow (null, or {mode: "backup" | "restore", …}).
-  backupStatus: null, backup: null
+  backupStatus: null, backup: null, rotation: null
 };
 addReset();
 const native = (command, args = {}) => {
@@ -202,11 +202,11 @@ async function refreshLocal() {
   renderHeader();
 }
 async function refreshFleet() {
-  const [rows, merges, relays, folders, datacenters, backup] = await Promise.all([
+  const [rows, merges, relays, folders, datacenters, backup, rotation] = await Promise.all([
     rpc("targets.list"), rpc("merges.list").catch(() => []), rpc("relays.list").catch(() => []), rpc("folders.list").catch(() => null), rpc("datacenters.list").catch(() => null),
-    rpc("backup.status").catch(() => null)
+    rpc("backup.status").catch(() => null), rpc("keys.rotation_status").catch(() => null)
   ]);
-  state.backupStatus = backup;
+  state.backupStatus = backup; state.rotation = rotation;
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
   if (!Array.isArray(rows)) throw new Error(T.common.badFormat);
@@ -1221,7 +1221,7 @@ function onBackupInput(form) {
 function renderRestoreOffer() {
   if (state.backupStatus?.empty !== true || state.targets.length) return "";
   return '<div class="callout" id="restore-offer">' + icons.info + "<div><strong>" + T.inv.restoreTitle + "</strong><p>" + T.inv.restoreText + "</p>" +
-    '<div class="form-actions"><button class="primary" data-action="restore-start">' + T.backup.restore + '</button><button data-action="add-host">' + T.side.addHost + "</button></div></div></div>";
+    '<div class="form-actions"><button class="primary" data-action="restore-start">' + T.backup.restore + '</button><button data-action="dc-add">' + T.side.addHost + "</button></div></div></div>";
 }
 function renderRestoreFlow() {
   const t = T.backup, flow = state.backup, summary = flow.summary, result = flow.result;
@@ -1239,8 +1239,7 @@ function renderRestoreFlow() {
       '<label class="check-label is-body"><input type="checkbox" id="restore-off" data-focus> ' + t.oldOff + "</label>" +
       '<div class="form-actions"><button class="primary" id="restore-run" data-action="restore-run" disabled>' + t.restoreNow + "</button></div>" + error(3)) : "";
   const done = !result ? "" : flow.restarting ? '<p class="add-check" aria-live="polite">' + esc(t.restarting) + "</p>"
-    : '<p class="add-check good" aria-live="polite">' + icons.check + esc(t.restored(result.label, result.hosts)) + "</p>" + renderRestoreFollowUps(result) +
-      '<div class="form-actions"><button class="primary" data-action="backup-close" data-focus>' + t.openInventory + "</button></div>";
+    : '<p class="add-check good" aria-live="polite">' + icons.check + esc(t.restored(result.label, result.hosts)) + "</p>" + renderRestoreFollowUps(result) + renderKeysChoice();
   const close = result ? "" : '<button data-action="backup-close">' + icons.close + t.close + "</button>";
   return '<div id="backup-flow" class="add-flow">' + heading(t.restoreTitle, t.restoreLead, close) + '<div class="add-column">' +
     flowCard(1, now, t.restoreSteps[0], choose) + flowCard(2, now, t.restoreSteps[1], pass) + flowCard(3, now, t.restoreSteps[2], facts) + flowCard(4, now, t.restoreSteps[3], done) + "</div></div>";
@@ -1256,6 +1255,42 @@ function renderRestoreFollowUps(result) {
     (twoWay.length ? "<p><strong>" + t.twoWayAgain + "</strong>" + t.twoWayHelp + "</p>" + list(twoWay.map(row => '<li data-two-way="' + esc(row.targetId) + '"><span>' + esc(row.label || row.targetId) + "</span> " + two(row) + "</li>")) : "") +
     (paths.length ? "<p>" + t.pathsHelp + "</p>" + list(paths.map(row => "<li>" + esc(t.checkPath(row.label || row.targetId)) + " <code>" + esc(row.path) + "</code></li>")) : "") +
     "</div></div>";
+}
+/** Change keys after a restore: the choice, then live progress, then "back up now". */
+function renderKeysChoice() {
+  const t = T.backup, rotation = state.rotation;
+  const inventory = '<button data-action="backup-close">' + t.openInventory + "</button>";
+  if (!rotation?.startedAt || (!rotation.active && !state.backup?.rotating)) {
+    return '<div class="callout good" id="keys-choice">' + icons.info + "<div><strong>" + t.keysTitle + "</strong><p>" + t.keysText + "</p><p>" + t.keysOffline + "</p>" +
+      '<div class="form-actions"><button class="primary" data-action="keys-change" data-focus>' + t.changeKeys + '</button><button data-action="backup-close">' + t.skipKeys + "</button></div></div></div>";
+  }
+  return renderKeysProgress() + '<div class="form-actions">' + (rotation.active ? "" : '<button class="primary" data-action="backup-start">' + t.backUp + "</button>") + inventory + "</div>";
+}
+/** Where a change of keys stands: how many hosts still accept the old key, or done with "back up now". */
+function renderKeysProgress() {
+  const t = T.backup, rotation = state.rotation;
+  if (!rotation?.startedAt) return "";
+  if (!rotation.active) return '<div class="callout good" id="keys-progress">' + icons.check + "<div><strong>" + t.changed + "</strong><p>" + t.oldBackups + "</p></div></div>";
+  return '<div class="callout" id="keys-progress" aria-live="polite">' + icons.info + "<div><strong>" + t.changing + "</strong><p>" + esc(t.progress(rotation.moved, rotation.total)) + "</p>" +
+    '<p class="keys-old">' + esc(t.stillOld(rotation.oldKey)) + "</p></div></div>";
+}
+let rotationTimer = 0;
+/** Polls keys.rotation_status while a change of keys runs and something on screen shows it. */
+async function watchRotation() {
+  clearTimeout(rotationTimer);
+  state.rotation = await rpc("keys.rotation_status").catch(() => state.rotation);
+  const shown = $("#keys-progress") || $("#backup-section");
+  if (state.backup?.mode === "restore" || $("#backup-section")) {
+    if (!state.rotation?.active) await refreshBackupStatus();
+    paintFlow();
+  }
+  if (state.rotation?.active && shown) rotationTimer = setTimeout(() => void watchRotation(), 2000);
+}
+async function changeKeys() {
+  state.rotation = await rpc("keys.rotate");
+  if (state.backup) state.backup.rotating = true;
+  paintFlow();
+  void watchRotation();
 }
 /** Re-renders the flow keeping what is typed, then focuses the current step's main control. */
 function paintFlow() {
@@ -1285,6 +1320,7 @@ async function runRestore() {
   const flow = state.backup;
   try {
     flow.result = await rpc("backup.restore", { file: flow.file.file, passphrase: flow.passphrase });
+    state.rotation = null;
     Object.assign(flow, { error: "", errorStep: 0, restarting: true });
   } catch (error) { Object.assign(flow, { error: String(error?.message || error), errorStep: 3 }); paintFlow(); return; }
   delete flow.file.file; delete flow.passphrase; // not needed any more
@@ -1748,6 +1784,7 @@ document.addEventListener("click", event => {
     if (action === "backup-close") { const restored = state.backup?.result; state.backup = null; if (restored) { state.page = "datacenter"; state.dc.node = "dc"; } render(); return; }
     if (action === "restore-start") { state.page = "datacenter"; state.dc.adding = null; state.backup = { mode: "restore", file: null, summary: null, result: null, error: "", errorStep: 0 }; paintFlow(); return; }
     if (action === "restore-choose") return chooseBackup();
+    if (action === "keys-change") return changeKeys();
     if (action === "restore-run") { if ($("#restore-off")?.checked) return runRestore(); return; }
     if (action === "add-host" || action === "dc-add") {
       state.page = "datacenter"; state.dc.adding = { folder: button.dataset.folder || "", site: button.dataset.site || "", self: Boolean(button.dataset.self) };

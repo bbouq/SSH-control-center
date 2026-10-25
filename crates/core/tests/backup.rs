@@ -248,3 +248,106 @@ fn restore_reports_what_the_new_machine_cannot_fix_alone() {
     let merges = call(new.path(), &restored, "merges.list", json!({}));
     assert_eq!(merges[0]["reverse"], Value::Null, "two-way is offered again, as one-way until enabled");
 }
+
+// Change keys (roadmap entry 3, after a restore). The elevated job itself is not run here: `pass` takes the steps as
+// a closure, so these tests check the bookkeeping only.
+use sshcc_core::fleet::rotation::{self, Step};
+fn own_target(dir: &Path, cfg: &config::Config, id: &str) -> fleet::Target {
+    let rows = call(dir, cfg, "targets.list", json!({}));
+    serde_json::from_value(rows.as_array().unwrap().iter().find(|row| row["id"] == id).unwrap().clone()).unwrap()
+}
+fn public(path: &Path) -> String {
+    fs::read_to_string(path).unwrap().split_whitespace().take(2).collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn hosts_move_only_after_the_check_and_old_keys_stay_until_all_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = old_master(dir.path());
+    let (current, next) = (dir.path().join("keys/company.ed25519"), dir.path().join("keys/company.next.ed25519"));
+    let started = rotation::start(dir.path(), &cfg).unwrap();
+    assert_eq!((started["total"].as_u64(), started["oldKey"].as_u64(), started["active"].as_bool()), (Some(2), Some(2), Some(true)));
+    let new_public = public(&next.with_extension("ed25519.pub"));
+    assert_ne!(new_public, key(7));
+
+    // web-1 moves; branch runs its job but the check with the new key fails.
+    let mut steps = Vec::new();
+    let first = rotation::pass(dir.path(), &cfg, &mut |target, step| {
+        let check = matches!(step, Step::Check { .. });
+        if let Step::Install { script, .. } = &step {
+            assert!(script.contains(&fleet::public_key_fingerprint(&new_public).unwrap()), "the job installs the new key");
+        }
+        steps.push(format!("{} {}", target.id, if check { "check" } else { "install" }));
+        if check && target.id == "branch" { anyhow::bail!("timed out") } else { Ok(()) }
+    }).unwrap();
+    assert_eq!(steps, ["branch install", "branch check", "web-1 install", "web-1 check"]);
+    assert_eq!((first["moved"].as_u64(), first["oldKey"].as_u64(), first["active"].as_bool()), (Some(1), Some(0), Some(true)));
+    let branch = first["hosts"].as_array().unwrap().iter().find(|h| h["targetId"] == "branch").unwrap().clone();
+    assert_eq!(branch["state"], "installed");
+    assert!(branch["error"].as_str().unwrap().contains("E_NEW_KEY_NOT_ACCEPTED"));
+    // Each host is reached with the key it accepts now; the old key stays until no host needs it.
+    assert_eq!(rotation::identity(dir.path(), &own_target(dir.path(), &cfg, "web-1")).unwrap(), next);
+    assert_eq!(rotation::identity(dir.path(), &own_target(dir.path(), &cfg, "branch")).unwrap(), next);
+    assert_eq!(fs::read_to_string(&current).unwrap(), "PRIVATE KEY company");
+    assert_eq!(backup_call(dir.path(), &cfg, "backup.status", json!({})).unwrap()["keysChangedAt"], Value::Null);
+
+    // The next pass only checks branch again, then the change finishes.
+    let mut again = Vec::new();
+    let done = rotation::pass(dir.path(), &cfg, &mut |target, step| {
+        again.push(format!("{} {}", target.id, if matches!(step, Step::Check { .. }) { "check" } else { "install" }));
+        Ok(())
+    }).unwrap();
+    assert_eq!(again, ["branch check"]);
+    assert_eq!((done["moved"].as_u64(), done["active"].as_bool()), (Some(2), Some(false)));
+    assert_eq!(public(&current.with_extension("ed25519.pub")), new_public, "the new key is now the key");
+    assert_ne!(fs::read_to_string(&current).unwrap(), "PRIVATE KEY company", "the old private key is gone");
+    assert!(!next.exists());
+    assert_eq!(rotation::identity(dir.path(), &own_target(dir.path(), &cfg, "web-1")).unwrap(), current);
+    let bundle = call(dir.path(), &cfg, "enrollment.export", json!({"targetId":"web-3","tenant":"company","os":"linux","user":"sshcc-bridge",
+        "routes":[{"kind":"lan","address":"10.0.0.9","port":22}]}));
+    assert_eq!(bundle["master"]["publicKey"], new_public.as_str(), "new hosts get the new key");
+    let status = backup_call(dir.path(), &cfg, "backup.status", json!({})).unwrap();
+    assert!(status["keysChangedAt"].is_string());
+    assert_eq!(status["backupBeforeKeys"], true, "old backups no longer work");
+}
+
+#[test]
+fn a_failed_job_keeps_the_host_on_the_old_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = old_master(dir.path());
+    rotation::start(dir.path(), &cfg).unwrap();
+    // web-1's job can't start; branch's job ran but put the old key back.
+    let mut jobs = Vec::new();
+    let status = rotation::pass(dir.path(), &cfg, &mut |target, step| match step {
+        Step::Install { .. } if target.id == "web-1" => anyhow::bail!("E_OWNER_NOT_LOGGED_IN: nobody is logged in"),
+        Step::Install { job, .. } => { jobs.push(job.to_owned()); Ok(()) }
+        Step::Check { job } => { assert_eq!(job.map(str::to_owned), jobs.last().cloned(), "the check follows that job"); anyhow::bail!("E_STILL_OLD_KEY: the key change job ended failed: no key file") }
+    }).unwrap();
+    assert_eq!((status["moved"].as_u64(), status["oldKey"].as_u64(), status["active"].as_bool()), (Some(0), Some(2), Some(true)));
+    let host = |id: &str| status["hosts"].as_array().unwrap().iter().find(|h| h["targetId"] == id).unwrap().clone();
+    assert_eq!(host("web-1")["state"], "pending");
+    assert!(host("web-1")["error"].as_str().unwrap().contains("E_OWNER_NOT_LOGGED_IN"));
+    assert_eq!(host("branch")["state"], "pending");
+    assert!(host("branch")["error"].as_str().unwrap().contains("no key file"));
+    assert_eq!(rotation::identity(dir.path(), &own_target(dir.path(), &cfg, "web-1")).unwrap(), dir.path().join("keys/company.ed25519"));
+    assert_eq!(fs::read_to_string(dir.path().join("keys/company.ed25519")).unwrap(), "PRIVATE KEY company");
+}
+
+#[test]
+fn the_job_adds_the_new_key_before_it_drops_the_old_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = old_master(dir.path());
+    let mut target = own_target(dir.path(), &cfg, "web-1");
+    let fp = fleet::public_key_fingerprint(&key(9)).unwrap();
+    let old_b64 = key(7).split_whitespace().nth(1).unwrap().to_owned();
+    let linux = rotation::install_script(&cfg, &target, &key(7), &key(9)).unwrap();
+    let order = |script: &str, parts: &[&str]| parts.iter().map(|part| script.find(part).unwrap_or_else(|| panic!("missing {part}"))).collect::<Vec<_>>();
+    let at = order(&linux, &["/usr/bin/sshcc bridge --master-id", "configure revoke-master", "configure accept-bundle \"$dir/new.json\"", &format!("-v k=\" {old_b64} \"")]);
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "add, switch, then remove: {at:?}");
+    assert!(linux.contains(&fp) && linux.contains(&cfg.node_id));
+    target.os = "windows".into();
+    target.bridge_path = "C:/Program Files/SSH Control Center/sshcc.exe".into();
+    let windows = rotation::install_script(&cfg, &target, &key(7), &key(9)).unwrap();
+    let at = order(&windows, &["powershell.exe -NoProfile -NonInteractive -EncodedCommand", "configure revoke-master", "accept-bundle $newBundle", "$_.Contains($oldKey)"]);
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "add, switch, then remove: {at:?}");
+}

@@ -282,6 +282,7 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .callout.pending { border-left-color: var(--amber); } .callout.pending > svg.i { color: var(--amber); }
 .callout ul { margin: 6px 0 0; padding-left: 18px; font-size: 14px; color: var(--white); }
 .callout .follow-ups { margin-bottom: 12px; }
+#keys-choice, #keys-progress { margin-top: 6px; }
 .callout .follow-ups li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 28px; }
 .callout p strong { display: block; font-size: 17px; margin: 6px 0 2px; }
 .callout code { color: var(--acid); }

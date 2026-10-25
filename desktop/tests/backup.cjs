@@ -143,8 +143,10 @@ const checks = {
     await run.click();
     await assertCurrent(page, 4);
     await step(page, 4).getByText("This machine is now UI fixture Master · 1 hosts").waitFor();
+    await step(page, 4).locator("#keys-choice").getByText("Change keys (recommended)").waitFor();
     await shots(page, "restore-done");
-    await step(page, 4).getByRole("button", { name: "Open the host list" }).click();
+    await step(page, 4).getByRole("button", { name: "Skip for now" }).click(); // skipping finishes the restore
+    assert.equal(await flow(page).count(), 0, "Skip closes the flow");
     await page.locator("#dc-tree .dc-item[data-node='master:local']").click();
     await page.locator(".dc-main").getByText("UI test target").first().waitFor();
     assert.equal(await page.locator("#restore-offer").count(), 0);
@@ -202,8 +204,28 @@ const checks = {
     await after.locator('[data-two-way="branch-master"] [data-action="open-two-way"]').waitFor();
     await shots(page, "restore-follow-ups");
   },
+  /** Change keys after a restore: a confirmation, live progress, then "back up now". */
+  async "change-keys"(page, url, d) {
+    await page.goto(url);
+    await openCurrentMaster(page);
+    await backUp(page, url, d);
+    await page.request.post(url + "/scenario", { data: { flags: ["empty"] } });
+    await page.reload();
+    await restore(page, d, PASSPHRASE);
+    await page.locator("#restore-off").check(); await page.locator("#restore-run").click();
+    const before = d.count;
+    await step(page, 4).getByRole("button", { name: "Change keys" }).click(); // a confirmation, not a decision
+    assert.equal(d.count, before);
+    assert.ok((await calls(page, url)).some(c => c.method === "keys.rotate"));
+    await page.locator("#keys-progress").getByText(/hosts? still accepts? the old key/).first().waitFor();
+    await page.locator("#keys-progress").getByText("Keys changed on every host").waitFor({ timeout: 15000 });
+    await page.locator("#keys-progress").getByText("Old backups no longer work. Back up now").waitFor();
+    await step(page, 4).getByRole("button", { name: "Back up…" }).waitFor();
+    await shots(page, "keys-changed");
+    await step(page, 4).getByRole("button", { name: "Open the host list" }).click();
+  },
 };
-const scenarios = { "back-up": [], "backed-up": ["backed-up"], "save-cancelled": [], "round-trip": [], "restore-errors": ["empty"], "follow-ups": ["masters-page", "two-way-merge"] };
+const scenarios = { "back-up": [], "backed-up": ["backed-up"], "save-cancelled": [], "round-trip": [], "restore-errors": ["empty"], "follow-ups": ["masters-page", "two-way-merge"], "change-keys": [] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

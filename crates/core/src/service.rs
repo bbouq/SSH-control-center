@@ -262,6 +262,14 @@ impl Service {
             }
             return Ok(value);
         }
+        if req.method.starts_with("keys.") {
+            if !owner {
+                bail!("E_BACKUP_NOT_OWNER: only this Master's Owner can change its keys");
+            }
+            if let Some(value) = fleet::rotation::handle(&self.state, &self.config, req)? {
+                return Ok(value);
+            }
+        }
         if let Some(value) = pairing::handle(&self.state, &self.config, req)? {
             return Ok(value);
         }
