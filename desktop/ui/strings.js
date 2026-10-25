@@ -326,6 +326,9 @@ const en = {
     stillOld: n => n === 1 ? "1 host still accepts the old key" : n + " hosts still accept the old key",
     changed: "Keys changed on every host",
     oldBackups: "Old backups no longer work. Back up now", sinceKeys: "Not backed up since keys were changed",
+    changeKeysLater: "Change keys…", keysPending: "This Master was restored and still uses the old machine’s keys",
+    retrying: "Hosts still on the old key are tried again every minute, and when they come back online",
+    mergedBy: (host, master) => host + " · " + master + " changes its keys",
   },
   masters: {
     title: "Masters", lead: "Merge another Master to see and control its hosts from here, and choose which Masters may control this one", refresh: "Refresh",
@@ -657,6 +660,9 @@ const th = {
     stillOld: n => "ยังมี " + n + " เครื่องที่รับกุญแจเก่าอยู่",
     changed: "เปลี่ยนกุญแจครบทุกเครื่องแล้ว",
     oldBackups: "ไฟล์สำรองเก่าใช้ไม่ได้แล้ว สำรองใหม่ตอนนี้", sinceKeys: "ยังไม่ได้สำรองตั้งแต่เปลี่ยนกุญแจ",
+    changeKeysLater: "เปลี่ยนกุญแจ…", keysPending: "Master นี้ถูกกู้คืนมาและยังใช้กุญแจของเครื่องเก่าอยู่",
+    retrying: "เครื่องที่ยังใช้กุญแจเก่าจะลองใหม่ทุกนาที และเมื่อกลับมาออนไลน์",
+    mergedBy: (host, master) => host + " · " + master + " เป็นผู้เปลี่ยนกุญแจของเครื่องนี้",
   },
   masters: {
     title: "เครื่องหลัก (Masters)", lead: "Merge Master อื่นเพื่อเห็นและสั่งเครื่องของมันได้จากที่นี่ และเลือกว่า Master ไหนสั่งเครื่องนี้ได้", refresh: "รีเฟรช",

@@ -475,6 +475,18 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<()> {
         }
     }
     let service = Arc::new(Service::new(state, stop.clone())?);
+    // Change keys: hosts that were offline are moved when they come back, with no window open.
+    {
+        let (service, stop) = (service.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                if fleet::rotation::retry_due(&service.state).unwrap_or(false) {
+                    fleet::rotation::pass_in_background(&service.state, &service.config);
+                }
+            }
+        });
+    }
     let connections = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::SeqCst) {
         let mut connection = listener.accept()?;

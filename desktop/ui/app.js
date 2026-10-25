@@ -266,6 +266,7 @@ function render() {
   if (state.page === "masters") main.innerHTML = renderMasters();
   if (state.page === "service") main.innerHTML = renderService();
   if (state.page === "enroll" || state.dc.adding) focusAddStep();
+  if (state.rotation?.active && $("#keys-progress") && !rotationTimer) rotationTimer = setTimeout(() => void watchRotation(), 2000);
 }
 function heading(title, description, actions = "") {
   return '<div class="page-heading"><div><h1>' + esc(title) + "</h1>" + (description ? "<p>" + esc(description) + "</p>" : "") + "</div>" + (actions ? '<div class="page-actions">' + actions + "</div>" : "") + "</div>";
@@ -599,9 +600,9 @@ function pairingState(item) {
  *  `{text, detail}`. `pairing` adds the add flow's pairing codes. Anything unmapped is shown as is, in English.
  *  In Thai, a mapped error keeps the Master's English text (without its `E_…:` prefix) as `detail`, shown in a small
  *  line under the sentence so it can still be searched or pasted into a bug report. */
-function explain(error, pairing = false) {
+function explain(error, pairing = false, hostName = "") {
   const text = String(error?.message || error);
-  const host = state.targets.find(row => row.id === state.selected), name = host ? host.label || host.id : T.common.thisHost;
+  const host = state.targets.find(row => row.id === state.selected), name = hostName || (host ? host.label || host.id : T.common.thisHost);
   const rows = [...(pairing ? T.errors.pairing : []), ...T.errors.common];
   const found = rows.find(([code]) => text.includes(code))?.[1];
   if (!found) return { text, detail: "" };
@@ -1164,6 +1165,7 @@ const MIN_PASSPHRASE = 12;
 async function refreshBackupStatus() { state.backupStatus = await rpc("backup.status").catch(() => state.backupStatus); }
 function backupLastLine() {
   const t = T.backup, status = state.backupStatus;
+  if (status?.backupBeforeKeys) return t.sinceKeys;
   return status?.lastBackupAt ? t.last(timestamp(status.lastBackupAt)) : t.never;
 }
 function renderBackupSection() {
@@ -1171,8 +1173,18 @@ function renderBackupSection() {
   return '<section class="section mt" id="backup-section"><div class="section-heading"><div><h2>' + t.title + '</h2><p id="backup-last">' + esc(backupLastLine()) + "</p></div></div>" +
     '<p class="help">' + t.lead + "</p>" +
     '<div class="form-actions"><button data-action="backup-start"' + (owner ? "" : ' disabled data-blocked title="' + esc(t.notOwner) + '"') + ">" + t.backUp + "</button>" +
-    '<button data-action="restore-start"' + (empty ? "" : " disabled data-blocked") + ">" + t.restore + "</button></div>" +
-    (owner ? "" : '<p class="help mt">' + t.notOwner + "</p>") + (empty ? "" : '<p class="help mt">' + t.restoreOnlyEmpty + "</p>") + "</section>";
+    '<button data-action="restore-start"' + (empty ? "" : " disabled data-blocked") + ">" + t.restore + "</button>" +
+    (keysPending() ? '<button data-action="keys-change">' + t.changeKeysLater + "</button>" : "") + "</div>" +
+    (owner ? "" : '<p class="help mt">' + t.notOwner + "</p>") + (empty ? "" : '<p class="help mt">' + t.restoreOnlyEmpty + "</p>") +
+    (keysPending() ? '<p class="help mt">' + t.keysPending + "</p>" : "") +
+    (state.rotation?.active ? '<div class="mt">' + renderKeysProgress() + "</div>"
+      : status?.backupBeforeKeys ? '<div class="callout pending mt" id="keys-progress">' + icons.alert + "<div><strong>" + t.changed + "</strong><p>" + t.oldBackups + "</p></div></div>" : "") +
+    "</section>";
+}
+/** Restored, and the keys were not changed since (skipped, or never finished). */
+function keysPending() {
+  const status = state.backupStatus;
+  return Boolean(status?.restoredAt && !state.rotation?.active && !(status.keysChangedAt && status.keysChangedAt > status.restoredAt));
 }
 /** One step card, as in the Add host column: the current step has aria-current and the acid rule. */
 function flowCard(n, now, title, body) {
@@ -1271,20 +1283,28 @@ function renderKeysProgress() {
   const t = T.backup, rotation = state.rotation;
   if (!rotation?.startedAt) return "";
   if (!rotation.active) return '<div class="callout good" id="keys-progress">' + icons.check + "<div><strong>" + t.changed + "</strong><p>" + t.oldBackups + "</p></div></div>";
+  const trouble = (rotation.hosts || []).filter(host => host.state !== "moved" && host.error);
+  const merged = rotation.merged || [];
   return '<div class="callout" id="keys-progress" aria-live="polite">' + icons.info + "<div><strong>" + t.changing + "</strong><p>" + esc(t.progress(rotation.moved, rotation.total)) + "</p>" +
-    '<p class="keys-old">' + esc(t.stillOld(rotation.oldKey)) + "</p></div></div>";
+    '<p class="keys-old">' + esc(t.stillOld(rotation.oldKey)) + "</p>" +
+    (trouble.length ? '<ul class="follow-ups keys-trouble">' + trouble.map(host => '<li data-host="' + esc(host.targetId) + '">' + troubleLine(host) + "</li>").join("") + "</ul><p class=\"help\">" + t.retrying + "</p>" : "") +
+    (merged.length ? '<ul class="follow-ups keys-merged">' + merged.map(row => "<li>" + esc(t.mergedBy(row.label, row.master)) + "</li>").join("") + "</ul>" : "") +
+    "</div></div>";
+}
+/** A host the change could not move yet: the plain sentence for a known error (it names the host), else the host
+ *  name and the Master's English text. */
+function troubleLine(host) {
+  const name = host.label || host.targetId, shown = explain(host.error, false, name);
+  return (shown.text === String(host.error) ? "<strong>" + esc(name) + "</strong> · " : "") + errorHtml(shown);
 }
 let rotationTimer = 0;
 /** Polls keys.rotation_status while a change of keys runs and something on screen shows it. */
 async function watchRotation() {
-  clearTimeout(rotationTimer);
+  clearTimeout(rotationTimer); rotationTimer = 0;
   state.rotation = await rpc("keys.rotation_status").catch(() => state.rotation);
-  const shown = $("#keys-progress") || $("#backup-section");
-  if (state.backup?.mode === "restore" || $("#backup-section")) {
-    if (!state.rotation?.active) await refreshBackupStatus();
-    paintFlow();
-  }
-  if (state.rotation?.active && shown) rotationTimer = setTimeout(() => void watchRotation(), 2000);
+  if (!state.rotation?.active) await refreshBackupStatus();
+  if ((state.backup?.mode === "restore" && $("#backup-flow")) || $("#backup-section")) paintFlow();
+  if (state.rotation?.active && $("#keys-progress")) rotationTimer = setTimeout(() => void watchRotation(), 2000);
 }
 async function changeKeys() {
   state.rotation = await rpc("keys.rotate");

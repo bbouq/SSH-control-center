@@ -351,3 +351,49 @@ fn the_job_adds_the_new_key_before_it_drops_the_old_one() {
     let at = order(&windows, &["powershell.exe -NoProfile -NonInteractive -EncodedCommand", "configure revoke-master", "accept-bundle $newBundle", "$_.Contains($oldKey)"]);
     assert!(at.windows(2).all(|w| w[0] < w[1]), "add, switch, then remove: {at:?}");
 }
+
+#[test]
+fn offline_hosts_are_retried_and_merged_hosts_belong_to_their_master() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = old_master(dir.path());
+    rotation::start(dir.path(), &cfg).unwrap();
+    assert!(rotation::retry_due(dir.path()).unwrap(), "a new change is due at once");
+    let status = rotation::pass(dir.path(), &cfg, &mut |target, step| match step {
+        Step::Install { .. } if target.id == "web-1" => anyhow::bail!("ALL_ROUTES_FAILED: lan 10.0.0.1:22: No route to host"),
+        _ => Ok(()),
+    }).unwrap();
+    assert_eq!(status["oldKey"], 1);
+    assert!(!rotation::retry_due(dir.path()).unwrap(), "not again right away");
+    assert_eq!(status["merged"], json!([{"label":"Child","master":"Branch"}]), "merged hosts are listed, not counted");
+    assert_eq!(status["total"], 2);
+    // A minute later the host is back: the next pass moves it and the change finishes.
+    let path = dir.path().join("rotation.json");
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["lastPassAt"] = json!("2026-01-01T00:00:00Z");
+    fs::write(&path, record.to_string()).unwrap();
+    assert!(rotation::retry_due(dir.path()).unwrap());
+    let done = rotation::pass(dir.path(), &cfg, &mut |_, _| Ok(())).unwrap();
+    assert_eq!((done["moved"].as_u64(), done["active"].as_bool()), (Some(2), Some(false)));
+    assert!(!rotation::retry_due(dir.path()).unwrap(), "nothing left to retry");
+}
+
+#[test]
+fn hosts_without_the_service_and_hosts_paired_meanwhile() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = old_master(dir.path());
+    call(dir.path(), &cfg, "targets.import_legacy", json!({"document":{"schemaVersion":1,"id":"old-box","hostname":"old-box","mode":"company",
+        "tenant":"company","address":"10.0.0.8","port":22,"user":"sshcc-bridge","os":"linux","hostKeys":[key(1)],"shareRequired":false}}));
+    rotation::start(dir.path(), &cfg).unwrap();
+    call(dir.path(), &cfg, "targets.import", json!({"registration":host("web-2","10.0.0.4")}));
+    let mut installed = Vec::new();
+    let status = rotation::pass(dir.path(), &cfg, &mut |target, step| {
+        if matches!(step, Step::Install { .. }) { installed.push(target.id.clone()); }
+        Ok(())
+    }).unwrap();
+    assert!(installed.contains(&"web-2".to_string()), "a host paired during the change is moved too");
+    assert!(!installed.contains(&"old-box".to_string()));
+    let old_box = status["hosts"].as_array().unwrap().iter().find(|h| h["targetId"] == "old-box").unwrap().clone();
+    assert_eq!(old_box["state"], "pending");
+    assert!(old_box["error"].as_str().unwrap().contains("E_RUNNER_NOT_INSTALLED"));
+    assert_eq!(status["active"], true, "the change stays open while a host is on the old key");
+}

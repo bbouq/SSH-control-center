@@ -260,6 +260,19 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator("#restore-follow-ups").waitFor();
     await assertThai(th, "restore follow-ups", twoWayWords);
     await shots(th, "restore-follow-ups");
+    await th.locator('[data-action="keys-change"]').click();
+    await th.locator("#keys-progress").waitFor();
+    await assertThai(th, "change keys progress", twoWayWords);
+    // Change keys later, with a host that can't change yet and merged hosts.
+    await scenario(th, url, ["masters-page", "restored", "rotation-trouble"]); await th.reload(); await ready(th);
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator("#backup-section").waitFor(); await assertThai(th, "backup section, keys not changed", twoWayWords);
+    await th.locator('#backup-section [data-action="keys-change"]').click();
+    await th.locator('#keys-progress [data-host="ui-test"]').waitFor({ timeout: 15000 });
+    await assertThai(th, "change keys trouble", twoWayWords);
+    await shots(th, "keys-trouble");
+    await th.locator("#keys-progress.pending").waitFor({ timeout: 20000 });
+    await assertThai(th, "keys changed, back up now", twoWayWords);
     console.log("ok thai backup and restore");
 
     // 6. Every EN key has a TH key (and no TH key is left over).

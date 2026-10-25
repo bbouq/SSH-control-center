@@ -224,8 +224,30 @@ const checks = {
     await shots(page, "keys-changed");
     await step(page, 4).getByRole("button", { name: "Open the host list" }).click();
   },
+  /** Change keys later from the section: a host that can't change yet is named with the reason, merged hosts are
+   *  left to their Master, and when every host moved: "Old backups no longer work. Back up now". */
+  async "change-keys-later"(page, url, d) {
+    await page.goto(url);
+    await openCurrentMaster(page);
+    await section(page).getByText("This Master was restored and still uses the old machine’s keys").waitFor();
+    await section(page).getByRole("button", { name: "Change keys…" }).click();
+    const progress = page.locator("#keys-progress");
+    await progress.locator('[data-host="ui-test"]', { hasText: "Nobody is logged in as the Owner on UI test target" }).waitFor({ timeout: 15000 });
+    await progress.getByText("Hosts still on the old key are tried again every minute, and when they come back online").waitFor();
+    await progress.getByText("Child 1 of branch-master · Branch Master changes its keys").waitFor();
+    await shots(page, "keys-trouble");
+    await progress.getByText("Keys changed on every host").waitFor({ timeout: 20000 });
+    await progress.getByText("Old backups no longer work. Back up now").waitFor();
+    await section(page).locator("#backup-last", { hasText: "Not backed up since keys were changed" }).waitFor();
+    assert.equal(await section(page).getByRole("button", { name: "Change keys…" }).count(), 0, "no Change keys once done");
+    await shots(page, "keys-back-up-now");
+    await backUp(page, url, d);
+    await step(page, 3).getByRole("button", { name: "Done" }).click();
+    await section(page).locator("#backup-last", { hasText: /^Last backup: / }).waitFor();
+    assert.equal(await page.locator("#keys-progress").count(), 0, "back up now is gone after a backup");
+  },
 };
-const scenarios = { "back-up": [], "backed-up": ["backed-up"], "save-cancelled": [], "round-trip": [], "restore-errors": ["empty"], "follow-ups": ["masters-page", "two-way-merge"], "change-keys": [] };
+const scenarios = { "back-up": [], "backed-up": ["backed-up"], "save-cancelled": [], "round-trip": [], "restore-errors": ["empty"], "follow-ups": ["masters-page", "two-way-merge"], "change-keys": [], "change-keys-later": ["masters-page", "restored", "rotation-trouble"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

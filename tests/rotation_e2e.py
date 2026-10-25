@@ -4,11 +4,11 @@
     docker build -f tests/containers/Dockerfile -t sshcc-e2e:local .
     python3 tests/rotation_e2e.py --image sshcc-e2e:local
 
-One Ubuntu Target is set up the way installers/ubuntu/setup.sh does it: the Master's forced-command line in
+Two Ubuntu Targets are set up the way installers/ubuntu/setup.sh does it: the Master's forced-command line in
 /etc/ssh/sshcc/sshcc-bridge.authorized_keys with the `sshcc:master:<id>` marker. The old Master is backed up and
-removed, a fresh Master restores the file and reaches the Target with no change on it, then Change keys runs the
-elevated job on the Target. Checks: the new key works, the old key is refused, and the Target's key file holds
-one line for this Master. Every container and the network are removed at the end.
+removed, a fresh Master restores the file and reaches the Targets with no change on them, then Change keys runs the
+elevated job on them while web-2 is offline; web-2 must be moved on the service's own retry when it comes back.
+Checks: the new key works, the old key is refused, and the Target's key file holds one line for this Master. Every container and the network are removed at the end.
 """
 import argparse
 import json
@@ -91,6 +91,8 @@ class Harness:
         old = self.container("old-master", "master", "Office Master")
         target = self.container("web-1", "target", "Web 1")
         self.enroll(old, target, "web-1")
+        offline = self.container("web-2", "target", "Web 2")
+        self.enroll(old, offline, "web-2")
         assert self.reaches(old, "web-1"), "the old Master reaches the Target"
         node_id = self.request(target, "system.status")["nodeId"]
         print("ok enrolled like the Ubuntu installer")
@@ -105,7 +107,7 @@ class Harness:
         new = self.container("new-master", "master", "Fresh install")
         run("docker", "cp", f"/tmp/{self.run_id}.sshccbak", f"{new}:/tmp/office.sshccbak")
         restored = json.loads(self.exec(new, "sh", "-c", "sshcc restore /tmp/office.sshccbak", stdin=PASSPHRASE + "\ny\n").stdout)
-        assert restored["hosts"] == 1, restored
+        assert restored["hosts"] == 2, restored
         time.sleep(1)  # the service exits to load the restored identity; start it again as systemd would
         self.start_service(new)
         assert self.request(new, "system.status")["label"] == "Office Master"
@@ -114,13 +116,24 @@ class Harness:
 
         self.exec(new, "sh", "-c", "cat > /tmp/old.key && chmod 600 /tmp/old.key", stdin=old_key)
         assert '"ok":true' in self.ssh_with(new, "/tmp/old.key", "web-1", node_id).stdout.replace(" ", ""), "the old key works before the change"
+        self.exec(offline, "pkill", "-x", "sshd")  # web-2 is offline while the keys change
         self.request(new, "keys.rotate")
         for _ in range(120):
+            status = self.request(new, "keys.rotation_status")
+            if status["moved"] == 1 and status["oldKey"] == 1 and status["lastPassAt"]:
+                break
+            time.sleep(1)
+        waiting = [host for host in status["hosts"] if host["targetId"] == "web-2"]
+        assert status["active"] and waiting[0]["state"] == "pending" and waiting[0]["error"], json.dumps(status, indent=2)
+        print("ok web-1 moved, offline web-2 still on the old key")
+        run("docker", "exec", "-d", offline, "/usr/sbin/sshd", "-D", "-e")  # back online: moved on the service's own retry
+        for _ in range(150):
             status = self.request(new, "keys.rotation_status")
             if not status["active"]:
                 break
             time.sleep(1)
-        assert not status["active"] and status["moved"] == 1, json.dumps(status, indent=2) + self.exec(target, "cat", "/tmp/service.log").stdout[-2000:]
+        assert not status["active"] and status["moved"] == 2, json.dumps(status, indent=2)
+        print("ok web-2 moved when it came back, with no action")
         assert self.reaches(new, "web-1"), "the Master reaches the Target with the new key"
         refused = self.ssh_with(new, "/tmp/old.key", "web-1", node_id)
         assert '"ok":true' not in refused.stdout.replace(" ", ""), "the old key is refused: " + refused.stdout

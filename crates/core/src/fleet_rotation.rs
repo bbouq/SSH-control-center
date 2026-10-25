@@ -18,6 +18,8 @@ use std::{
 use uuid::Uuid;
 
 const JOB_TIMEOUT: Duration = Duration::from_secs(180);
+/// Hosts still on the old key are tried again at most this often (when a window asks, or on the service's timer).
+pub const RETRY_EVERY: chrono::TimeDelta = chrono::TimeDelta::seconds(60);
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +45,8 @@ struct Host {
 struct Rotation {
     started_at: String,
     finished_at: Option<String>,
+    #[serde(default)]
+    last_pass_at: Option<String>,
     tenants: BTreeMap<String, TenantKeys>,
     hosts: BTreeMap<String, Host>,
 }
@@ -169,6 +173,7 @@ pub fn pass(state: &Path, config: &Config, act: &mut dyn FnMut(&Target, Step) ->
     super::role(config, "master")?;
     let Some(mut rotation) = active(state)? else { return status(state, config) };
     include_hosts(state, &mut rotation)?;
+    rotation.last_pass_at = Some(now());
     write(state, &rotation)?;
     for target in own_hosts(state)? {
         let Some(keys) = rotation.tenants.get(&target.tenant).cloned() else { continue };
@@ -241,6 +246,26 @@ fn finish(state: &Path, rotation: &mut Rotation) -> Result<()> {
     crate::backup::keys_changed(state, rotation.finished_at.as_deref().unwrap_or_default())
 }
 
+/// True when a change of keys is unfinished and its last pass is older than `RETRY_EVERY`.
+pub fn retry_due(state: &Path) -> Result<bool> {
+    let Some(rotation) = active(state)? else { return Ok(false) };
+    let last = rotation.last_pass_at.as_deref().and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok());
+    Ok(last.is_none_or(|at| chrono::Utc::now().signed_duration_since(at) >= RETRY_EVERY))
+}
+/// Merged hosts keep the keys of the Master they belong to: that Master changes them, not this one.
+fn merged(state: &Path) -> Result<Vec<Value>> {
+    let db = database(state)?;
+    let mut stmt = db.prepare("SELECT document FROM merges ORDER BY target_id")?;
+    let mut rows = Vec::new();
+    for document in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        let merge: Value = serde_json::from_str(&document?)?;
+        for child in merge["children"].as_array().into_iter().flatten() {
+            rows.push(json!({"label":child["label"],"master":merge["label"]}));
+        }
+    }
+    Ok(rows)
+}
+
 pub fn status(state: &Path, config: &Config) -> Result<Value> {
     super::role(config, "master")?;
     let Some(rotation) = read(state)? else { return Ok(json!({"active":false})) };
@@ -252,7 +277,7 @@ pub fn status(state: &Path, config: &Config) -> Result<Value> {
     let old = rotation.hosts.values().filter(|host| host.state == "pending").count();
     let moved = rotation.hosts.values().filter(|host| host.state == "moved").count();
     Ok(json!({"active":rotation.finished_at.is_none(),"startedAt":rotation.started_at,"finishedAt":rotation.finished_at,
-        "total":rotation.hosts.len(),"moved":moved,"oldKey":old,"hosts":hosts}))
+        "lastPassAt":rotation.last_pass_at,"total":rotation.hosts.len(),"moved":moved,"oldKey":old,"hosts":hosts,"merged":merged(state)?}))
 }
 
 fn fingerprint(public: &str) -> Result<String> {
@@ -429,7 +454,13 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
             pass_in_background(state, config);
             started
         }
-        "keys.rotation_status" => status(state, config)?,
+        "keys.rotation_status" => {
+            // A window watching the change also retries hosts that were offline.
+            if retry_due(state)? {
+                pass_in_background(state, config);
+            }
+            status(state, config)?
+        }
         _ => return Ok(None),
     }))
 }

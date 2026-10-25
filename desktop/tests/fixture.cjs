@@ -7,6 +7,8 @@
 //   masters-page     adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
 //                    directly and through a Merge, plus one that only merged this Master (merging disabled)
 //   backed-up        this Master has a last backup date
+//   restored         this Master was restored from a backup and its keys were not changed yet
+//   rotation-trouble Change keys: the first attempt on ui-test fails (the Owner is not logged in); the next one works
 //   two-way-merge    with masters-page: the Merge with branch-master is two-way (it shows as a relay here too)
 // Backups: save_backup "writes" to /fixture/Backups and keeps the file in memory (across scenario resets), so a test can
 // back up, POST /scenario {"flags":["empty"]} and restore it. POST /next-backup {"kind":"good"|"newer"|"damaged"|"other"} makes the
@@ -29,7 +31,7 @@ function reset(list) {
   s = {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
     jobs: [], pairings: [], folders: [], folderMembers: {}, datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
-    backup: { lastBackupAt: flags.has("backed-up") ? "2026-10-20T09:30:00Z" : null, restoredAt: null, keysChangedAt: null }, rotation: null
+    backup: { lastBackupAt: flags.has("backed-up") || flags.has("restored") ? "2026-10-20T09:30:00Z" : null, restoredAt: flags.has("restored") ? "2026-10-24T08:00:00Z" : null, keysChangedAt: null }, rotation: null
   };
   if (flags.has("masters-page")) {
     const host = (id, label, address) => ({ schemaVersion: 2, id, nodeId: id + "-node", label, tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address, port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
@@ -146,16 +148,22 @@ function rotationStatus() {
   const r = s.rotation;
   if (!r) return { active: false };
   const next = r.hosts.find(h => h.state === "pending");
-  if (next && r.started) { next.state = "moved"; next.error = null; }
+  if (next && r.started) {
+    if (flags.has("rotation-trouble") && next.targetId === "ui-test" && !next.failed) { next.failed = true; next.error = "E_OWNER_NOT_LOGGED_IN: Owner must be logged in"; }
+    else { next.state = "moved"; next.error = null; }
+  }
   r.started = true;
   const moved = r.hosts.filter(h => h.state === "moved").length, oldKey = r.hosts.filter(h => h.state === "pending").length;
   if (moved === r.hosts.length && !r.finishedAt) { r.finishedAt = now(); s.backup.keysChangedAt = r.finishedAt; }
-  return { active: !r.finishedAt, startedAt: r.startedAt, finishedAt: r.finishedAt || null, total: r.hosts.length, moved, oldKey, hosts: r.hosts.map(h => ({ ...h })) };
+  const merged = s.merges.flatMap(m => (m.children || []).map(c => ({ label: c.label, master: m.label })));
+  return { active: !r.finishedAt, startedAt: r.startedAt, finishedAt: r.finishedAt || null, total: r.hosts.length, moved, oldKey, hosts: r.hosts.map(({ failed, ...h }) => ({ ...h })), merged };
 }
 function rpc(method, p = {}) {
   switch (method) {
     case "keys.rotate":
       if (!s.rotation || s.rotation.finishedAt) s.rotation = { startedAt: now(), finishedAt: null, started: false, hosts: s.targets.filter(t => !t.relayed).map(t => ({ targetId: t.id, label: t.label, state: "pending", error: null })) };
+      // The slow host goes first, so a check can see it fail before the rest finish.
+      s.rotation.hosts.sort((a, b) => (b.targetId === "ui-test") - (a.targetId === "ui-test"));
       return rotationStatus();
     case "keys.rotation_status": return rotationStatus();
     case "system.status": return { label: "UI fixture (no real service)", nodeId: "fixture", roles: ["master", "target"], version: "test", uptimeSeconds: 120 };
