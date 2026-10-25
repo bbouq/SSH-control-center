@@ -208,6 +208,17 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     assert.equal(await notice.locator(".error-detail").count(), 0, "no detail line for an unmapped error");
     console.log("ok unmapped error");
 
+    // Tags (roadmap entry 4): the host's Tag row, with a Tag and a refused one.
+    await scenario(th, url, []); await th.reload(); await ready(th);
+    await rpc(th, url, "tags.set", { targetId: "ui-test", tags: ["web"] });
+    await th.reload(); await ready(th);
+    await th.locator('#dc-tree .dc-toggle').first().click();
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator("#tag-add [name=tag]").fill("a,b"); await th.locator("#tag-add [name=tag]").press("Enter");
+    await th.locator("#host-tags .add-check.bad").waitFor();
+    await assertThai(th, "host Tags", [...words, "web"]);
+    await shots(th, "host-tags");
+
     // Backup and restore (roadmap entry 3): the section, both flows and their errors.
     const fileWords = [...words, "sshcc", "backup", "sshccbak", "Backups", "fixture"];
     await scenario(th, url, []); await th.reload(); await ready(th);

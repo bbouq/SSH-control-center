@@ -24,7 +24,9 @@ const state = {
   monitor: new Map(),
   containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} },
   // Backup and restore: the service's status line, and the open flow (null, or {mode: "backup" | "restore", …}).
-  backupStatus: null, backup: null, rotation: null
+  backupStatus: null, backup: null, rotation: null,
+  // Tags: {tags: [{tag, hosts}], hosts: {id: [tag]}}; tagError: the last refused change, shown under the Tag box.
+  tags: { tags: [], hosts: {} }, tagError: null
 };
 addReset();
 const native = (command, args = {}) => {
@@ -202,11 +204,12 @@ async function refreshLocal() {
   renderHeader();
 }
 async function refreshFleet() {
-  const [rows, merges, relays, folders, datacenters, backup, rotation] = await Promise.all([
+  const [rows, merges, relays, folders, datacenters, backup, rotation, tags] = await Promise.all([
     rpc("targets.list"), rpc("merges.list").catch(() => []), rpc("relays.list").catch(() => []), rpc("folders.list").catch(() => null), rpc("datacenters.list").catch(() => null),
-    rpc("backup.status").catch(() => null), rpc("keys.rotation_status").catch(() => null)
+    rpc("backup.status").catch(() => null), rpc("keys.rotation_status").catch(() => null), rpc("tags.list").catch(() => null)
   ]);
   state.backupStatus = backup; state.rotation = rotation;
+  if (tags) state.tags = tags;
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
   if (!Array.isArray(rows)) throw new Error(T.common.badFormat);
@@ -386,13 +389,43 @@ function graphNode(item, options = {}) {
     (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
     (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(name)) + '" title="' + esc(T.inv.openTerminal) + '">' + icons.shell + "</button>") + "</div>";
 }
-/** The one rule for the filter text: a host matches on its ID, name, tenant, merged Master, addresses or folder name. */
+/** The one rule for the filter text: a host matches on its ID, name, tenant, merged Master, addresses, folder name or Tags. */
 function hostMatches(item, text) {
   const search = String(text || "").trim().toLowerCase();
   if (!search) return true;
   const folderId = state.folders.members?.[item.id], folder = folderId && (state.folders.folders || []).find(row => row.id === folderId);
-  return [item.id, item.label, item.tenant, item.viaLabel, folder?.name, ...(item.routes || []).map(route => route.address)]
+  return [item.id, item.label, item.tenant, item.viaLabel, folder?.name, ...hostTags(item.id), ...(item.routes || []).map(route => route.address)]
     .some(value => String(value || "").toLowerCase().includes(search));
+}
+const hostTags = id => state.tags.hosts?.[id] || [];
+/** A Tag as a chip: clicking its name filters by it; `removeFrom` adds × to take it off that host. */
+function tagChip(tag, removeFrom = "") {
+  return '<span class="tag-chip"><button type="button" class="tag-name" data-action="tag-filter" data-tag="' + esc(tag) + '" title="' + esc(T.tags.filterBy(tag)) + '">' + esc(tag) + "</button>" +
+    (removeFrom ? '<button type="button" class="tag-remove" data-action="tag-remove" data-id="' + esc(removeFrom) + '" data-tag="' + esc(tag) + '" aria-label="' + esc(T.tags.remove(tag)) + '">' + icons.close + "</button>" : "") + "</span>";
+}
+/** The host page's Tags: chips with ×, and a box that suggests the Tags already in use. */
+function renderTagRow(item) {
+  const t = T.tags, mine = hostTags(item.id), lower = new Set(mine.map(tag => tag.toLowerCase()));
+  const suggestions = (state.tags.tags || []).map(row => row.tag).filter(tag => !lower.has(tag.toLowerCase()));
+  const error = state.tagError?.id === item.id ? '<p class="add-check bad" role="alert">' + errorHtml(explain(state.tagError.error)) + "</p>" : "";
+  return '<section class="tag-row" id="host-tags" aria-label="' + esc(t.title) + '">' + mine.map(tag => tagChip(tag, item.id)).join("") +
+    '<form id="tag-add" data-id="' + esc(item.id) + '" autocomplete="off"><input name="tag" list="tag-suggestions" maxlength="64" placeholder="' + esc(t.add) + '" aria-label="' + esc(t.addLabel) + '">' +
+    '<datalist id="tag-suggestions">' + suggestions.map(tag => '<option value="' + esc(tag) + '">').join("") + "</datalist></form>" + error + "</section>";
+}
+async function refreshTags() { state.tags = await rpc("tags.list").catch(() => state.tags); }
+async function setHostTags(id, tags) {
+  state.tagError = null;
+  try { await rpc("tags.set", { targetId: id, tags }); }
+  catch (error) { state.tagError = { id, error: String(error?.message || error) }; }
+  await refreshTags();
+  const restore = keepInput($("#main")); render(); restore();
+  if (state.tagError) $("#tag-add [name=tag]")?.focus(); else { const box = $("#tag-add [name=tag]"); if (box) { box.value = ""; box.focus(); } }
+}
+/** A chip click: that Tag goes in the filter box, and the tree and host lists follow it. */
+function filterByTag(tag) {
+  state.query = state.dc.query = tag;
+  const box = $("#dc-search"); if (box) box.value = tag;
+  render();
 }
 function matchesFilter(item, ignoreStatus = false) {
   return (ignoreStatus || !state.status || statusBucket(item) === state.status) && hostMatches(item, state.query);
@@ -1157,7 +1190,7 @@ function renderDcPanel() {
     '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
     (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
   const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs(hostPageTabs());
-  const body = state.dc.tab === "summary" ? renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
+  const body = state.dc.tab === "summary" ? renderTagRow(item) + renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
     : state.dc.tab === "monitoring" ? renderMonitorTab(item.id, item.label || item.id) : renderContainerTab(item.id, item.label || item.id);
   return head + tabs + body;
 }
@@ -1808,6 +1841,8 @@ document.addEventListener("click", event => {
     if (action === "restore-start") { state.page = "datacenter"; state.dc.adding = null; state.backup = { mode: "restore", file: null, summary: null, result: null, error: "", errorStep: 0 }; paintFlow(); return; }
     if (action === "restore-choose") return chooseBackup();
     if (action === "keys-change") return changeKeys();
+    if (action === "tag-filter") { filterByTag(button.dataset.tag); return; }
+    if (action === "tag-remove") return setHostTags(button.dataset.id, hostTags(button.dataset.id).filter(tag => tag !== button.dataset.tag));
     if (action === "restore-run") { if ($("#restore-off")?.checked) return runRestore(); return; }
     if (action === "add-host" || action === "dc-add") {
       state.page = "datacenter"; state.dc.adding = { folder: button.dataset.folder || "", site: button.dataset.site || "", self: Boolean(button.dataset.self) };
@@ -2069,6 +2104,7 @@ document.addEventListener("submit", event => {
   const submittedPairing = state.pairing;
   void busy($('button[type="submit"]', form), async () => {
     if (form.id === "backup-pass-form") return saveBackup();
+    if (form.id === "tag-add") { const tag = form.elements.tag.value; if (tag.trim()) return setHostTags(form.dataset.id, [...hostTags(form.dataset.id), tag]); return; }
     if (form.id === "restore-pass-form") { if (!state.backup?.summary) return openBackup(form); return; }
     if (form.id === "open-shell-session") {
       $("#shell-dialog").close();

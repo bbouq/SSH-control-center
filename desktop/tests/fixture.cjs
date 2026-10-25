@@ -30,7 +30,7 @@ function reset(list) {
   const empty = flags.has("empty");
   s = {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
-    jobs: [], pairings: [], folders: [], folderMembers: {}, datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
+    jobs: [], pairings: [], folders: [], folderMembers: {}, tags: [], datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
     backup: { lastBackupAt: flags.has("backed-up") || flags.has("restored") ? "2026-10-20T09:30:00Z" : null, restoredAt: flags.has("restored") ? "2026-10-24T08:00:00Z" : null, keysChangedAt: null }, rotation: null
   };
   if (flags.has("masters-page")) {
@@ -158,8 +158,34 @@ function rotationStatus() {
   const merged = s.merges.flatMap(m => (m.children || []).map(c => ({ label: c.label, master: m.label })));
   return { active: !r.finishedAt, startedAt: r.startedAt, finishedAt: r.finishedAt || null, total: r.hosts.length, moved, oldKey, hosts: r.hosts.map(({ failed, ...h }) => ({ ...h })), merged };
 }
+/* Tags, as the Master keeps them: rows of {targetId, key, tag}; matched without case, first spelling kept. */
+function tagList() {
+  const byKey = new Map(), hosts = {};
+  for (const row of [...s.tags].sort((a, b) => a.targetId.localeCompare(b.targetId))) {
+    if (!byKey.has(row.key)) byKey.set(row.key, { tag: row.tag, hosts: [] });
+    byKey.get(row.key).hosts.push(row.targetId); (hosts[row.targetId] ||= []).push(row.tag);
+  }
+  return { tags: [...byKey.entries()].sort(([a], [b]) => a < b ? -1 : 1).map(([, v]) => v), hosts };
+}
+function setTags({ targetId, tags }) {
+  if (![...s.targets, ...relayedTargets()].some(t => t.id === targetId)) throw new Error("E_TARGET: unknown host " + targetId);
+  const rows = [];
+  for (const raw of tags || []) {
+    const tag = String(raw).trim(), key = tag.toLowerCase();
+    if (!tag || [...tag].length > 32) throw new Error("E_TAG_LENGTH: a Tag has 1-32 characters");
+    if (/[,\u0000-\u001f]/.test(tag)) throw new Error("E_TAG_CHARS: a Tag can't contain a comma");
+    if (rows.some(row => row.key === key)) continue;
+    const first = s.tags.find(row => row.key === key && row.targetId !== targetId);
+    rows.push({ targetId, key, tag: first ? first.tag : tag });
+  }
+  if (rows.length > 20) throw new Error("E_TAG_LIMIT: a host has at most 20 Tags");
+  s.tags = s.tags.filter(row => row.targetId !== targetId).concat(rows);
+  return { targetId, tags: rows.map(row => row.tag) };
+}
 function rpc(method, p = {}) {
   switch (method) {
+    case "tags.list": return tagList();
+    case "tags.set": return setTags(p);
     case "keys.rotate":
       if (!s.rotation || s.rotation.finishedAt) s.rotation = { startedAt: now(), finishedAt: null, started: false, hosts: s.targets.filter(t => !t.relayed).map(t => ({ targetId: t.id, label: t.label, state: "pending", error: null })) };
       // The slow host goes first, so a check can see it fail before the rest finish.

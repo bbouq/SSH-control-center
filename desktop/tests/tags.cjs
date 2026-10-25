@@ -22,6 +22,8 @@ async function shots(page, name) {
 }
 /** Every Master branch open, so the tree shows every host the filter keeps. */
 async function openTree(page) {
+  // Wait for the tree to be drawn (a filter may hide every row, so don't insist on one).
+  await page.locator("#dc-tree .dc-row").first().waitFor({ timeout: 5000 }).catch(() => {});
   for (let i = 0; i < 6; i++) {
     const closed = page.locator('#dc-tree .dc-toggle[aria-expanded="false"]');
     if (!(await closed.count())) return;
@@ -33,6 +35,19 @@ async function filter(page, text) {
   await openTree(page);
 }
 const visibleHosts = async page => (await treeHosts(page).allTextContents()).map(text => text.trim());
+
+/** A host's page, Summary tab, from the tree. */
+async function openHost(page, id) {
+  await filter(page, "");
+  await page.locator(`#dc-tree .dc-item[data-node="node:${id}"]`).click();
+  await page.locator("#host-tags").waitFor();
+}
+const chips = page => page.locator("#host-tags .tag-chip .tag-name");
+async function addTag(page, text, d, what) {
+  const box = page.locator("#tag-add [name=tag]");
+  if (d) await d.fill(box, text, what); else await box.fill(text);
+  await box.press("Enter");
+}
 
 const checks = {
   /** The filter box matches folder names, for direct and merged hosts. */
@@ -53,8 +68,45 @@ const checks = {
     await page.locator("#dc-tree .dc-item[data-node='node:ui-test']").waitFor();
     await shots(page, "filter-folder");
   },
+  /** Tags on the host page: add with suggestions, case-insensitive with the first spelling, errors in place, ×. */
+  async "host-tags"(page, url) {
+    await page.goto(url);
+    await openTree(page);
+    await openHost(page, "ui-test");
+    await addTag(page, "Web");
+    await chips(page).filter({ hasText: /^Web$/ }).waitFor();
+    await addTag(page, "บางกอก");
+    await chips(page).filter({ hasText: "บางกอก" }).waitFor();
+    for (const [text, sentence] of [["a,b", "A Tag can’t contain a comma"], ["x".repeat(33), "A Tag has 1 to 32 characters"]]) {
+      await addTag(page, text);
+      await page.locator("#host-tags .add-check.bad", { hasText: sentence }).waitFor();
+      assert.equal(await chips(page).count(), 2, "a refused Tag changes nothing");
+    }
+    await shots(page, "host-tags");
+    // A merged host: the existing Tag is suggested, and a different case is the same Tag.
+    await openHost(page, "branch-master/child-1");
+    assert.deepEqual(await page.locator("#tag-suggestions option").evaluateAll(options => options.map(o => o.value)), ["Web", "บางกอก"]);
+    await addTag(page, "WEB");
+    await chips(page).filter({ hasText: /^Web$/ }).waitFor();
+    assert.ok((await calls(page, url)).some(c => c.method === "tags.set" && c.params.targetId === "branch-master/child-1"));
+    // Filter by typing a Tag, or by clicking a chip.
+    await filter(page, "web");
+    await page.waitForFunction(() => document.querySelectorAll("#dc-tree .dc-item[data-node^='node:']").length === 2);
+    assert.deepEqual((await treeHosts(page).evaluateAll(els => els.map(el => el.dataset.node))).sort(), ["node:branch-master/child-1", "node:ui-test"]);
+    await filter(page, "");
+    await openHost(page, "ui-test");
+    await chips(page).filter({ hasText: "บางกอก" }).click();
+    assert.equal(await page.locator("#dc-search").inputValue(), "บางกอก");
+    await openTree(page);
+    await page.waitForFunction(() => document.querySelectorAll("#dc-tree .dc-item[data-node^='node:']").length === 1);
+    // × removes it; a Tag no host has is no longer suggested.
+    await page.locator('#host-tags [data-action="tag-remove"][data-tag="บางกอก"]').click();
+    await page.waitForFunction(() => document.querySelectorAll("#host-tags .tag-chip").length === 1);
+    await openHost(page, "branch-master/child-1");
+    assert.equal(await page.locator('#tag-suggestions option[value="บางกอก"]').count(), 0);
+  },
 };
-const scenarios = { "filter-folders": ["masters-page"] };
+const scenarios = { "filter-folders": ["masters-page"], "host-tags": ["masters-page"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

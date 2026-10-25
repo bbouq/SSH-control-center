@@ -273,6 +273,9 @@ impl Service {
         if let Some(value) = pairing::handle(&self.state, &self.config, req)? {
             return Ok(value);
         }
+        if let Some(value) = crate::tags::handle(&self.state, &self.config, req)? {
+            return Ok(value);
+        }
         if let Some(value) = folders::handle(&self.state, &self.config, req)? {
             return Ok(value);
         }

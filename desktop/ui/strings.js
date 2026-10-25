@@ -225,6 +225,9 @@ const en = {
       ["E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED", "The passphrase is wrong, or the file is damaged · check the passphrase and try again"],
       ["E_BACKUP_NEWER", "This backup comes from a newer Master. Update this Master first"],
       ["E_RESTORE_NOT_EMPTY", "This Master already has hosts. Restore only works on a fresh install"],
+      ["E_TAG_LENGTH", "A Tag has 1 to 32 characters"],
+      ["E_TAG_CHARS", "A Tag can’t contain a comma"],
+      ["E_TAG_LIMIT", "A host can have at most 20 Tags"],
     ],
     pairing: [
       ["SETUP_TEMPLATES_MISSING", "Installer templates are missing. Install or update this Master with the full package, then save the installer again"],
@@ -280,6 +283,11 @@ const en = {
     importFile: "Import registration file…", importV1: "Import v1 registry…", registrationJson: "Registration JSON", import: "Import",
   },
   /* Masters page (Merges both ways) and its notifications. */
+  /* Tags (roadmap entry 4): free-text markers on hosts. */
+  tags: {
+    title: "Tags", add: "+ Tag", addLabel: "Add a Tag to this host", none: "No Tags yet",
+    filterBy: tag => "Show the hosts with Tag " + tag, remove: tag => "Remove Tag " + tag,
+  },
   /* Backup and restore (current Master page, Summary tab). */
   backup: {
     title: "Backup and restore", lead: "One file holds this Master: its identity, its keys and its hosts. Restore it on a new machine to get every host back",
@@ -566,6 +574,9 @@ const th = {
       ["E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED", "รหัสผ่านไม่ถูกต้อง หรือไฟล์เสียหาย · ตรวจรหัสผ่านแล้วลองอีกครั้ง"],
       ["E_BACKUP_NEWER", "ไฟล์สำรองนี้มาจาก Master รุ่นใหม่กว่า อัปเดต Master นี้ก่อน"],
       ["E_RESTORE_NOT_EMPTY", "Master นี้มีเครื่องอยู่แล้ว การกู้คืนทำได้เฉพาะบนเครื่องที่เพิ่งติดตั้งใหม่"],
+      ["E_TAG_LENGTH", "Tag ต้องยาว 1 ถึง 32 ตัวอักษร"],
+      ["E_TAG_CHARS", "Tag ห้ามมีเครื่องหมายจุลภาค (,)"],
+      ["E_TAG_LIMIT", "เครื่องหนึ่งมี Tag ได้ไม่เกิน 20 อัน"],
     ],
     pairing: [
       ["SETUP_TEMPLATES_MISSING", "ไม่พบแม่แบบตัวติดตั้ง ติดตั้งหรืออัปเดต Master นี้ด้วยแพ็กเกจเต็ม แล้วบันทึกตัวติดตั้งอีกครั้ง"],
@@ -618,6 +629,10 @@ const th = {
     mergeReason: "สาเหตุ:", openMasters: "เปิดหน้าเครื่องหลัก", twoWay: "สองทาง", twoWayHelp: "ไม่บังคับ · ให้ Master นั้นสั่งเครื่องของ Master นี้ได้ด้วย",
     admin: "สำหรับผู้ดูแล (นำเข้าจากไฟล์)", adminHelp: "นำเข้าการลงทะเบียนหรือรายการเครื่องแบบ v1 · ยังตรวจ host key ตามปกติ",
     importFile: "นำเข้าไฟล์ลงทะเบียน…", importV1: "นำเข้ารายการเครื่องแบบ v1…", registrationJson: "การลงทะเบียน (JSON)", import: "นำเข้า",
+  },
+  tags: {
+    title: "Tag", add: "+ Tag", addLabel: "เพิ่ม Tag ให้เครื่องนี้", none: "ยังไม่มี Tag",
+    filterBy: tag => "แสดงเครื่องที่มี Tag " + tag, remove: tag => "เอา Tag " + tag + " ออก",
   },
   backup: {
     title: "สำรองและกู้คืน", lead: "ไฟล์เดียวเก็บ Master นี้ไว้ทั้งหมด: ตัวตน กุญแจ และเครื่องทั้งหมด กู้คืนบนเครื่องใหม่แล้วจะได้ทุกเครื่องกลับมา",

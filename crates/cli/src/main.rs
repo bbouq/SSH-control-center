@@ -93,6 +93,12 @@ enum Action {
     Restore {
         file: PathBuf,
     },
+    /// List Tags and their hosts, or replace one host's Tags (`--set web,bangkok`; `--set ""` clears them).
+    Tags {
+        host: Option<String>,
+        #[arg(long, requires = "host")]
+        set: Option<String>,
+    },
     Targets,
     Doctor {
         target_id: String,
@@ -527,6 +533,15 @@ fn run() -> Result<()> {
         }
         Action::Backup { file } => print(&backup::backup(&file, call)?),
         Action::Restore { file } => print(&backup::restore(&file, call)?),
+        Action::Tags { host: None, .. } => print(&call("tags.list", json!({}))?),
+        Action::Tags { host: Some(host), set: None } => {
+            let all = call("tags.list", json!({}))?;
+            print(&json!({"targetId":host,"tags":all["hosts"].get(&host).cloned().unwrap_or(json!([]))}))
+        }
+        Action::Tags { host: Some(host), set: Some(list) } => {
+            let tags: Vec<&str> = list.split(',').map(str::trim).filter(|tag| !tag.is_empty()).collect();
+            print(&call("tags.set", json!({"targetId":host,"tags":tags}))?)
+        }
         Action::Targets => print(&call("targets.list", json!({}))?),
         Action::Doctor { target_id, session } => print(&call(
             "targets.doctor",

@@ -266,6 +266,15 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .badge.pending::before { background: transparent; outline: 1px solid currentColor; outline-offset: -1px; }
 .badge.running { color: var(--acid); }
 .badge.hot { color: var(--amber); }
+/* Tags: square chips in Geist Mono, as typed (no uppercase). The name filters by the Tag; × takes it off the host. */
+.tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 22px; }
+.tag-row .add-check { flex-basis: 100%; }
+.tag-chip { display: inline-flex; align-items: stretch; border: 1px solid var(--rule); font-family: var(--mono); font-size: 12px; letter-spacing: .04em; }
+.tag-chip button { min-height: 28px; padding: 0 10px; border: 0; background: none; color: var(--lilac); font: inherit; letter-spacing: inherit; text-transform: none; cursor: pointer; }
+.tag-chip .tag-remove { padding: 0 8px; border-left: 1px solid var(--rule); }
+.tag-chip .tag-remove svg.i { width: 12px; height: 12px; }
+.tag-chip button:hover { background: var(--acid); color: var(--ink-on-green); }
+#tag-add input { width: 160px; min-height: 30px; padding: 4px 10px; font-family: var(--mono); font-size: 12px; }
 .chip { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--lilac); }
 .meta-row { display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap; }
 .meta-row .chip + .chip::before { content: "·"; margin-right: 18px; color: var(--lilac-2); }
