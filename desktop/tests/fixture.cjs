@@ -6,6 +6,10 @@
 //   needs-attention  completing a pairing fails the connection check; an address retry (pairing.status routes) passes
 //   masters-page     adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
 //                    directly and through a Merge, plus one that only merged this Master (merging disabled)
+//   backed-up        this Master has a last backup date
+// Backups: save_backup "writes" to /fixture/Backups and keeps the file in memory (across scenario resets), so a test can
+// back up, POST /scenario {"flags":["empty"]} and restore it. POST /next-backup {"kind":"good"|"newer"|"damaged"|"other"} makes the
+// next open_backup return that kind of file instead (once).
 // Test-only endpoints: GET /calls (every request the page sent), POST /scenario (reset state, clears /calls),
 // GET /pairing-code[?requestId=…][&master=other] (the code the new host would show after Approve; default: the
 // newest request awaiting approval; master=other gives a code made for another Master).
@@ -16,14 +20,15 @@ const crypto = require("node:crypto");
 const ui = path.join(__dirname, "..", "ui");
 const MASTER_ID = "fixture-master", MASTER_LABEL = "UI fixture Master";
 const calls = [];
-let flags, s, content, firstStart;
+let flags, s, content, firstStart, savedBackup = null, nextBackup = "";
 /** All mutable fixture state; `reset` rebuilds it for a scenario. */
 function reset(list) {
   flags = new Set(list.filter(Boolean)); calls.length = 0; content = "Example text\n"; firstStart = true;
   const empty = flags.has("empty");
   s = {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
-    jobs: [], pairings: [], folders: [], folderMembers: {}, datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set()
+    jobs: [], pairings: [], folders: [], folderMembers: {}, datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
+    backup: { lastBackupAt: flags.has("backed-up") ? "2026-10-20T09:30:00Z" : null, restoredAt: null }
   };
   if (flags.has("masters-page")) {
     const host = (id, label, address) => ({ schemaVersion: 2, id, nodeId: id + "-node", label, tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address, port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
@@ -101,9 +106,37 @@ async function checkAddress(address, port, own) {
   return { address, port, reachable: Boolean(banner), banner, os: banner ? (banner.includes("Windows") ? "windows" : "linux") : null,
     alreadyAs: target?.label || request?.label || null, alreadyTargetId: target?.id || null, alreadyRequestId: request?.requestId || null };
 }
+/* Backup files are base64 JSON: the passphrase and a copy of the fleet. The real format is tested in Rust. */
+const FLEET_KEYS = ["targets", "folders", "folderMembers", "datacenters", "datacenterMembers", "merges", "masters", "relays"];
+const isEmpty = () => !s.targets.length && !s.merges.length && !s.folders.length;
+function makeBackup(passphrase) {
+  if ([...String(passphrase || "")].length < 12) throw new Error("E_BACKUP_PASSPHRASE_SHORT: the passphrase must be at least 12 characters");
+  const fleet = Object.fromEntries(FLEET_KEYS.map(key => [key, structuredClone(s[key])]));
+  return Buffer.from(JSON.stringify({ fixtureBackup: 1, formatVersion: 1, passphrase, createdAt: now(), fleet })).toString("base64");
+}
+function openBackup(file, passphrase) {
+  let backup;
+  try { backup = JSON.parse(Buffer.from(String(file), "base64").toString("utf8")); } catch { backup = null; }
+  if (!backup?.fixtureBackup) throw new Error("E_BACKUP_NOT_A_BACKUP: this file is not an SSH Control Center backup");
+  if (backup.formatVersion > 1) throw new Error("E_BACKUP_NEWER: this backup comes from a newer Master (format " + backup.formatVersion + "); update this Master first");
+  if (backup.damaged || backup.passphrase !== passphrase) throw new Error("E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED: the passphrase is wrong or the file is damaged");
+  return backup;
+}
+const backupSummary = b => ({ formatVersion: 1, createdAt: b.createdAt, nodeId: "fixture", label: MASTER_LABEL, os: "linux", hosts: b.fleet.targets.length, merges: b.fleet.merges.length, folders: b.fleet.folders.length });
+function restoreBackup({ file, passphrase }) {
+  if (!isEmpty()) throw new Error("E_RESTORE_NOT_EMPTY: this Master already has hosts; restore only works on a fresh install");
+  const backup = openBackup(file, passphrase);
+  Object.assign(s, structuredClone(backup.fleet));
+  s.backup = { lastBackupAt: backup.createdAt, restoredAt: now() };
+  return { ...backupSummary(backup), restartRequired: true };
+}
 function rpc(method, p = {}) {
   switch (method) {
     case "system.status": return { label: "UI fixture (no real service)", nodeId: "fixture", roles: ["master", "target"], version: "test", uptimeSeconds: 120 };
+    case "backup.status": return { ...s.backup, empty: isEmpty(), owner: true };
+    case "backup.create": { const file = makeBackup(p.passphrase); s.backup.lastBackupAt = now(); return { file }; }
+    case "backup.inspect": return backupSummary(openBackup(p.file, p.passphrase));
+    case "backup.restore": return restoreBackup(p);
     case "targets.list": return [...s.targets, ...relayedTargets()];
     case "targets.doctor": return { targetId: p.targetId, ok: true, stages: [{ name: "fixture", ok: true, message: "Isolated UI test only" }] };
     case "targets.update": { const t = s.targets.find(row => row.id === p.target?.id); Object.assign(t, p.target); return t; }
@@ -191,6 +224,19 @@ function command(name, args) {
     s.relays = s.relays.filter(row => row.masterId !== t.nodeId).concat({ masterId: t.nodeId, label: t.label, lastUsedAt: now(), revoked: false });
     return { status: "two-way", children: s.targets.length };
   }
+  // Stands in for the native save dialog: "saves" to /fixture/Backups under the default name.
+  if (name === "save_backup") {
+    const file = rpc("backup.create", { passphrase: args.passphrase }).file, path = "/fixture/Backups/" + need(args.name, "name");
+    savedBackup = { name: args.name, file }; return path;
+  }
+  // Stands in for the native open dialog: the last saved backup, or the kind asked for with POST /next-backup.
+  if (name === "open_backup") {
+    const kind = nextBackup; nextBackup = "";
+    if (kind === "other") return { name: "notes.sshccbak", file: Buffer.from("not a backup").toString("base64") };
+    // "good": a backup of this fixture's default fleet, passphrase "fixture passphrase".
+    if (kind) { const base = JSON.parse(Buffer.from(makeBackup("fixture passphrase"), "base64").toString("utf8")); if (kind === "newer") base.formatVersion = 2; if (kind === "damaged") base.damaged = true; return { name: kind + ".sshccbak", file: Buffer.from(JSON.stringify(base)).toString("base64") }; }
+    return savedBackup ? { ...savedBackup } : null;
+  }
   if (name === "rpc") return rpc(args.method, args.params || {});
   throw new Error("Unsupported fixture command: " + name);
 }
@@ -202,6 +248,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://fixture");
     if (url.pathname === "/calls") return json(res, calls);
     if (url.pathname === "/scenario" && req.method === "POST") { reset((await body(req)).flags || []); return json(res, { flags: [...flags] }); }
+    if (url.pathname === "/next-backup" && req.method === "POST") { nextBackup = (await body(req)).kind || ""; return json(res, { kind: nextBackup }); }
     if (url.pathname === "/pairing-code") { const row = url.searchParams.get("requestId") ? pairing(url.searchParams.get("requestId")) : s.pairings.find(p => p.state === "awaiting_approval") || pairing(null); return json(res, { code: pairingCode(row.requestId, url.searchParams.get("master") === "other" ? "other-master" : MASTER_ID) }); }
     if (url.pathname === "/rpc" && req.method === "POST") {
       const { command: name, args = {} } = await body(req);

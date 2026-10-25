@@ -208,6 +208,43 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     assert.equal(await notice.locator(".error-detail").count(), 0, "no detail line for an unmapped error");
     console.log("ok unmapped error");
 
+    // Backup and restore (roadmap entry 3): the section, both flows and their errors.
+    const fileWords = [...words, "sshcc", "backup", "sshccbak", "Backups", "fixture"];
+    await scenario(th, url, []); await th.reload(); await ready(th);
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator("#backup-section").waitFor();
+    await th.locator('[data-action="backup-start"]').click();
+    const backupForm = th.locator("#backup-pass-form");
+    await backupForm.locator('[name="pass"]').fill("short"); await backupForm.locator('[name="again"]').fill("shorter");
+    await assertThai(th, "backup passphrase", words);
+    await backupForm.locator('[name="pass"]').fill("a long passphrase for tests"); await backupForm.locator('[name="again"]').fill("a long passphrase!");
+    await assertThai(th, "backup passphrases differ", words);
+    await backupForm.locator('[name="again"]').fill("a long passphrase for tests");
+    await th.locator("#backup-save").click();
+    await th.locator('#backup-flow .add-step[data-step="3"][aria-current="step"]').waitFor();
+    await assertThai(th, "backup saved", fileWords);
+    await shots(th, "backup-saved");
+    await th.locator('#backup-flow [data-action="backup-close"]').first().click();
+    await th.locator("#backup-section").waitFor(); await assertThai(th, "backup section", words);
+    await scenario(th, url, ["empty"]); await th.reload(); await ready(th);
+    await th.locator("#restore-offer").waitFor(); await assertThai(th, "inventory restore offer", words);
+    await th.locator('#restore-offer [data-action="restore-start"]').click();
+    await assertThai(th, "restore choose", words);
+    await th.locator('[data-action="restore-choose"]').click();
+    await th.locator('#restore-pass-form [name="pass"]').fill("not the passphrase");
+    await th.locator('#restore-pass-form button[type="submit"]').click();
+    await th.locator("#backup-flow .add-check.bad").waitFor();
+    await assertThai(th, "restore wrong passphrase", fileWords);
+    await th.locator('#restore-pass-form [name="pass"]').fill("a long passphrase for tests");
+    await th.locator('#restore-pass-form button[type="submit"]').click();
+    await th.locator("#restore-off").waitFor();
+    await assertThai(th, "restore confirm", fileWords);
+    await shots(th, "restore-confirm");
+    await th.locator("#restore-off").check(); await th.locator("#restore-run").click();
+    await th.locator('#backup-flow .add-step[data-step="4"] .add-check.good').waitFor();
+    await assertThai(th, "restore done", fileWords);
+    console.log("ok thai backup and restore");
+
     // 6. Every EN key has a TH key (and no TH key is left over).
     const parity = await th.evaluate(async () => {
       const { strings, keyPaths } = await import("/strings.js");

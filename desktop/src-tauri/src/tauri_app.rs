@@ -262,6 +262,81 @@ async fn save_remote_file(
     .map_err(|error| error.to_string())?
 }
 
+/// Largest backup file the window reads; the service refuses anything bigger too.
+const MAX_BACKUP_BYTES: u64 = 4 * 1024 * 1024;
+
+// Backup: the native save dialog first, then the service seals the file with the
+// passphrase. The webview names no path; the file is written only where the person chose.
+#[tauri::command]
+async fn save_backup(
+    app: AppHandle,
+    passphrase: String,
+    name: String,
+    title: Option<String>,
+) -> Result<Option<String>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_title(title.unwrap_or_else(|| "Save the backup of this Master".into()))
+            .add_filter("SSH Control Center backup", &["sshccbak"])
+            .set_file_name(name)
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(|error| error.to_string())?;
+        let made = client::call(&Request {
+            method: "backup.create".into(),
+            params: serde_json::json!({ "passphrase": passphrase }),
+        })
+        .map_err(|error| format!("{error:#}"))?;
+        let bytes = STANDARD
+            .decode(made["file"].as_str().unwrap_or_default())
+            .map_err(|error| error.to_string())?;
+        std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+// Restore: the person picks a .sshccbak file in the native dialog. The webview gets
+// only its name and its (encrypted) bytes, never a path it could choose itself.
+#[tauri::command]
+async fn open_backup(app: AppHandle, title: Option<String>) -> Result<Option<Value>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_title(title.unwrap_or_else(|| "Choose a backup file".into()))
+            .add_filter("SSH Control Center backup", &["sshccbak"])
+            .blocking_pick_file()
+        else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(|error| error.to_string())?;
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)
+            .map_err(|error| error.to_string())?
+            .take(MAX_BACKUP_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_BACKUP_BYTES {
+            return Err("E_BACKUP_NOT_A_BACKUP: the file is too large to be a backup".into());
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Some(serde_json::json!({ "name": name, "file": STANDARD.encode(bytes) })))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 // Setup data is fetched again from the owner-authorized service. The webview
 // supplies only a request ID (and the dialog titles in the window's language);
 // writing is limited to the native save dialog.
@@ -566,6 +641,8 @@ pub fn run_tauri(isolated_window: bool) {
             save_json,
             save_setup,
             save_remote_file,
+            save_backup,
+            open_backup,
             merge_two_way,
             client_links,
             client_connect,

@@ -22,7 +22,9 @@ const state = {
   dc: { node: "dc", tab: "summary", query: "", collapsed: new Set(), seen: new Set(), filter: "running", adding: null, editing: null, ctView: "containers",
     monInterval: Number(localStorage.getItem("sshcc.monitorInterval")) || 5000, monPaused: false },
   monitor: new Map(),
-  containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} }
+  containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} },
+  // Backup and restore: the service's status line, and the open flow (null, or {mode: "backup" | "restore", …}).
+  backupStatus: null, backup: null
 };
 addReset();
 const native = (command, args = {}) => {
@@ -200,9 +202,11 @@ async function refreshLocal() {
   renderHeader();
 }
 async function refreshFleet() {
-  const [rows, merges, relays, folders, datacenters] = await Promise.all([
-    rpc("targets.list"), rpc("merges.list").catch(() => []), rpc("relays.list").catch(() => []), rpc("folders.list").catch(() => null), rpc("datacenters.list").catch(() => null)
+  const [rows, merges, relays, folders, datacenters, backup] = await Promise.all([
+    rpc("targets.list"), rpc("merges.list").catch(() => []), rpc("relays.list").catch(() => []), rpc("folders.list").catch(() => null), rpc("datacenters.list").catch(() => null),
+    rpc("backup.status").catch(() => null)
   ]);
+  state.backupStatus = backup;
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
   if (!Array.isArray(rows)) throw new Error(T.common.badFormat);
@@ -309,7 +313,7 @@ function resetHostState(id) {
   state.files = null; state.filesError = ""; state.file = null; state.pendingJob = null; state.newJob = false;
 }
 /** Pages whose open form or editor must not be redrawn by background refreshes. */
-const holdsForm = () => state.dc.node.startsWith("node:") || ["jobs", "files"].includes(state.dc.tab);
+const holdsForm = () => Boolean(state.backup) || state.dc.node.startsWith("node:") || ["jobs", "files"].includes(state.dc.tab);
 function sampledMem(id) {
   const samples = state.monitor.get(id)?.samples;
   return samples?.length > 1 ? monitorSeries(samples.slice(-2))[0]?.memory ?? null : null;
@@ -1103,12 +1107,13 @@ function renderSummaryLine() {
   return '<div id="inv-summary" class="inv-summary" role="status">' + body + when + '<button class="icon-button" data-action="refresh-fleet" aria-label="' + esc(T.inv.checkAgain) + '" title="' + esc(T.inv.checkAgainTitle) + '">' + icons.refresh + "</button></div>";
 }
 function renderDcPanel() {
+  if (state.backup) return renderBackupFlow();
   if (state.dc.adding) return renderAddHost(state.dc.adding);
   const node = state.dc.node, found = node === "dc" ? null : dcLookup(node);
   if (node !== "dc" && !found) { state.dc.node = "dc"; return renderDcPanel(); }
   if (!found) {
     state.view = "graph";
-    return renderBanner() + renderSummaryLine() + renderFleetTools();
+    return renderBanner() + renderSummaryLine() + renderRestoreOffer() + renderFleetTools();
   }
   if (found.kind === "master") {
     const master = found.master, target = pageTarget();
@@ -1120,7 +1125,8 @@ function renderDcPanel() {
       '<div class="form-actions"><button class="primary" data-action="dc-add" data-self="1">' + t.setUp + "</button></div></div></div>";
     const body = state.dc.tab === "summary"
       ? '<div class="stat-grid">' + stat(t.role, master.current ? t.currentMaster : t.mergedMaster) + stat(t.targetHosts, String(master.machines.length)) + stat(t.online, String(dcOnline(master.machines))) + "</div>" +
-        '<section class="section mt"><div class="section-heading"><h2>' + t.targetHosts + "</h2></div>" + dcMachineTable(master.machines) + "</section>"
+        '<section class="section mt"><div class="section-heading"><h2>' + t.targetHosts + "</h2></div>" + dcMachineTable(master.machines) + "</section>" +
+        (master.current ? renderBackupSection() : "")
       : state.dc.tab === "jobs" ? (target ? renderJobs(target) : needsSelf)
       : state.dc.tab === "files" ? (target ? renderFiles(target) : needsSelf)
       : state.dc.tab === "monitoring" ? renderMonitorTab(dcKey(master.item), master.label) : renderContainerTab(dcKey(master.item), master.label);
@@ -1150,6 +1156,153 @@ function renderDcPanel() {
   const body = state.dc.tab === "summary" ? renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
     : state.dc.tab === "monitoring" ? renderMonitorTab(item.id, item.label || item.id) : renderContainerTab(item.id, item.label || item.id);
   return head + tabs + body;
+}
+/* Backup and restore (roadmap entry 3). The section sits on the current Master's Summary tab; each action opens a
+   one-column flow in the same step layout as Add host. A new passphrase stays in its fields; a restore keeps the one that
+   opened the file only while the flow is open (closing or finishing the flow drops it). */
+const MIN_PASSPHRASE = 12;
+async function refreshBackupStatus() { state.backupStatus = await rpc("backup.status").catch(() => state.backupStatus); }
+function backupLastLine() {
+  const t = T.backup, status = state.backupStatus;
+  return status?.lastBackupAt ? t.last(timestamp(status.lastBackupAt)) : t.never;
+}
+function renderBackupSection() {
+  const t = T.backup, status = state.backupStatus, owner = status?.owner !== false, empty = status?.empty === true;
+  return '<section class="section mt" id="backup-section"><div class="section-heading"><div><h2>' + t.title + '</h2><p id="backup-last">' + esc(backupLastLine()) + "</p></div></div>" +
+    '<p class="help">' + t.lead + "</p>" +
+    '<div class="form-actions"><button data-action="backup-start"' + (owner ? "" : ' disabled data-blocked title="' + esc(t.notOwner) + '"') + ">" + t.backUp + "</button>" +
+    '<button data-action="restore-start"' + (empty ? "" : " disabled data-blocked") + ">" + t.restore + "</button></div>" +
+    (owner ? "" : '<p class="help mt">' + t.notOwner + "</p>") + (empty ? "" : '<p class="help mt">' + t.restoreOnlyEmpty + "</p>") + "</section>";
+}
+/** One step card, as in the Add host column: the current step has aria-current and the acid rule. */
+function flowCard(n, now, title, body) {
+  const status = n === now ? "is-now" : n < now ? "is-done" : "is-later";
+  return '<section class="add-step ' + status + '" data-step="' + n + '"' + (status === "is-now" ? ' aria-current="step"' : "") + '><div class="add-n">' + (status === "is-done" ? "✓" : n) + "</div>" +
+    '<div class="add-body"><h2>' + title + "</h2>" + body + "</div></section>";
+}
+/** Moves the current-step marking without a re-render, so typed passphrases and the caret stay put. */
+function setFlowStep(root, now) {
+  for (const card of root?.querySelectorAll(".add-step[data-step]") || []) {
+    const n = Number(card.dataset.step), status = n === now ? "is-now" : n < now ? "is-done" : "is-later";
+    card.classList.remove("is-now", "is-done", "is-later"); card.classList.add(status);
+    if (status === "is-now") card.setAttribute("aria-current", "step"); else card.removeAttribute("aria-current");
+    card.querySelector(".add-n").textContent = status === "is-done" ? "✓" : String(n);
+  }
+}
+function renderBackupFlow() {
+  const t = T.backup, flow = state.backup;
+  if (flow.mode === "restore") return renderRestoreFlow();
+  const now = flow.saved ? 3 : flow.valid ? 2 : 1;
+  const close = '<button data-action="backup-close">' + icons.close + t.close + "</button>";
+  const pass = '<form id="backup-pass-form" class="add-body" autocomplete="off">' +
+    '<label>' + t.pass + '<input name="pass" type="password" autocomplete="new-password" spellcheck="false" data-focus' + (flow.saved ? " disabled" : "") + "></label>" +
+    '<label>' + t.again + '<input name="again" type="password" autocomplete="new-password" spellcheck="false"' + (flow.saved ? " disabled" : "") + "></label>" +
+    '<p class="add-check" id="backup-check" aria-live="polite">' + esc(t.passIdle(MIN_PASSPHRASE)) + "</p>" +
+    '<div class="callout pending">' + icons.alert + "<div><strong>" + t.keyTitle + "</strong><p>" + t.keyFull + "</p><p>" + t.keyLost + "</p></div></div></form>";
+  const save = flow.saved ? '<p class="add-check">' + icons.check + esc(t.saved) + "</p>"
+    : '<div class="form-actions"><button class="primary" id="backup-save" data-action="backup-save"' + (flow.valid ? "" : " disabled") + ">" + t.save + "</button></div>" +
+      (flow.error ? '<p class="add-check bad" role="alert">' + errorHtml(explain(flow.error)) + "</p>" : "");
+  const done = flow.saved ? '<p class="wrap">' + esc(t.savedTo(flow.saved)) + '</p><p class="help">' + t.keepAway + '</p><div class="form-actions"><button class="primary" data-action="backup-close">' + t.done + "</button></div>" : "";
+  return '<div id="backup-flow" class="add-flow">' + heading(t.backupTitle, t.backupLead, close) +
+    '<div class="add-column">' + flowCard(1, now, t.backupSteps[0], pass) + flowCard(2, now, t.backupSteps[1], save) + flowCard(3, now, t.backupSteps[2], done) + "</div></div>";
+}
+/** The line under the passphrase fields, the Save button and the current step, from what is typed. */
+function onBackupInput(form) {
+  const t = T.backup, pass = form.pass.value, again = form.again.value, short = [...pass].length < MIN_PASSPHRASE;
+  state.backup.valid = !short && pass === again;
+  const [text, tone] = !pass ? [t.passIdle(MIN_PASSPHRASE), ""] : short ? [t.short(MIN_PASSPHRASE), again ? "bad" : ""]
+    : !again ? [t.passIdle(MIN_PASSPHRASE), ""] : pass !== again ? [t.mismatch, "bad"] : [t.match, "good"];
+  const line = $("#backup-check");
+  line.textContent = text; line.className = "add-check" + (tone ? " " + tone : "");
+  $("#backup-save").disabled = !state.backup.valid;
+  setFlowStep($("#backup-flow"), state.backup.valid ? 2 : 1);
+}
+/** On an empty Master's Inventory: restore a backup, next to adding hosts one by one. */
+function renderRestoreOffer() {
+  if (state.backupStatus?.empty !== true || state.targets.length) return "";
+  return '<div class="callout" id="restore-offer">' + icons.info + "<div><strong>" + T.inv.restoreTitle + "</strong><p>" + T.inv.restoreText + "</p>" +
+    '<div class="form-actions"><button class="primary" data-action="restore-start">' + T.backup.restore + '</button><button data-action="add-host">' + T.side.addHost + "</button></div></div></div>";
+}
+function renderRestoreFlow() {
+  const t = T.backup, flow = state.backup, summary = flow.summary, result = flow.result;
+  const now = result ? 4 : summary ? 3 : flow.file ? 2 : 1;
+  const error = n => flow.error && flow.errorStep === n ? '<p class="add-check bad" role="alert">' + errorHtml(explain(flow.error)) + "</p>" : "";
+  const choose = (flow.file ? '<p class="wrap">' + esc(t.chosen(flow.file.name)) + "</p>" : "") +
+    (result ? "" : '<div class="form-actions"><button' + (flow.file ? "" : ' class="primary" data-focus') + ' data-action="restore-choose">' + (flow.file ? t.chooseAgain : t.choose) + "</button></div>") + error(1);
+  const pass = summary ? '<p class="add-check">' + icons.check + esc(t.opened(summary.label)) + "</p>"
+    : flow.file ? '<form id="restore-pass-form" class="add-body" autocomplete="off"><label>' + t.passOpen +
+      '<input name="pass" type="password" autocomplete="current-password" spellcheck="false" data-focus></label>' +
+      '<div class="form-actions"><button type="submit" class="primary">' + t.unlock + "</button></div>" + error(2) + "</form>" : "";
+  const facts = summary ? '<dl class="facts"><dt>' + t.summaryMaster + "</dt><dd>" + esc(summary.label) + "</dd><dt>" + t.summaryDate + "</dt><dd>" + esc(timestamp(summary.createdAt)) +
+    "</dd><dt>" + t.summaryHosts + "</dt><dd>" + esc(summary.hosts) + "</dd><dt>" + t.summaryMerges + "</dt><dd>" + esc(summary.merges) + "</dd><dt>" + t.summaryFolders + "</dt><dd>" + esc(summary.folders) + "</dd></dl>" +
+    (result ? "" : '<div class="callout pending">' + icons.alert + "<div><strong>" + t.offTitle + "</strong><p>" + t.offText + "</p></div></div>" +
+      '<label class="check-label is-body"><input type="checkbox" id="restore-off" data-focus> ' + t.oldOff + "</label>" +
+      '<div class="form-actions"><button class="primary" id="restore-run" data-action="restore-run" disabled>' + t.restoreNow + "</button></div>" + error(3)) : "";
+  const done = !result ? "" : flow.restarting ? '<p class="add-check" aria-live="polite">' + esc(t.restarting) + "</p>"
+    : '<p class="add-check good" aria-live="polite">' + icons.check + esc(t.restored(result.label, result.hosts)) + "</p>" +
+      '<div class="form-actions"><button class="primary" data-action="backup-close" data-focus>' + t.openInventory + "</button></div>";
+  const close = result ? "" : '<button data-action="backup-close">' + icons.close + t.close + "</button>";
+  return '<div id="backup-flow" class="add-flow">' + heading(t.restoreTitle, t.restoreLead, close) + '<div class="add-column">' +
+    flowCard(1, now, t.restoreSteps[0], choose) + flowCard(2, now, t.restoreSteps[1], pass) + flowCard(3, now, t.restoreSteps[2], facts) + flowCard(4, now, t.restoreSteps[3], done) + "</div></div>";
+}
+/** Re-renders the flow keeping what is typed, then focuses the current step's main control. */
+function paintFlow() {
+  const restore = keepInput($("#main")); render(); restore();
+  $('#backup-flow [aria-current="step"] [data-focus]')?.focus();
+}
+async function chooseBackup() {
+  const flow = state.backup;
+  try {
+    const picked = await native("open_backup", { title: T.dialogs.openBackup });
+    if (!picked) return;
+    Object.assign(flow, { file: picked, summary: null, passphrase: "", error: "", errorStep: 0 });
+  } catch (error) { Object.assign(flow, { error: String(error?.message || error), errorStep: 1 }); }
+  render(); $('#backup-flow [aria-current="step"] [data-focus]')?.focus();
+}
+async function openBackup(form) {
+  const flow = state.backup;
+  try {
+    flow.summary = await rpc("backup.inspect", { file: flow.file.file, passphrase: form.pass.value });
+    Object.assign(flow, { passphrase: form.pass.value, error: "", errorStep: 0 });
+  } catch (error) { Object.assign(flow, { error: String(error?.message || error), errorStep: 2 }); }
+  paintFlow();
+  if (flow.errorStep === 2) $("#restore-pass-form [name=pass]")?.select();
+}
+/** Restore, then wait for the service to come back as the restored Master (it restarts to load it). */
+async function runRestore() {
+  const flow = state.backup;
+  try {
+    flow.result = await rpc("backup.restore", { file: flow.file.file, passphrase: flow.passphrase });
+    Object.assign(flow, { error: "", errorStep: 0, restarting: true });
+  } catch (error) { Object.assign(flow, { error: String(error?.message || error), errorStep: 3 }); paintFlow(); return; }
+  delete flow.file.file; delete flow.passphrase; // not needed any more
+  paintFlow();
+  for (const until = Date.now() + 120000; Date.now() < until;) {
+    const status = await rpc("system.status").catch(() => null);
+    if (status?.nodeId === flow.result.nodeId) break;
+    await new Promise(done => setTimeout(done, 1000));
+  }
+  flow.restarting = false;
+  await refreshLocal();
+  try { await refreshFleet(); } catch (error) { notify(error?.message || error, true); }
+  if (state.backup === flow) paintFlow(); else render();
+}
+/** Today's date as YYYY-MM-DD and the Master name as a file-name part, for the default file name. */
+const fileDate = () => { const d = new Date(), two = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()); };
+const fileNamePart = text => String(text || "master").normalize("NFKC").replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "master";
+async function saveBackup() {
+  const form = $("#backup-pass-form");
+  onBackupInput(form);
+  if (!state.backup.valid) return;
+  state.backup.error = "";
+  try {
+    const path = await native("save_backup", { passphrase: form.pass.value, name: T.backup.fileName(fileNamePart(state.service?.label), fileDate()), title: T.dialogs.saveBackup });
+    if (!path) return;
+    state.backup.saved = path;
+  } catch (error) { state.backup.error = String(error?.message || error); }
+  await refreshBackupStatus();
+  const restore = keepInput($("#main")); render(); restore();
+  $('#backup-flow [aria-current="step"] button.primary')?.focus();
 }
 function ctBadge(status) {
   const styles = { running: "good", exited: "", created: "pending", paused: "pending", restarting: "running", dead: "bad", removing: "pending" };
@@ -1551,7 +1704,7 @@ document.addEventListener("click", event => {
   const egg = event.target.closest("[data-egg]");
   if (egg && !event.target.closest(".marker")) { playEgg(egg); return; }
   const nav = event.target.closest("[data-page]");
-  if (nav) { if (nav.dataset.page === "datacenter") { state.dc.node = "dc"; state.dc.adding = null; } void navigate(nav.dataset.page); return; }
+  if (nav) { state.backup = null; if (nav.dataset.page === "datacenter") { state.dc.node = "dc"; state.dc.adding = null; } void navigate(nav.dataset.page); return; }
   const button = event.target.closest("[data-action]");
   if (button?.closest("#dc-menu")) closeDcMenu();
   if (!button) return;
@@ -1578,6 +1731,12 @@ document.addEventListener("click", event => {
     if (action === "open-paired-target") { state.pairing = null; addReset(); await refreshFleet(); await selectTarget(button.dataset.id); }
     if (action === "back-fleet") { state.page = "datacenter"; state.dc.node = "dc"; state.selected = null; render(); }
     if (action === "tree-toggle") { state.dc.treeHidden = state.dc.treeHidden !== true; renderHeader(); return; }
+    if (action === "backup-start") { state.backup = { mode: "backup", valid: false, saved: "", error: "" }; render(); $("#backup-flow [data-focus]")?.focus(); return; }
+    if (action === "backup-save") return saveBackup();
+    if (action === "backup-close") { const restored = state.backup?.result; state.backup = null; if (restored) { state.page = "datacenter"; state.dc.node = "dc"; } render(); return; }
+    if (action === "restore-start") { state.page = "datacenter"; state.dc.adding = null; state.backup = { mode: "restore", file: null, summary: null, result: null, error: "", errorStep: 0 }; paintFlow(); return; }
+    if (action === "restore-choose") return chooseBackup();
+    if (action === "restore-run") { if ($("#restore-off")?.checked) return runRestore(); return; }
     if (action === "add-host" || action === "dc-add") {
       state.page = "datacenter"; state.dc.adding = { folder: button.dataset.folder || "", site: button.dataset.site || "", self: Boolean(button.dataset.self) };
       state.pairing = null; state.pairedMaster = null; addReset(); render();
@@ -1648,7 +1807,7 @@ document.addEventListener("click", event => {
     if (action === "manage-merge") return navigate("masters");
     if (action === "dc-select") {
       if (state.page !== "datacenter") state.page = "datacenter";
-      state.dc.node = button.dataset.node; state.dc.adding = null; state.ctLogs = null;
+      state.dc.node = button.dataset.node; state.dc.adding = null; state.backup = null; state.ctLogs = null;
       if (state.dc.node.startsWith("node:")) await selectTarget(state.dc.node.slice(5), ["summary", "jobs", "files", "containers", "monitoring"].includes(state.dc.tab) ? state.dc.tab : "summary");
       else { resetHostState(pageTarget()?.id); render(); }
       if (machineTab("jobs")) await refreshJobs();
@@ -1818,6 +1977,8 @@ document.addEventListener("click", event => {
 document.addEventListener("input", event => {
   if (event.target.form?.id === "create-pairing" && ["address", "port"].includes(event.target.name)) onWhereInput(event.target.form);
   if (event.target.id === "add-code") onCodeInput(event.target, event.inputType === "insertFromPaste");
+  if (event.target.form?.id === "backup-pass-form") onBackupInput(event.target.form);
+  if (event.target.id === "restore-off") $("#restore-run").disabled = !event.target.checked;
   if (event.target.closest?.("#confirm-delete")) { const form = $("#confirm-delete"); form.querySelector('[type="submit"]').disabled = event.target.value !== form.dataset.name; }
   if (event.target.id === "file-filter") { state.fileQuery = event.target.value; $("#files-output").innerHTML = renderFileList(); }
   if (event.target.id === "fleet-search") { state.query = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
@@ -1835,6 +1996,8 @@ document.addEventListener("submit", event => {
   const values = Object.fromEntries(new FormData(form));
   const submittedPairing = state.pairing;
   void busy($('button[type="submit"]', form), async () => {
+    if (form.id === "backup-pass-form") return saveBackup();
+    if (form.id === "restore-pass-form") { if (!state.backup?.summary) return openBackup(form); return; }
     if (form.id === "open-shell-session") {
       $("#shell-dialog").close();
       return openShell(values.targetId, values.ownerSessionId);
