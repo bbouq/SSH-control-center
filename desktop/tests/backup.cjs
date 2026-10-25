@@ -184,8 +184,26 @@ const checks = {
     await page.locator("#restore-run").click();
     await sentence(3, "This Master already has hosts. Restore only works on a fresh install");
   },
+  /** After a restore: Masters still using the old address, and the two-way Merge to enable again. */
+  async "follow-ups"(page, url, d) {
+    await page.goto(url);
+    await openCurrentMaster(page);
+    await backUp(page, url, d);
+    await page.request.post(url + "/scenario", { data: { flags: ["empty"] } });
+    await page.reload();
+    await restore(page, d, PASSPHRASE);
+    await page.locator("#restore-off").check(); await page.locator("#restore-run").click();
+    const after = page.locator("#restore-follow-ups");
+    await after.waitFor();
+    await after.getByText("Update this Master’s address on Peer Master").waitFor();
+    await after.getByText("Update this Master’s address on Branch Master").waitFor();
+    assert.equal(await after.getByText("Relay-only Master").count(), 0, "a Master with merging disabled no longer reaches this one");
+    await after.getByText("Two-way needs enabling again").waitFor();
+    await after.locator('[data-two-way="branch-master"] [data-action="open-two-way"]').waitFor();
+    await shots(page, "restore-follow-ups");
+  },
 };
-const scenarios = { "back-up": [], "backed-up": ["backed-up"], "save-cancelled": [], "round-trip": [], "restore-errors": ["empty"] };
+const scenarios = { "back-up": [], "backed-up": ["backed-up"], "save-cancelled": [], "round-trip": [], "restore-errors": ["empty"], "follow-ups": ["masters-page", "two-way-merge"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

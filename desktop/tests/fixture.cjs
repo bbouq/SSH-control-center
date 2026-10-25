@@ -7,6 +7,7 @@
 //   masters-page     adds two hosts that are Masters (one merged, one not) and a Master that controls this one both
 //                    directly and through a Merge, plus one that only merged this Master (merging disabled)
 //   backed-up        this Master has a last backup date
+//   two-way-merge    with masters-page: the Merge with branch-master is two-way (it shows as a relay here too)
 // Backups: save_backup "writes" to /fixture/Backups and keeps the file in memory (across scenario resets), so a test can
 // back up, POST /scenario {"flags":["empty"]} and restore it. POST /next-backup {"kind":"good"|"newer"|"damaged"|"other"} makes the
 // next open_backup return that kind of file instead (once).
@@ -37,6 +38,10 @@ function reset(list) {
     s.merges.push({ targetId: "branch-master", label: "Branch Master", status: "merged", error: null, syncedAt: now(), children: children("branch-master"), reverse: null });
     s.masters.push({ id: "peer-both", label: "Peer Master", publicKey: "TEST", revoked: false });
     s.relays.push({ masterId: "peer-both", label: "Peer Master", lastUsedAt: now(), revoked: false }, { masterId: "peer-relay", label: "Relay-only Master", lastUsedAt: now(), revoked: true });
+    if (flags.has("two-way-merge")) {
+      s.merges[0].reverse = { status: "two-way", error: null };
+      s.relays.push({ masterId: "branch-master-node", label: "Branch Master", lastUsedAt: now(), revoked: false });
+    }
   }
 }
 const now = () => new Date().toISOString();
@@ -128,7 +133,13 @@ function restoreBackup({ file, passphrase }) {
   const backup = openBackup(file, passphrase);
   Object.assign(s, structuredClone(backup.fleet));
   s.backup = { lastBackupAt: backup.createdAt, restoredAt: now() };
-  return { ...backupSummary(backup), restartRequired: true };
+  // As the Master does: two-way Merges come back one-way, and the Masters that reach this one are listed.
+  const twoWayAgain = s.merges.filter(m => m.reverse?.status === "two-way").map(m => ({ targetId: m.targetId, label: m.label }));
+  for (const merge of s.merges) merge.reverse = null;
+  const reached = new Map();
+  for (const m of s.masters.filter(m => !m.revoked && m.id !== MASTER_ID)) reached.set(m.id, { masterId: m.id, label: m.label, ways: ["direct"] });
+  for (const r of s.relays.filter(r => !r.revoked)) { const row = reached.get(r.masterId) || { masterId: r.masterId, label: r.label, ways: [] }; row.ways.push("merge"); reached.set(r.masterId, row); }
+  return { ...backupSummary(backup), restartRequired: true, reachedBy: [...reached.values()], twoWayAgain, checkPaths: [] };
 }
 function rpc(method, p = {}) {
   switch (method) {

@@ -89,5 +89,15 @@ pub fn restore(file: &Path, call: impl Fn(&str, Value) -> Result<Value>) -> Resu
     if !confirm("Is the old machine off?")? {
         bail!("restore cancelled: turn the old machine off first");
     }
-    call("backup.restore", json!({ "file": encoded, "passphrase": passphrase }))
+    let result = call("backup.restore", json!({ "file": encoded, "passphrase": passphrase }))?;
+    for master in result["reachedBy"].as_array().into_iter().flatten() {
+        eprintln!("Update this Master's address on {}", master["label"].as_str().unwrap_or("?"));
+    }
+    for merge in result["twoWayAgain"].as_array().into_iter().flatten() {
+        eprintln!("Two-way with {} needs enabling again (Masters page, Enable two-way)", merge["label"].as_str().unwrap_or("?"));
+    }
+    for path in result["checkPaths"].as_array().into_iter().flatten() {
+        eprintln!("Check this path on {}: {}", path["label"].as_str().unwrap_or("?"), path["path"].as_str().unwrap_or("?"));
+    }
+    Ok(result)
 }

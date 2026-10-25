@@ -1239,11 +1239,23 @@ function renderRestoreFlow() {
       '<label class="check-label is-body"><input type="checkbox" id="restore-off" data-focus> ' + t.oldOff + "</label>" +
       '<div class="form-actions"><button class="primary" id="restore-run" data-action="restore-run" disabled>' + t.restoreNow + "</button></div>" + error(3)) : "";
   const done = !result ? "" : flow.restarting ? '<p class="add-check" aria-live="polite">' + esc(t.restarting) + "</p>"
-    : '<p class="add-check good" aria-live="polite">' + icons.check + esc(t.restored(result.label, result.hosts)) + "</p>" +
+    : '<p class="add-check good" aria-live="polite">' + icons.check + esc(t.restored(result.label, result.hosts)) + "</p>" + renderRestoreFollowUps(result) +
       '<div class="form-actions"><button class="primary" data-action="backup-close" data-focus>' + t.openInventory + "</button></div>";
   const close = result ? "" : '<button data-action="backup-close">' + icons.close + t.close + "</button>";
   return '<div id="backup-flow" class="add-flow">' + heading(t.restoreTitle, t.restoreLead, close) + '<div class="add-column">' +
     flowCard(1, now, t.restoreSteps[0], choose) + flowCard(2, now, t.restoreSteps[1], pass) + flowCard(3, now, t.restoreSteps[2], facts) + flowCard(4, now, t.restoreSteps[3], done) + "</div></div>";
+}
+/** After a restore: other Masters still using the old address, two-way Merges to enable again, jump keys left behind. */
+function renderRestoreFollowUps(result) {
+  const t = T.backup, reached = result.reachedBy || [], twoWay = result.twoWayAgain || [], paths = result.checkPaths || [];
+  if (!reached.length && !twoWay.length && !paths.length) return "";
+  const list = rows => '<ul class="follow-ups">' + rows.join("") + "</ul>";
+  const two = row => { const merge = state.merges.find(item => item.targetId === row.targetId); return merge ? twoWayButton(merge, mastersText.enableTwoWay, "small") : ""; };
+  return '<div class="callout pending" id="restore-follow-ups">' + icons.alert + "<div><strong>" + t.afterTitle + "</strong>" +
+    (reached.length ? "<p>" + t.reachedHelp + "</p>" + list(reached.map(row => "<li>" + esc(t.updateAddress(row.label || row.masterId)) + "</li>")) : "") +
+    (twoWay.length ? "<p><strong>" + t.twoWayAgain + "</strong>" + t.twoWayHelp + "</p>" + list(twoWay.map(row => '<li data-two-way="' + esc(row.targetId) + '"><span>' + esc(row.label || row.targetId) + "</span> " + two(row) + "</li>")) : "") +
+    (paths.length ? "<p>" + t.pathsHelp + "</p>" + list(paths.map(row => "<li>" + esc(t.checkPath(row.label || row.targetId)) + " <code>" + esc(row.path) + "</code></li>")) : "") +
+    "</div></div>";
 }
 /** Re-renders the flow keeping what is typed, then focuses the current step's main control. */
 function paintFlow() {

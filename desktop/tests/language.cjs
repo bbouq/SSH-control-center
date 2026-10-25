@@ -243,6 +243,23 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator("#restore-off").check(); await th.locator("#restore-run").click();
     await th.locator('#backup-flow .add-step[data-step="4"] .add-check.good').waitFor();
     await assertThai(th, "restore done", fileWords);
+    // What the new machine can't fix alone (a Master with a two-way Merge).
+    await scenario(th, url, ["masters-page", "two-way-merge"]); await th.reload(); await ready(th);
+    const twoWayWords = [...fileWords, ...await fixtureWords(th, url)];
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator('[data-action="backup-start"]').click();
+    await backupForm.locator('[name="pass"]').fill("a long passphrase for tests"); await backupForm.locator('[name="again"]').fill("a long passphrase for tests");
+    await th.locator("#backup-save").click();
+    await th.locator('#backup-flow .add-step[data-step="3"][aria-current="step"]').waitFor();
+    await scenario(th, url, ["empty"]); await th.reload(); await ready(th);
+    await th.locator('#restore-offer [data-action="restore-start"]').click();
+    await th.locator('[data-action="restore-choose"]').click();
+    await th.locator('#restore-pass-form [name="pass"]').fill("a long passphrase for tests");
+    await th.locator('#restore-pass-form button[type="submit"]').click();
+    await th.locator("#restore-off").check(); await th.locator("#restore-run").click();
+    await th.locator("#restore-follow-ups").waitFor();
+    await assertThai(th, "restore follow-ups", twoWayWords);
+    await shots(th, "restore-follow-ups");
     console.log("ok thai backup and restore");
 
     // 6. Every EN key has a TH key (and no TH key is left over).

@@ -214,6 +214,80 @@ fn key_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The key file name when `path` lies in the old Master's keys directory, so the same file can be pointed at under
+/// this machine's data directory. Windows paths compare without case and with either slash.
+fn old_key_name(path: &str, old_dir: &str, old_os: &str) -> Option<String> {
+    let windows = old_os == "windows";
+    let plain = |value: &str| {
+        let value = value.strip_prefix(r"\\?\").unwrap_or(value).replace('\\', "/");
+        if windows { value.to_ascii_lowercase() } else { value }
+    };
+    let prefix = format!("{}/keys/", plain(old_dir).trim_end_matches('/'));
+    let candidate = plain(path);
+    let rest = candidate.strip_prefix(&prefix)?;
+    // The name keeps its own case; only the comparison ignores it.
+    let original = path.replace('\\', "/");
+    let name = &original[original.len() - rest.len()..];
+    key_name(name).ok().map(|()| name.to_owned())
+}
+/// Rewrites route identity files for this machine and lists the ones outside the old keys directory.
+fn adapt_targets(rows: &mut [Map<String, Value>], contents: &Contents, keys: &Path) -> Result<Vec<Value>> {
+    let mut check = Vec::new();
+    for row in rows {
+        let Some(Value::String(text)) = row.get("document") else { continue };
+        let mut target: Value = serde_json::from_str(text).context("E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED: invalid host record")?;
+        let mut changed = false;
+        let (id, label) = (target["id"].clone(), target["label"].clone());
+        for route in target["routes"].as_array_mut().into_iter().flatten() {
+            let Some(path) = route["proxyJump"]["identityFile"].as_str().map(str::to_owned) else { continue };
+            match old_key_name(&path, &contents.data_dir, &contents.os) {
+                Some(name) => {
+                    route["proxyJump"]["identityFile"] = json!(keys.join(name).to_string_lossy());
+                    changed = true;
+                }
+                None => check.push(json!({"targetId":id,"label":label,"path":path})),
+            }
+        }
+        if changed {
+            row.insert("document".into(), json!(target.to_string()));
+        }
+    }
+    Ok(check)
+}
+/// Two-way Merges need OpenSSH Server and the sshcc-bridge account, which a fresh machine does not have, so they
+/// come back one-way with Enable two-way offered again.
+fn adapt_merges(rows: &mut [Map<String, Value>]) -> Result<Vec<Value>> {
+    let mut again = Vec::new();
+    for row in rows {
+        let Some(Value::String(text)) = row.get("document") else { continue };
+        let mut merge: Value = serde_json::from_str(text).context("E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED: invalid Merge record")?;
+        if merge["reverse"].is_null() {
+            continue;
+        }
+        if merge["reverse"]["status"] == "two-way" {
+            again.push(json!({"targetId":merge["targetId"],"label":merge["label"]}));
+        }
+        merge["reverse"] = Value::Null;
+        row.insert("document".into(), json!(merge.to_string()));
+    }
+    Ok(again)
+}
+/// Other Masters that reach this one and still use its old address: allowed directly, or merging it.
+fn reached_by(tables: &BTreeMap<String, Vec<Map<String, Value>>>) -> Vec<Value> {
+    let mut found: BTreeMap<String, (String, Vec<&str>)> = BTreeMap::new();
+    let live = |row: &Map<String, Value>| !matches!(row.get("revoked"), Some(Value::Number(n)) if n.as_i64() != Some(0));
+    for row in tables.get("masters").into_iter().flatten().filter(|row| live(row)) {
+        let master: Value = row.get("document").and_then(Value::as_str).and_then(|d| serde_json::from_str(d).ok()).unwrap_or_default();
+        let (Some(id), label) = (master["id"].as_str(), master["label"].as_str().unwrap_or_default()) else { continue };
+        found.entry(id.into()).or_insert_with(|| (label.into(), Vec::new())).1.push("direct");
+    }
+    for row in tables.get("relays").into_iter().flatten().filter(|row| live(row)) {
+        let (Some(id), label) = (row.get("master_id").and_then(Value::as_str), row.get("label").and_then(Value::as_str).unwrap_or_default()) else { continue };
+        found.entry(id.into()).or_insert_with(|| (label.into(), Vec::new())).1.push("merge");
+    }
+    found.into_iter().map(|(id, (label, ways))| json!({"masterId":id,"label":label,"ways":ways})).collect()
+}
+
 fn role(config: &Config) -> Result<()> {
     ensure!(config.roles.iter().any(|r| r == "master"), "E_ROLE: master role is required");
     Ok(())
@@ -270,10 +344,17 @@ pub fn restore(state: &Path, config: &Config, bytes: &[u8], passphrase: &str) ->
         is_empty(&db)?,
         "E_RESTORE_NOT_EMPTY: this Master already has hosts; restore only works on a fresh install"
     );
-    let (version, contents) = open(bytes, passphrase)?;
+    let (version, mut contents) = open(bytes, passphrase)?;
     for name in contents.keys.keys() {
         key_name(name)?;
     }
+    let reached = reached_by(&contents.tables);
+    let mut targets = contents.tables.remove("targets").unwrap_or_default();
+    let check_paths = adapt_targets(&mut targets, &contents, &state.join("keys"))?;
+    contents.tables.insert("targets".into(), targets);
+    let mut merges = contents.tables.remove("merges").unwrap_or_default();
+    let two_way = adapt_merges(&mut merges)?;
+    contents.tables.insert("merges".into(), merges);
     let keys = contents
         .keys
         .iter()
@@ -342,6 +423,9 @@ pub fn restore(state: &Path, config: &Config, bytes: &[u8], passphrase: &str) ->
     write_record(state, &Record { last_backup_at: Some(contents.created_at.clone()), restored_at: Some(now()) })?;
     let mut result = summary(version, &contents);
     result["restartRequired"] = json!(true);
+    result["reachedBy"] = json!(reached);
+    result["twoWayAgain"] = json!(two_way);
+    result["checkPaths"] = json!(check_paths);
     Ok(result)
 }
 
@@ -371,4 +455,23 @@ pub fn handle(state: &Path, config: &Config, req: &Request, owner: bool) -> Resu
 /// Opening a file takes whatever passphrase was set; the length rule is for new backups only.
 fn required(p: &Value) -> Result<&str> {
     p.get("passphrase").and_then(Value::as_str).context("E_ARGUMENT: missing passphrase")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::old_key_name;
+    #[test]
+    fn jump_keys_move_across_windows_and_ubuntu() {
+        let win = r"C:\ProgramData\SSHControlCenter";
+        assert_eq!(old_key_name(r"C:\ProgramData\SSHControlCenter\keys\Jump.ed25519", win, "windows").as_deref(), Some("Jump.ed25519"));
+        assert_eq!(old_key_name("c:/programdata/sshcontrolcenter/keys/jump.ed25519", win, "windows").as_deref(), Some("jump.ed25519"));
+        assert_eq!(old_key_name(r"\\?\C:\ProgramData\SSHControlCenter\keys\jump.ed25519", win, "windows").as_deref(), Some("jump.ed25519"));
+        assert_eq!(old_key_name("/var/lib/sshcc/keys/jump.ed25519", "/var/lib/sshcc", "linux").as_deref(), Some("jump.ed25519"));
+        assert_eq!(old_key_name("/var/lib/sshcc/keys/jump.ed25519", "/var/lib/sshcc/", "linux").as_deref(), Some("jump.ed25519"));
+        // Case matters on Ubuntu; nested folders and other places are not the old keys directory.
+        assert_eq!(old_key_name("/var/lib/SSHCC/keys/jump.ed25519", "/var/lib/sshcc", "linux"), None);
+        assert_eq!(old_key_name("/var/lib/sshcc/keys/sub/jump.ed25519", "/var/lib/sshcc", "linux"), None);
+        assert_eq!(old_key_name("/opt/keys/jump.ed25519", "/var/lib/sshcc", "linux"), None);
+        assert_eq!(old_key_name(r"D:\keys\jump.ed25519", win, "windows"), None);
+    }
 }

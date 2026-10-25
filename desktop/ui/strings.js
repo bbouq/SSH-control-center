@@ -310,6 +310,13 @@ const en = {
     restarting: "Restored · the service is restarting with the restored Master…",
     restored: (name, n) => "This machine is now " + name + " · " + n + " hosts",
     openInventory: "Open the host list",
+    // What the new machine can't fix alone, listed after a restore.
+    afterTitle: "What this machine can’t fix alone",
+    reachedHelp: "These Masters reach this one at the old machine’s address. Update it on each of them (or ask whoever runs it)",
+    updateAddress: name => "Update this Master’s address on " + name,
+    twoWayAgain: "Two-way needs enabling again", twoWayHelp: "This machine doesn’t have the old one’s OpenSSH Server and bridge account yet, so these Merges are one-way for now",
+    pathsHelp: "These jump keys were outside the old Master’s keys folder, so they were not moved. Copy each file to this machine and check the route",
+    checkPath: name => "Check this path on " + name + ":",
   },
   masters: {
     title: "Masters", lead: "Merge another Master to see and control its hosts from here, and choose which Masters may control this one", refresh: "Refresh",
@@ -627,6 +634,12 @@ const th = {
     restarting: "กู้คืนแล้ว · บริการกำลังเริ่มใหม่ด้วย Master ที่กู้คืน…",
     restored: (name, n) => "ตอนนี้เครื่องนี้คือ " + name + " · " + n + " เครื่อง",
     openInventory: "เปิดรายการเครื่อง",
+    afterTitle: "สิ่งที่เครื่องนี้แก้เองไม่ได้",
+    reachedHelp: "Master เหล่านี้เข้าถึงเครื่องนี้ด้วยที่อยู่ของเครื่องเก่า ให้อัปเดตที่อยู่บน Master แต่ละเครื่อง (หรือแจ้งคนที่ดูแลมัน)",
+    updateAddress: name => "อัปเดตที่อยู่ของ Master นี้บน " + name,
+    twoWayAgain: "ต้องเปิดสองทางอีกครั้ง", twoWayHelp: "เครื่องนี้ยังไม่มี OpenSSH Server และบัญชี bridge ของเครื่องเก่า Merge เหล่านี้จึงเป็นทางเดียวไปก่อน",
+    pathsHelp: "กุญแจ jump เหล่านี้อยู่นอกโฟลเดอร์กุญแจของ Master เครื่องเก่า จึงไม่ได้ย้ายมา คัดลอกแต่ละไฟล์มาที่เครื่องนี้แล้วตรวจเส้นทาง",
+    checkPath: name => "ตรวจ path นี้บน " + name + ":",
   },
   masters: {
     title: "เครื่องหลัก (Masters)", lead: "Merge Master อื่นเพื่อเห็นและสั่งเครื่องของมันได้จากที่นี่ และเลือกว่า Master ไหนสั่งเครื่องนี้ได้", refresh: "รีเฟรช",

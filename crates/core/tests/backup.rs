@@ -204,3 +204,47 @@ fn backup_and_restore_never_cross_a_bridge_or_relay() {
     let status = service.handle(&Request { method: "backup.status".into(), params: json!({}) }, &owner).unwrap();
     assert_eq!(status["empty"], true);
 }
+
+fn jump_host(id: &str, address: &str, identity: &str) -> Value {
+    let mut value = host(id, address);
+    value["routes"][0]["proxyJump"] = json!({"address":"10.9.9.9","port":22,"user":"jump","hostKeys":[key(1)],"identityFile":identity});
+    value
+}
+
+#[test]
+fn restore_reports_what_the_new_machine_cannot_fix_alone() {
+    let old = tempfile::tempdir().unwrap();
+    let cfg = old_master(old.path());
+    let inside = old.path().join("keys").join("jump.ed25519");
+    call(old.path(), &cfg, "targets.import", json!({"registration":jump_host("db-1","10.0.0.5",&inside.to_string_lossy())}));
+    call(old.path(), &cfg, "targets.import", json!({"registration":jump_host("db-2","10.0.0.6","/opt/keys/outside.ed25519")}));
+    // Two-way with the merged Branch Master; a disabled relay and a revoked Master no longer reach this one.
+    let request = Request { method: "merges.list".into(), params: json!({}) };
+    let merge = fleet::handle(old.path(), &cfg, &request).unwrap().unwrap()[0].clone();
+    assert_eq!(merge["targetId"], "branch");
+    let mut two_way = merge.clone();
+    two_way["reverse"] = json!({"status":"two-way","peerTargetId":"this-master","updatedAt":"2026-10-01T00:00:00Z"});
+    rusqlite::Connection::open(old.path().join("fleet.sqlite")).unwrap()
+        .execute("UPDATE merges SET document=?1 WHERE target_id='branch'", [two_way.to_string()]).unwrap();
+    let gone = Uuid::new_v4().to_string();
+    fleet::register_master(old.path(), &json!({"id":gone,"label":"Old laptop","publicKey":key(4)})).unwrap();
+    fleet::revoke_master(old.path(), &gone).unwrap();
+    let file = backup_file(old.path(), &cfg);
+
+    let new = tempfile::tempdir().unwrap();
+    let new_cfg = fresh(new.path(), "New install");
+    let result = restore(new.path(), &new_cfg, &file, PASSPHRASE).unwrap();
+    let restored = config::load(new.path()).unwrap();
+    let targets = call(new.path(), &restored, "targets.list", json!({}));
+    let jump = |id: &str| targets.as_array().unwrap().iter().find(|t| t["id"] == id).unwrap()["routes"][0]["proxyJump"]["identityFile"].clone();
+    assert_eq!(jump("db-1"), new.path().join("keys").join("jump.ed25519").to_string_lossy().as_ref());
+    assert_eq!(jump("db-2"), "/opt/keys/outside.ed25519");
+    assert_eq!(result["checkPaths"], json!([{"targetId":"db-2","label":"db-2","path":"/opt/keys/outside.ed25519"}]));
+
+    let reached: Vec<&str> = result["reachedBy"].as_array().unwrap().iter().map(|m| m["label"].as_str().unwrap()).collect();
+    assert_eq!(reached, vec!["Peer Master"], "allowed and merging Masters, not revoked ones");
+    assert_eq!(result["reachedBy"][0]["ways"], json!(["direct", "merge"]));
+    assert_eq!(result["twoWayAgain"], json!([{"targetId":"branch","label":"Branch"}]));
+    let merges = call(new.path(), &restored, "merges.list", json!({}));
+    assert_eq!(merges[0]["reverse"], Value::Null, "two-way is offered again, as one-way until enabled");
+}
