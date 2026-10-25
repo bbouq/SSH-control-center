@@ -223,6 +223,21 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await assertThai(th, "host table with Tags", [...words, "web"]);
     await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click({ button: "right" });
     await th.locator(`#dc-menu [data-action="ctx-tag"]`).waitFor(); await assertThai(th, "host menu with Tag…", [...words, "web"]); await th.keyboard.press("Escape");
+    // A group run by Tag: the Run on form, the confirmation and the results.
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator('[data-action="toggle-new-job"]').first().click();
+    await th.locator('#start-job [name="runOn"]').selectOption("tag:web");
+    await assertThai(th, "Run on a group", [...words, "web"]);
+    await th.locator('#start-job [name="script"]').fill("uptime");
+    await th.locator('#start-job button[type="submit"]').click();
+    await th.locator("#group-dialog[open]").waitFor();
+    await assertThai(th, "group confirmation", [...words, "web"]);
+    await th.locator('#confirm-group button[type="submit"]').click();
+    await th.locator("#group-run .group-summary").waitFor();
+    await assertThai(th, "group run results", [...words, "web"]);
+    await shots(th, "group-run");
+    await th.locator('[data-action="group-close"]').click();
 
     // Backup and restore (roadmap entry 3): the section, both flows and their errors.
     const fileWords = [...words, "sshcc", "backup", "sshccbak", "Backups", "fixture"];

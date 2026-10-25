@@ -7,6 +7,7 @@ pub mod containers;
 pub mod executor;
 pub mod files;
 pub mod folders;
+pub mod groups;
 pub mod fleet;
 pub mod ipc;
 pub mod jobs;

@@ -112,6 +112,14 @@ const en = {
     again: "Check again", raw: "Raw result", copyJson: "Copy check JSON", copiedJson: "Check result copied",
   },
   jobs: {
+    // Group runs (roadmap entry 4): one job on every host with a Tag or in a folder.
+    runOn: "Run on", thisHost: "This host", withTag: tag => "Every host with Tag " + tag, inFolder: name => "Every host in folder " + name,
+    groupRun: "Run", confirmTitle: n => "Run on " + (n === 1 ? "1 host" : n + " hosts") + "?", confirmLead: what => what + " · each host gets its own job and result",
+    skippedTitle: "Skipped: the SSH Control Center service is not installed",
+    groupTitle: "Group run", groupLead: (what, when) => what + " · started " + when,
+    groupStates: { queued: "Waiting", unreachable: "Couldn’t reach", skipped: "Skipped" },
+    groupSummary: (ok, total) => ok + " of " + total + " hosts succeeded", groupRunning: (done, total) => done + " of " + total + " hosts finished",
+    openLog: "Open log", closeGroup: "Close", exitCode: "Exit code",
     title: "Jobs on this host", newJob: "New job", cwd: "Working directory", script: "Command or script", advanced: "Advanced options", shell: "Shell",
     session: "Owner session ID", sessionPlaceholder: "Leave empty to pick automatically", asAdmin: "Run as admin (root)",
     env: "Environment JSON", envHelp: "Variables for this job only", start: "Start job",
@@ -228,6 +236,8 @@ const en = {
       ["E_TAG_LENGTH", "A Tag has 1 to 32 characters"],
       ["E_TAG_CHARS", "A Tag can’t contain a comma"],
       ["E_TAG_LIMIT", "A host can have at most 20 Tags"],
+      ["E_GROUP_EMPTY", "No host in this group can run a job"],
+      ["E_GROUP_SCRIPT", "This group has hosts of another OS. Write a script for them too"],
     ],
     pairing: [
       ["SETUP_TEMPLATES_MISSING", "Installer templates are missing. Install or update this Master with the full package, then save the installer again"],
@@ -470,6 +480,13 @@ const th = {
     again: "ตรวจอีกครั้ง", raw: "ผลดิบ", copyJson: "คัดลอกผลการตรวจ (JSON)", copiedJson: "คัดลอกผลการตรวจแล้ว",
   },
   jobs: {
+    runOn: "รันบน", thisHost: "เครื่องนี้", withTag: tag => "ทุกเครื่องที่มี Tag " + tag, inFolder: name => "ทุกเครื่องในโฟลเดอร์ " + name,
+    groupRun: "รัน", confirmTitle: n => "รันบน " + n + " เครื่อง?", confirmLead: what => what + " · แต่ละเครื่องได้งานและผลลัพธ์ของตัวเอง",
+    skippedTitle: "ข้าม: ยังไม่ได้ติดตั้ง service ของ SSH Control Center",
+    groupTitle: "กลุ่มงาน", groupLead: (what, when) => what + " · เริ่มเมื่อ " + when,
+    groupStates: { queued: "รอ", unreachable: "ติดต่อไม่ได้", skipped: "ข้าม" },
+    groupSummary: (ok, total) => "สำเร็จ " + ok + " จาก " + total + " เครื่อง", groupRunning: (done, total) => "เสร็จแล้ว " + done + " จาก " + total + " เครื่อง",
+    openLog: "เปิดผลลัพธ์", closeGroup: "ปิด", exitCode: "รหัสจบงาน",
     title: "งานบนเครื่องนี้", newJob: "งานใหม่", cwd: "โฟลเดอร์ทำงาน", script: "คำสั่งหรือสคริปต์", advanced: "ตัวเลือกขั้นสูง", shell: "Shell",
     session: "ID session ของ Owner", sessionPlaceholder: "เว้นว่างเพื่อเลือกให้อัตโนมัติ", asAdmin: "รันด้วยสิทธิ์ผู้ดูแล (root)",
     env: "ตัวแปรสภาพแวดล้อม (JSON)", envHelp: "ตัวแปรสำหรับงานนี้เท่านั้น", start: "เริ่มงาน",
@@ -577,6 +594,8 @@ const th = {
       ["E_TAG_LENGTH", "Tag ต้องยาว 1 ถึง 32 ตัวอักษร"],
       ["E_TAG_CHARS", "Tag ห้ามมีเครื่องหมายจุลภาค (,)"],
       ["E_TAG_LIMIT", "เครื่องหนึ่งมี Tag ได้ไม่เกิน 20 อัน"],
+      ["E_GROUP_EMPTY", "ไม่มีเครื่องในกลุ่มนี้ที่รันงานได้"],
+      ["E_GROUP_SCRIPT", "กลุ่มนี้มีเครื่องที่ใช้ระบบปฏิบัติการอื่นด้วย เขียนสคริปต์ให้เครื่องเหล่านั้นด้วย"],
     ],
     pairing: [
       ["SETUP_TEMPLATES_MISSING", "ไม่พบแม่แบบตัวติดตั้ง ติดตั้งหรืออัปเดต Master นี้ด้วยแพ็กเกจเต็ม แล้วบันทึกตัวติดตั้งอีกครั้ง"],

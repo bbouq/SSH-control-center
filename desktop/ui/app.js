@@ -26,7 +26,9 @@ const state = {
   // Backup and restore: the service's status line, and the open flow (null, or {mode: "backup" | "restore", …}).
   backupStatus: null, backup: null, rotation: null,
   // Tags: {tags: [{tag, hosts}], hosts: {id: [tag]}}; tagError: the last refused change, shown under the Tag box.
-  tags: { tags: [], hosts: {} }, tagError: null
+  tags: { tags: [], hosts: {} }, tagError: null,
+  // Group runs: the draft waiting in the confirmation, and the run shown in place of the New job form.
+  groupDraft: null, groupRun: null
 };
 addReset();
 const native = (command, args = {}) => {
@@ -116,7 +118,7 @@ function fillShellDialog() {
 }
 function badge(status) {
   const styles = { succeeded: "good", failed: "bad", interrupted: "bad", cancelled: "", running: "running", queued: "pending" };
-  return '<span class="badge ' + (styles[status] || "") + '" title="' + esc(status) + '">' + esc(T.status.jobs[status] || status) + "</span>";
+  return '<span class="badge ' + (styles[status] || "") + '">' + esc(T.status.jobs[status] || status) + "</span>";
 }
 async function busy(button, work) {
   if (button?.disabled) return;
@@ -145,6 +147,7 @@ function applyStatic() {
   for (const button of document.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.dataset.lang === lang));
   if ($("#shell-dialog").open) fillShellDialog();
   if ($("#delete-dialog").open) fillDeleteDialog();
+  if ($("#group-dialog").open) fillGroupDialog();
 }
 /** Snapshot of the typed values, open disclosures and focus under `root`; the returned function puts them back
  *  after a re-render (fields are matched by form and name). */
@@ -537,20 +540,105 @@ function renderCheckPanel(item) {
 }
 function renderJobs(item) {
   const t = T.jobs, disabled = !item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "";
-  return (state.newJob ? renderNewJob(item) : "") +
+  return (state.groupRun ? renderGroupRun(state.groupRun) : state.newJob ? renderNewJob(item) : "") +
     '<section class="section"><div class="section-heading"><h2>' + t.title + '</h2><div class="page-actions">' +
     (state.newJob ? "" : '<button class="primary" data-action="toggle-new-job"' + disabled + ">" + icons.plus + t.newJob + "</button>") +
     '<button data-action="refresh-jobs">' + icons.refresh + T.common.refresh + '</button></div></div><div class="job-layout"><div class="job-list" id="job-list">' + renderJobRows() + '</div><div class="job-detail" id="job-detail">' + renderJobDetail() + "</div></div></section>";
+}
+/* Group runs (roadmap entry 4): "Run on" picks this host, every host with a Tag, or every host in a folder. A
+   confirmation names the hosts; the run then shows in place of the form, one row per host, updating until done. */
+function masterLabel(id) {
+  if (id === "local") return state.service?.label || T.inv.thisMaster;
+  return state.merges.find(merge => merge.targetId === id)?.label || id;
+}
+function runOnOptions() {
+  const t = T.jobs, folders = state.folders.folders || [], several = new Set(folders.map(folder => folder.master)).size > 1;
+  return '<option value="">' + esc(t.thisHost) + "</option>" +
+    (state.tags.tags || []).map(row => '<option value="tag:' + esc(row.tag) + '">' + esc(t.withTag(row.tag)) + "</option>").join("") +
+    folders.map(folder => '<option value="folder:' + esc(folder.id) + '">' + esc(t.inFolder((several || folder.master !== "local" ? masterLabel(folder.master) + " / " : "") + folder.name)) + "</option>").join("");
+}
+/** Owner session is per host, so it is hidden when the job runs on a group. */
+function onRunOnChange(form) {
+  for (const field of form.querySelectorAll(".host-only")) field.hidden = Boolean(form.elements.runOn.value);
+}
+/** The group's selector from the Run on value, with the words shown for it. */
+function runOnSelector(select) {
+  const [kind, ...rest] = select.value.split(":"), value = rest.join(":"), label = select.selectedOptions[0]?.textContent || "";
+  return kind === "tag" ? { tag: value, label } : { folder: value, label };
+}
+async function draftGroupRun(form, values, env) {
+  const selector = runOnSelector(form.elements.runOn), host = target();
+  const preview = await rpc("groups.preview", { selector });
+  const oses = [...new Set(preview.hosts.map(row => row.os))];
+  const scripts = {}; for (const os of oses.length === 1 ? oses : [host?.os || "linux"]) scripts[os] = values.script;
+  const params = { selector, scripts, cwd: values.cwd, env };
+  if (values.asAdmin === "on") params.asAdmin = true;
+  state.groupDraft = { params, preview };
+  fillGroupDialog(); $("#group-dialog").showModal();
+}
+/** The confirmation's words; also re-run when the language changes while it is open. */
+function fillGroupDialog() {
+  const draft = state.groupDraft, t = T.jobs;
+  if (!draft) return;
+  $("#group-title").textContent = t.confirmTitle(draft.preview.hosts.length);
+  $("#group-lead").textContent = t.confirmLead(draft.params.selector.label);
+  $("#group-hosts").innerHTML = draft.preview.hosts.map(row => "<li>" + esc(row.label || row.targetId) + ' <small class="muted">' + esc(osName(row.os)) + "</small></li>").join("");
+  $("#group-skipped").innerHTML = draft.preview.skipped.length ? '<p class="help mt">' + esc(t.skippedTitle) + '</p><ul class="dialog-list">' + draft.preview.skipped.map(row => "<li>" + esc(row.label || row.targetId) + "</li>").join("") + "</ul>" : "";
+  $('#confirm-group [type="submit"]').disabled = !draft.preview.hosts.length;
+}
+async function runGroup() {
+  const draft = state.groupDraft;
+  $("#group-dialog").close();
+  if (!draft) return;
+  state.groupDraft = null;
+  state.groupRun = await rpc("groups.run", draft.params);
+  state.newJob = false; render(); void watchGroup();
+}
+const groupFinished = row => ["succeeded", "failed", "cancelled", "interrupted"].includes(row.status) || ["unreachable", "skipped"].includes(row.state);
+function groupRowStatus(row) {
+  const t = T.jobs;
+  if (row.state === "started") return badge(row.status || "queued");
+  return '<span class="badge' + (row.state === "unreachable" ? " bad" : "") + '">' + esc(t.groupStates[row.state] || row.state) + "</span>";
+}
+function renderGroupRun(run) {
+  const t = T.jobs, hosts = run.hosts || [], counted = hosts.filter(row => row.state !== "skipped");
+  const ok = counted.filter(row => row.status === "succeeded").length, finished = counted.filter(groupFinished).length;
+  const rows = hosts.map(row => '<tr data-host="' + esc(row.targetId) + '"><td><strong>' + esc(row.label || row.targetId) + "</strong><small>" + esc(osName(row.os)) + "</small>" +
+    (row.error && row.state !== "skipped" ? '<small class="error-line">' + errorHtml(explain(row.error, false, row.label || row.targetId)) + "</small>" : "") + "</td><td>" + groupRowStatus(row) + "</td>" +
+    '<td class="num">' + (row.exitCode ?? "—") + '</td><td class="actions">' + (row.jobId ? '<button class="small" data-action="group-log" data-id="' + esc(row.targetId) + '" data-job="' + esc(row.jobId) + '">' + t.openLog + "</button>" : "") + "</td></tr>").join("");
+  return '<section class="surface group-run" id="group-run" aria-live="polite"><div class="section-heading"><div><h2>' + t.groupTitle + "</h2><p>" + esc(t.groupLead(run.selector?.label || "", timestamp(run.createdAt))) + "</p></div>" +
+    '<div class="page-actions"><button data-action="group-close">' + t.closeGroup + "</button></div></div>" +
+    '<p class="group-summary"><strong>' + esc(run.done ? t.groupSummary(ok, counted.length) : t.groupRunning(finished, counted.length)) + "</strong></p>" +
+    '<div class="table-wrap"><table><thead><tr><th>' + T.inv.head.host + "</th><th>" + T.inv.head.status + "</th><th>" + t.exitCode + "</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section>";
+}
+let groupTimer = 0;
+/** Polls the shown run until every host has finished; only the run's own panel is redrawn. */
+async function watchGroup() {
+  clearTimeout(groupTimer); groupTimer = 0;
+  const shown = state.groupRun;
+  if (!shown) return;
+  const run = await rpc("groups.status", { runId: shown.id }).catch(() => null);
+  if (state.groupRun?.id !== shown.id) return;
+  if (run) state.groupRun = run;
+  const panel = $("#group-run"); if (panel) panel.outerHTML = renderGroupRun(state.groupRun);
+  if (!state.groupRun.done) groupTimer = setTimeout(() => void watchGroup(), 2000);
+}
+/** Open log: that host's Jobs tab with the group's job selected. */
+async function openGroupLog(id, jobId) {
+  await selectTarget(id, "jobs");
+  state.job = await rpc("jobs.status", { targetId: id, jobId }).catch(() => ({ id: jobId }));
+  state.groupRun = null; render(); await refreshSelectedJob(true);
 }
 /** The working folder a new job starts with: the root of the host's drive, so a quick command needs no path. */
 const defaultCwd = os => /win/i.test(os || "") ? "C:\\" : "/";
 function renderNewJob(item) {
   const windows = isWindows(item), t = T.jobs;
   return '<form id="start-job" class="surface new-job"><h2>' + t.newJob + '</h2><div class="form-grid">' +
+    '<label class="full">' + t.runOn + '<select name="runOn">' + runOnOptions() + "</select></label>" +
     '<label class="full">' + t.cwd + '<input name="cwd" required class="mono" value="' + defaultCwd(item.os) + '" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
     '<label class="full">' + t.script + '<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
     "<details><summary>" + t.advanced + '</summary><div class="form-grid"><label>' + t.shell + '<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
-    "<label>" + t.session + '<input name="ownerSessionId" placeholder="' + esc(t.sessionPlaceholder) + '"></label>' +
+    '<label class="host-only">' + t.session + '<input name="ownerSessionId" placeholder="' + esc(t.sessionPlaceholder) + '"></label>' +
     (!windows ? '<label class="check-label full"><input type="checkbox" name="asAdmin">' + t.asAdmin + "</label>" : "") +
     '<label class="full">' + t.env + " <small>" + t.envHelp + '</small><textarea name="env" rows="2" class="mono" spellcheck="false">{}</textarea></label></div></details>' +
     '<div class="form-actions"><button type="submit" class="primary"' + (!item.runnerInstalled ? " disabled" : "") + ">" + t.start + "</button>" +
@@ -1846,6 +1934,9 @@ document.addEventListener("click", event => {
     if (action === "restore-choose") return chooseBackup();
     if (action === "keys-change") return changeKeys();
     if (action === "tag-filter") { filterByTag(button.dataset.tag); return; }
+    if (action === "close-group-dialog") { state.groupDraft = null; $("#group-dialog").close(); return; }
+    if (action === "group-close") { clearTimeout(groupTimer); state.groupRun = null; render(); return; }
+    if (action === "group-log") return openGroupLog(button.dataset.id, button.dataset.job);
     if (action === "ctx-tag") {
       state.page = "datacenter"; state.dc.node = button.dataset.node; state.dc.adding = null; state.backup = null;
       await selectTarget(state.dc.node.slice(5), "summary");
@@ -2094,6 +2185,7 @@ document.addEventListener("input", event => {
   if (event.target.form?.id === "create-pairing" && ["address", "port"].includes(event.target.name)) onWhereInput(event.target.form);
   if (event.target.id === "add-code") onCodeInput(event.target, event.inputType === "insertFromPaste");
   if (event.target.form?.id === "backup-pass-form") onBackupInput(event.target.form);
+  if (event.target.name === "runOn" && event.target.form?.id === "start-job") onRunOnChange(event.target.form);
   if (event.target.id === "restore-off") $("#restore-run").disabled = !event.target.checked;
   if (event.target.closest?.("#confirm-delete")) { const form = $("#confirm-delete"); form.querySelector('[type="submit"]').disabled = event.target.value !== form.dataset.name; }
   if (event.target.id === "file-filter") { state.fileQuery = event.target.value; $("#files-output").innerHTML = renderFileList(); }
@@ -2193,9 +2285,11 @@ document.addEventListener("submit", event => {
       }
       notify(T.tree.enrollmentCreated);
     }
+    if (form.id === "confirm-group") return runGroup();
     if (form.id === "start-job") {
       const env = JSON.parse(values.env || "{}");
       if (!env || Array.isArray(env) || typeof env !== "object" || Object.values(env).some(value => typeof value !== "string")) throw new Error(T.jobs.envObject);
+      if (values.runOn) return draftGroupRun(form, values, env);
       const params = { targetId: state.selected, script: values.script, cwd: values.cwd, shell: values.shell, env };
       if(values.ownerSessionId) params.ownerSessionId=values.ownerSessionId;
       if(values.asAdmin === 'on') params.asAdmin=true;

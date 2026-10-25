@@ -274,6 +274,8 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .tag-chip .tag-remove { padding: 0 8px; border-left: 1px solid var(--rule); }
 .tag-chip .tag-remove svg.i { width: 12px; height: 12px; }
 .tag-chip button:hover { background: var(--acid); color: var(--ink-on-green); }
+.group-run .group-summary { margin: 0 0 12px; }
+.group-run td small.error-line { display: block; color: var(--rose); white-space: normal; }
 .row-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .row-tags .tag-chip { font-size: 11px; }
 .row-tags .tag-chip button { min-height: 22px; padding: 0 6px; }

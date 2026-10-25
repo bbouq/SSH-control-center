@@ -49,6 +49,15 @@ async function addTag(page, text, d, what) {
   await box.press("Enter");
 }
 
+/** New job on a host's Jobs tab. */
+async function newJob(page, id) {
+  await page.locator(`#dc-tree .dc-item[data-node="node:${id}"]`).click();
+  await page.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+  if (!(await page.locator("#start-job").count())) await page.locator('[data-action="toggle-new-job"]').first().click();
+  return page.locator("#start-job");
+}
+const groupRows = page => page.locator("#group-run tbody tr");
+
 const checks = {
   /** The filter box matches folder names, for direct and merged hosts. */
   async "filter-folders"(page, url) {
@@ -152,8 +161,64 @@ const checks = {
     const started = (await calls(page, url)).filter(c => c.method === "jobs.start");
     assert.equal(started.at(-1).params.cwd, "/srv/app");
   },
+  /** The core task: tag 3 hosts `web`, run one command on all three. ≤ 5 decisions. */
+  async "core-task"(page, url, d) {
+    await page.goto(url);
+    await openTree(page);
+    for (const [i, id] of ["ui-test", "hq-master", "branch-master"].entries()) {
+      await openHost(page, id);
+      await addTag(page, "web", d, i ? "pick Tag web (suggested)" : "type Tag web");
+      await page.locator("#host-tags .tag-chip", { hasText: "web" }).waitFor();
+    }
+    const form = await newJob(page, "branch-master");
+    assert.equal(await form.locator('[name="cwd"]').inputValue(), "/", "pre-filled");
+    await d.select(form.locator('[name="runOn"]'), "tag:web", "run on every host with Tag web");
+    assert.ok(await form.locator(".host-only").isHidden(), "no Owner session for a group");
+    await d.fill(form.locator('[name="script"]'), "uptime", "command");
+    await form.locator('button[type="submit"]').click();
+    const dialog = page.locator("#group-dialog");
+    await dialog.locator("#group-title", { hasText: "Run on 3 hosts?" }).waitFor();
+    assert.deepEqual((await dialog.locator("#group-hosts li").allTextContents()).map(t => t.replace(/\s+Linux$/, "")).sort(), ["Branch Master", "HQ Master", "UI test target"]);
+    await shots(page, "group-confirm");
+    assert.ok(!(await calls(page, url)).some(c => c.method === "groups.run"), "nothing runs before the confirmation");
+    await dialog.getByRole("button", { name: "Run" }).click(); // a confirmation, not a decision
+    await groupRows(page).first().waitFor();
+    assert.equal(await groupRows(page).count(), 3, "one row per host");
+    await page.locator("#group-run .group-summary", { hasText: "3 of 3 hosts succeeded" }).waitFor({ timeout: 15000 });
+    const sent = (await calls(page, url)).find(c => c.method === "groups.run").params;
+    assert.deepEqual([sent.selector.tag, sent.scripts, sent.cwd], ["web", { linux: "uptime" }, "/"]);
+    assert.ok(!(await calls(page, url)).some(c => c.method === "jobs.start"), "no one-host job");
+    await shots(page, "group-done");
+  },
+  /** A folder group with a host that can't be reached and one without the service. */
+  async "group-offline"(page, url) {
+    const far = await rpc(page, url, "folders.create", { name: "Far", master: "local" });
+    for (const id of ["ui-test", "hq-master", "old-box"]) await rpc(page, url, "folders.assign", { targetId: id, folderId: far.id });
+    await page.goto(url);
+    await openTree(page);
+    const form = await newJob(page, "ui-test");
+    const option = form.locator('[name="runOn"] option', { hasText: "Every host in folder Far" });
+    await form.locator('[name="runOn"]').selectOption(await option.getAttribute("value"));
+    await form.locator('[name="script"]').fill("df -h");
+    await form.locator('button[type="submit"]').click();
+    const dialog = page.locator("#group-dialog");
+    await dialog.locator("#group-title", { hasText: "Run on 2 hosts?" }).waitFor();
+    await dialog.getByText("Skipped: the SSH Control Center service is not installed").waitFor();
+    await dialog.locator("#group-skipped li", { hasText: "Old box" }).waitFor();
+    await dialog.getByRole("button", { name: "Run" }).click();
+    const hq = page.locator('#group-run tr[data-host="hq-master"]');
+    await hq.locator(".badge", { hasText: "Couldn’t reach" }).waitFor();
+    await hq.getByText("No route to host").waitFor();
+    await page.locator('#group-run tr[data-host="old-box"] .badge', { hasText: "Skipped" }).waitFor();
+    await page.locator("#group-run .group-summary", { hasText: "1 of 2 hosts succeeded" }).waitFor({ timeout: 15000 });
+    await shots(page, "group-offline");
+    await page.locator('#group-run tr[data-host="ui-test"] [data-action="group-log"]').click();
+    await page.locator('[data-action="dc-tab"][data-tab="jobs"][aria-selected="true"]').waitFor();
+    assert.equal(await page.locator("#group-run").count(), 0);
+  },
 };
-const scenarios = { "filter-folders": ["masters-page"], "host-tags": ["masters-page"], "tags-everywhere": ["masters-page"], "prefilled-cwd": ["masters-page"] };
+const scenarios = { "filter-folders": ["masters-page"], "host-tags": ["masters-page"], "tags-everywhere": ["masters-page"], "prefilled-cwd": ["masters-page"],
+  "core-task": ["masters-page"], "group-offline": ["masters-page", "legacy-host", "group-offline"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];
