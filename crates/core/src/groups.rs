@@ -129,7 +129,8 @@ pub fn start(state: &Path, config: &Config, p: &Value) -> Result<Value> {
     }).chain(skipped.iter().map(|h| json!({"targetId":h["targetId"],"label":h["label"],"os":h["os"],"state":"skipped","error":h["reason"]}))).collect();
     let id = Uuid::new_v4().to_string();
     let record = json!({"id":id,"createdAt":now(),"selector":selector,"scripts":{"linux":kept("linux"),"windows":kept("windows")},
-        "asAdmin":p["asAdmin"] == true,"env":p.get("env").cloned().unwrap_or_else(|| json!({})),"hosts":hosts,"done":false});
+        "asAdmin":p["asAdmin"] == true,"env":p.get("env").cloned().unwrap_or_else(|| json!({})),"hosts":hosts,"done":false,
+        "channel":p["channel"].as_str().unwrap_or("unknown")});
     let _guard = RECORDS.lock().unwrap_or_else(PoisonError::into_inner);
     let db = database(state)?;
     db.execute("INSERT INTO group_runs(id,created_at,document) VALUES(?1,?2,?3)", params![id, record["createdAt"].as_str(), record.to_string()])?;
@@ -162,7 +163,13 @@ pub fn drive(state: &Path, _config: &Config, run_id: &str, act: &Act) -> Result<
                 let script = run["scripts"][target.os.as_str()].as_str().unwrap_or_default();
                 let job = Uuid::new_v4().to_string();
                 let as_admin = run["asAdmin"] == true && target.os != "windows";
-                let result = act(&target, Step::Start { job: &job, script, cwd: host["cwd"].as_str().unwrap_or("/"), as_admin, env: &run["env"] });
+                let cwd = host["cwd"].as_str().unwrap_or("/");
+                let result = act(&target, Step::Start { job: &job, script, cwd, as_admin, env: &run["env"] });
+                let reason = result.as_ref().err().map(|error| error.root_cause().to_string());
+                crate::activity::record(state, chrono::Utc::now(), crate::activity::Sent {
+                    job: &job, target: &target.id, label: Some(&target.label), group: Some((run_id, &run["selector"])), script, cwd,
+                    shell: None, as_admin, env: &run["env"], channel: run["channel"].as_str().unwrap_or("unknown"),
+                    status: if reason.is_some() { "unreachable" } else { "queued" }, error: reason.as_deref() });
                 let _ = update(state, run_id, &target.id, |row| match result {
                     Ok(_) => { row["state"] = json!("started"); row["jobId"] = json!(job); row["status"] = json!("queued"); }
                     // The cause only: the job ID note added for one-host jobs means nothing here.
@@ -186,6 +193,7 @@ pub fn refresh(state: &Path, _config: &Config, run_id: &str, act: &Act) -> Resul
         let target = member(host);
         match act(&target, Step::Status { job: &job }) {
             Ok(status) => {
+                let _ = crate::activity::update_status(state, &job, &status);
                 update(state, run_id, &target.id, |row| {
                     row["status"] = status["status"].clone();
                     row["exitCode"] = status["exitCode"].clone();

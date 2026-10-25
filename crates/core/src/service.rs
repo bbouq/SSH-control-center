@@ -1,5 +1,5 @@
 use crate::{
-    backup,
+    activity, backup,
     config::{self, Config},
     containers,
     executor::Executor,
@@ -175,6 +175,22 @@ impl Service {
         result
     }
     pub fn handle(&self, req: &Request, caller: &str) -> Result<Value> {
+        self.handle_as(req, caller, None)
+    }
+    /// One request from a client that reported its channel (`desktop`, `cli`, `mcp`); the audit log records it.
+    pub fn handle_as(&self, req: &Request, caller: &str, channel: Option<&str>) -> Result<Value> {
+        // A group run keeps its channel for the jobs it starts later.
+        let result = if req.method == "groups.run" {
+            let mut tagged = req.clone();
+            tagged.params["channel"] = json!(channel.unwrap_or("unknown"));
+            self.dispatch(&tagged, caller)
+        } else {
+            self.dispatch(req, caller)
+        };
+        activity::after(&self.state, &self.config, req, caller, channel, &result);
+        result
+    }
+    fn dispatch(&self, req: &Request, caller: &str) -> Result<Value> {
         let owner = caller == self.config.owner || security::is_system(caller);
         if !owner
             && (!self.config.allowed_principals.iter().any(|p| p == caller)
@@ -269,6 +285,9 @@ impl Service {
             if let Some(value) = fleet::rotation::handle(&self.state, &self.config, req)? {
                 return Ok(value);
             }
+        }
+        if let Some(value) = activity::handle(&self.state, &self.config, req, owner)? {
+            return Ok(value);
         }
         if let Some(value) = pairing::handle(&self.state, &self.config, req)? {
             return Ok(value);
@@ -490,6 +509,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<()> {
                 if fleet::rotation::retry_due(&service.state).unwrap_or(false) {
                     fleet::rotation::pass_in_background(&service.state, &service.config);
                 }
+                if service.config.roles.iter().any(|r| r == "master") {
+                    if let Err(error) = activity::daily(&service.state, chrono::Utc::now()) {
+                        eprintln!("SSH Control Center: activity cleanup failed: {error:#}");
+                    }
+                }
             }
         });
     }
@@ -541,13 +565,16 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<()> {
             let _guard = ConnectionGuard(connections);
             let result = (|| -> Result<Option<Value>> {
                 let mut reader = BufReader::new(connection.try_clone()?);
-                let req: Request = protocol::read_frame(&mut reader)?;
+                // The channel rides beside the request: older clients send none.
+                let frame: Value = protocol::read_frame(&mut reader)?;
+                let channel = frame["channel"].as_str().map(str::to_owned);
+                let req: Request = serde_json::from_value(frame).map_err(|_| anyhow::anyhow!("E_PROTOCOL: malformed request"))?;
                 let caller = ipc::peer(&connection)?;
                 if matches!(req.method.as_str(), "terminal.attach" | "bridge.stream") {
                     service.serve_stream(req, caller, reader, connection.try_clone()?)?;
                     return Ok(None);
                 }
-                Ok(Some(service.handle(&req, &caller)?))
+                Ok(Some(service.handle_as(&req, &caller, channel.as_deref())?))
             })();
             if let Ok(None) = result {
             } else {

@@ -4,9 +4,19 @@ use crate::{
 };
 use anyhow::Result;
 use std::io::BufReader;
+static CHANNEL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+/// Names this program in every request it sends (`desktop`, `cli`, `mcp`), for the Master's audit log. A label, not
+/// a check.
+pub fn set_channel(name: &'static str) {
+    let _ = CHANNEL.set(name);
+}
 pub fn call(request: &Request) -> Result<serde_json::Value> {
     let mut connection = ipc::connect()?;
-    write_frame(request, &mut connection)?;
+    let mut frame = serde_json::to_value(request)?;
+    if let Some(channel) = CHANNEL.get() {
+        frame["channel"] = serde_json::json!(channel);
+    }
+    write_frame(&frame, &mut connection)?;
     let response: Response = read_frame(&mut BufReader::new(connection))?;
     response.into_result()
 }
@@ -18,7 +28,8 @@ pub fn download(target_id: &str, path: &str, dest: &std::path::Path) -> Result<u
     download_with(dest, |offset| {
         call(&Request {
             method: "files.read".into(),
-            params: serde_json::json!({"targetId": target_id, "path": path, "offset": offset}),
+            // The first chunk marks it as a download, so the audit log records it once.
+            params: serde_json::json!({"targetId": target_id, "path": path, "offset": offset, "download": offset == 0}),
         })
     })
 }
