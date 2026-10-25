@@ -107,8 +107,9 @@ enum Action {
     },
     Exec {
         target_id: String,
+        /// Working folder; defaults to / (or C:\ on a Windows host).
         #[arg(long)]
-        cwd: String,
+        cwd: Option<String>,
         #[arg(long, conflicts_with = "script_file")]
         script: Option<String>,
         #[arg(long)]
@@ -228,6 +229,12 @@ fn load_code(path: &std::path::Path) -> Result<String> {
         "E_PAIRING_SIZE: code exceeds 64 KiB"
     );
     Ok(String::from_utf8(bytes)?)
+}
+/// The working folder a job starts in when none is given: the root of the host's drive.
+fn default_cwd(target_id: &str) -> Result<String> {
+    let hosts = call("targets.list", json!({}))?;
+    let host = hosts.as_array().into_iter().flatten().find(|host| host["id"] == target_id || host["label"] == target_id);
+    Ok(if host.is_some_and(|host| host["os"] == "windows") { "C:\\" } else { "/" }.into())
 }
 fn call(method: &str, params: Value) -> Result<Value> {
     client::call(&Request {
@@ -558,6 +565,10 @@ fn run() -> Result<()> {
                 std::fs::read_to_string(path)?
             } else {
                 script.context("--script or --script-file is required")?
+            };
+            let cwd = match cwd {
+                Some(cwd) => cwd,
+                None => default_cwd(&target_id)?,
             };
             let id = job_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             // Print before submission on stderr so an uncertain SSH result remains reconcilable.

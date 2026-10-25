@@ -542,10 +542,12 @@ function renderJobs(item) {
     (state.newJob ? "" : '<button class="primary" data-action="toggle-new-job"' + disabled + ">" + icons.plus + t.newJob + "</button>") +
     '<button data-action="refresh-jobs">' + icons.refresh + T.common.refresh + '</button></div></div><div class="job-layout"><div class="job-list" id="job-list">' + renderJobRows() + '</div><div class="job-detail" id="job-detail">' + renderJobDetail() + "</div></div></section>";
 }
+/** The working folder a new job starts with: the root of the host's drive, so a quick command needs no path. */
+const defaultCwd = os => /win/i.test(os || "") ? "C:\\" : "/";
 function renderNewJob(item) {
   const windows = isWindows(item), t = T.jobs;
   return '<form id="start-job" class="surface new-job"><h2>' + t.newJob + '</h2><div class="form-grid">' +
-    '<label class="full">' + t.cwd + '<input name="cwd" required class="mono" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
+    '<label class="full">' + t.cwd + '<input name="cwd" required class="mono" value="' + defaultCwd(item.os) + '" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
     '<label class="full">' + t.script + '<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
     "<details><summary>" + t.advanced + '</summary><div class="form-grid"><label>' + t.shell + '<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
     "<label>" + t.session + '<input name="ownerSessionId" placeholder="' + esc(t.sessionPlaceholder) + '"></label>' +
@@ -1967,7 +1969,7 @@ document.addEventListener("click", event => {
       await loadContainers(key);
     }
     if (action === "select-target") await selectTarget(button.dataset.id);
-    if (action === "toggle-new-job") { state.newJob = !state.newJob; render(); if (state.newJob) $('#start-job [name="cwd"]')?.focus(); }
+    if (action === "toggle-new-job") { state.newJob = !state.newJob; render(); if (state.newJob) $('#start-job [name="script"]')?.focus(); }
     if (action === "diagnose") await runDiagnose(state.selected);
     if (action === "check-close") { (state.checkHidden ||= new Set()).add(state.selected); $("#check-slot") && ($("#check-slot").innerHTML = ""); return; }
     if (action === "remove-target") await removeTarget(state.selected);

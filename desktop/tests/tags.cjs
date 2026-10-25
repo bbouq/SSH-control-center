@@ -135,8 +135,25 @@ const checks = {
     await rpc(page, url, "backup.restore", { file: picked.file, passphrase: "a long passphrase for tests" });
     assert.deepEqual((await rpc(page, url, "tags.list")).hosts["hq-master"], ["Bangkok"]);
   },
+  /** The New job form starts in / (Linux) or C:\ (Windows), and an edited value is the one sent. */
+  async "prefilled-cwd"(page, url) {
+    await page.goto(url);
+    await openTree(page);
+    for (const [id, cwd] of [["branch-master/child-1", "C:\\"], ["ui-test", "/"]]) {
+      await page.locator(`#dc-tree .dc-item[data-node="node:${id}"]`).click();
+      await page.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+      if (!(await page.locator("#start-job").count())) await page.locator('[data-action="toggle-new-job"]').first().click();
+      assert.equal(await page.locator('#start-job [name="cwd"]').inputValue(), cwd, id);
+    }
+    await page.locator('#start-job [name="cwd"]').fill("/srv/app");
+    await page.locator('#start-job [name="script"]').fill("pwd");
+    await page.locator('#start-job button[type="submit"]').click();
+    await page.waitForTimeout(500);
+    const started = (await calls(page, url)).filter(c => c.method === "jobs.start");
+    assert.equal(started.at(-1).params.cwd, "/srv/app");
+  },
 };
-const scenarios = { "filter-folders": ["masters-page"], "host-tags": ["masters-page"], "tags-everywhere": ["masters-page"] };
+const scenarios = { "filter-folders": ["masters-page"], "host-tags": ["masters-page"], "tags-everywhere": ["masters-page"], "prefilled-cwd": ["masters-page"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];
