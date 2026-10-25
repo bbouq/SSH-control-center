@@ -386,10 +386,16 @@ function graphNode(item, options = {}) {
     (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
     (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(name)) + '" title="' + esc(T.inv.openTerminal) + '">' + icons.shell + "</button>") + "</div>";
 }
+/** The one rule for the filter text: a host matches on its ID, name, tenant, merged Master, addresses or folder name. */
+function hostMatches(item, text) {
+  const search = String(text || "").trim().toLowerCase();
+  if (!search) return true;
+  const folderId = state.folders.members?.[item.id], folder = folderId && (state.folders.folders || []).find(row => row.id === folderId);
+  return [item.id, item.label, item.tenant, item.viaLabel, folder?.name, ...(item.routes || []).map(route => route.address)]
+    .some(value => String(value || "").toLowerCase().includes(search));
+}
 function matchesFilter(item, ignoreStatus = false) {
-  const search = state.query.toLowerCase();
-  return (ignoreStatus || !state.status || statusBucket(item) === state.status) &&
-    [item.id, item.label, item.tenant, item.viaLabel, ...(item.routes || []).map(route => route.address)].some(value => String(value || "").toLowerCase().includes(search));
+  return (ignoreStatus || !state.status || statusBucket(item) === state.status) && hostMatches(item, state.query);
 }
 function isTwoWay(merge) {
   const peer = state.targets.find(item => item.id === merge?.targetId);
@@ -1009,10 +1015,7 @@ function dcPath(item, master) {
   if (!item.relayed) return T.inv.sshFrom(state.service?.label || T.inv.thisMasterLower);
   return T.inv.through(item.viaLabel || master?.label || item.via);
 }
-function dcMatches(item) {
-  const search = state.dc.query.toLowerCase();
-  return !search || [item.id, item.label, item.tenant, item.viaLabel, ...(item.routes || []).map(route => route.address)].some(value => String(value || "").toLowerCase().includes(search));
-}
+function dcMatches(item) { return hostMatches(item, state.dc.query); }
 function dcRow(node, depth, content, options = {}) {
   const selected = state.page === "datacenter" && state.dc.node === node;
   const toggle = options.branch
