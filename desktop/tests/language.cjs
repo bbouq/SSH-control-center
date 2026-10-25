@@ -182,14 +182,14 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     // The saved installers' file names and folder come from the (fixture's) save dialog.
     words.push("exe", "deb", "Downloads", "fixture", "client", "windows", "pc"); // …and the host name the new host reports (fixture-windows-pc)
     await th.locator('#add-host [aria-current="step"][data-step="3"]').waitFor();
-    await assertThai(th, "add step 3", words);
+    await assertThai(th, "add step 3", [...words, ...await fixtureWords(th, url)]); // the installer name ends in the random target ID
     // 5. Errors: a mapped one is the Thai sentence plus the Master's English underneath.
     await th.locator("#add-code").fill(await codeFor(th, url, "?master=other"));
     const check = th.locator("#add-code-check.bad");
     await check.filter({ hasText: "รหัสนี้ทำมาสำหรับ Master อื่น" }).waitFor();
     assert.match(await check.locator(".error-detail").textContent(), /another Master/, "the English detail sits under the Thai sentence");
     assert.doesNotMatch(await check.textContent(), /E_PAIRING/, "no error code on screen");
-    await assertThai(th, "add step 3 with an error", words);
+    await assertThai(th, "add step 3 with an error", [...words, ...await fixtureWords(th, url)]);
     await th.locator("#add-code").fill(await codeFor(th, url));
     await th.locator("#finish-pairing").waitFor();
     await assertThai(th, "add step 4 review", [...words, ...await fixtureWords(th, url), "SHA256", "fixture"]);
