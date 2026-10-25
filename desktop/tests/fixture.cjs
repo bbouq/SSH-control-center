@@ -13,9 +13,14 @@
 //   group-slow       group jobs keep running until cancelled (retried jobs finish as usual)
 //   legacy-host      adds old-box, a host registered without the SSH Control Center service (v1)
 //   two-way-merge    with masters-page: the Merge with branch-master is two-way (it shows as a relay here too)
+//   activity-history Activity has history: jobs today, yesterday and 3 days ago (one group run), audit lines, a running
+//                    job that finishes on the next refresh, and lab-pc, whose recorded job's host can't be reached
+//   activity-warning the audit log can't be written (Activity shows its yellow warning)
 // Backups: save_backup "writes" to /fixture/Backups and keeps the file in memory (across scenario resets), so a test can
 // back up, POST /scenario {"flags":["empty"]} and restore it. POST /next-backup {"kind":"good"|"newer"|"damaged"|"other"} makes the
 // next open_backup return that kind of file instead (once).
+// Activity: every audited request the page sends is written to the fixture's audit log (channel "desktop"), and every
+// job it starts to Recent Jobs, as the Master does. GET /last-csv returns the last save_csv {name, csv}.
 // Test-only endpoints: GET /calls (every request the page sent), POST /scenario (reset state, clears /calls),
 // GET /pairing-code[?requestId=…][&master=other] (the code the new host would show after Approve; default: the
 // newest request awaiting approval; master=other gives a code made for another Master).
@@ -26,7 +31,7 @@ const crypto = require("node:crypto");
 const ui = path.join(__dirname, "..", "ui");
 const MASTER_ID = "fixture-master", MASTER_LABEL = "UI fixture Master";
 const calls = [];
-let flags, s, content, firstStart, savedBackup = null, nextBackup = "";
+let flags, s, content, firstStart, savedBackup = null, nextBackup = "", lastCsv = null;
 /** All mutable fixture state; `reset` rebuilds it for a scenario. */
 function reset(list) {
   flags = new Set(list.filter(Boolean)); calls.length = 0; content = "Example text\n"; firstStart = true;
@@ -34,8 +39,10 @@ function reset(list) {
   s = {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
     jobs: [], pairings: [], folders: [], folderMembers: {}, tags: [], groupRuns: [], datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
+    activity: { keepDays: 14, since: stamp(Date.now() - 20 * DAY), audit: [], jobs: [] },
     backup: { lastBackupAt: flags.has("backed-up") || flags.has("restored") ? "2026-10-20T09:30:00Z" : null, restoredAt: flags.has("restored") ? "2026-10-24T08:00:00Z" : null, keysChangedAt: null }, rotation: null
   };
+  if (flags.has("activity-history")) seedActivity();
   if (flags.has("masters-page")) {
     const host = (id, label, address) => ({ schemaVersion: 2, id, nodeId: id + "-node", label, tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address, port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
     s.targets.push(host("hq-master", "HQ Master", "192.0.2.41"), host("branch-master", "Branch Master", "192.0.2.42"));
@@ -51,6 +58,11 @@ function reset(list) {
   }
 }
 const now = () => new Date().toISOString();
+const DAY = 86400000, THAI = 7 * 3600000;
+/** ISO 8601 in Thailand time, as the Master writes it. */
+const stamp = ms => new Date(ms + THAI).toISOString().slice(0, 19) + "+07:00";
+const thaiDate = ms => new Date(ms + THAI).toISOString().slice(0, 10);
+const thaiMidnight = day => Date.parse(day + "T00:00:00+07:00");
 const sha = () => crypto.createHash("sha256").update(content).digest("hex");
 const slug = text => String(text || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "host";
 const need = (value, name) => { if (value === undefined || value === null || value === "") throw new Error("E_ARGUMENT: missing " + name); return value; };
@@ -65,7 +77,6 @@ const children = id => [1, 2, 3].map(n => ({ id: "child-" + n, label: "Child " +
 const relayedTargets = () => s.merges.flatMap(m => (m.children || []).map(c => ({ schemaVersion: 2, id: m.targetId + "/" + c.id, nodeId: c.nodeId, label: c.label, tenant: c.tenant, os: c.os, relayed: true, via: m.targetId, viaLabel: m.label, routes: [], hostKeys: [], runnerInstalled: true })));
 const healthRow = t => ({ targetId: t.id, online: true, checkedAt: now(), error: null, failures: 0, isMaster: isMasterHost(t.id), version: "test" });
 // After the helpers: the masters-page scenario uses `now` and `children`.
-reset((process.env.SSHCC_FIXTURE_SCENARIO || "").split(","));
 /** The code the new host shows after Approve: `SSHCC1.fixture.<masterId>.<requestId>`. */
 const pairingCode = (requestId, master = MASTER_ID) => "SSHCC1.fixture." + master + "." + requestId;
 /** Validation shared by preview and complete (as on the real Master): the request the code answers. */
@@ -217,8 +228,123 @@ function groupStatus(id) {
   run.done = run.hosts.every(h => h.state !== "started" || ["succeeded", "failed", "cancelled", "interrupted"].includes(h.status));
   return structuredClone(run);
 }
+/* Activity, like the Master: the audited methods, Recent Jobs rows and the filters (Thai calendar days). */
+const AUDITED = new Set(["jobs.start", "jobs.cancel", "groups.run", "groups.cancel", "groups.retry", "targets.import", "targets.update", "targets.import_legacy", "targets.remove",
+  "enrollment.export", "enrollment.accept", "masters.revoke", "merges.add", "merges.sync", "merges.pair_request", "merges.pair_complete", "merges.remove", "relays.revoke", "relays.allow",
+  "pairing.create", "pairing.complete", "pairing.cancel", "tags.set", "folders.create", "folders.rename", "folders.delete", "folders.assign",
+  "datacenters.create", "datacenters.rename", "datacenters.delete", "datacenters.assign", "files.write", "files.mkdir", "files.remove", "containers.action", "terminal.open",
+  "backup.create", "backup.restore", "keys.rotate", "activity.settings"]);
+const audited = (method, p) => AUDITED.has(method) || (method === "files.read" && p.download === true) || (method === "files.upload" && p.done === true);
+const OBJECT_KEYS = ["targetId", "master", "jobId", "runId", "path", "container", "action", "id", "name", "folderId", "datacenterId", "masterId", "keepDays"];
+function auditObject(method, p) {
+  const parts = OBJECT_KEYS.map(key => p[key]).filter(v => (typeof v === "string" && v) || typeof v === "number").map(String);
+  if (method === "groups.run") { if (p.selector?.tag) parts.push("tag " + p.selector.tag); if (p.selector?.folder) parts.push("folder " + p.selector.folder); }
+  if (method === "tags.set") parts.push((p.tags || []).join(", "));
+  if (method === "targets.import" || method === "targets.update") { const id = (p.registration || p.target)?.id; if (id) parts.push(id); }
+  return parts.join(" · ");
+}
+function audit(method, p, result, channel = "desktop", at = Date.now()) {
+  if (flags.has("activity-warning")) return;
+  s.activity.audit.push({ time: stamp(at), action: method, object: auditObject(method, p), result, channel, user: "fixture-owner" });
+}
+function logJob(row, at = Date.now()) {
+  const job = { jobId: row.jobId, targetId: row.targetId, label: row.label || null, groupId: row.groupId || null, selector: row.selector || null, script: String(row.script || "").slice(0, 4096),
+    cwd: row.cwd || "/", shell: row.shell || null, asAdmin: Boolean(row.asAdmin), envNames: Object.keys(row.env || {}), channel: row.channel || "desktop", sentAt: stamp(at), sentMs: at,
+    status: row.status || "queued", exitCode: row.exitCode ?? null, startedAt: row.startedAt || null, finishedAt: row.finishedAt || null, error: row.error || null };
+  s.activity.jobs = s.activity.jobs.filter(j => j.jobId !== job.jobId).concat(job);
+  return job;
+}
+function seedActivity() {
+  const t = Date.now(), today = thaiMidnight(thaiDate(t)), at = (day, h, m) => today - day * DAY + (h * 60 + m) * 60000;
+  s.targets.push({ schemaVersion: 2, id: "lab-pc", nodeId: "lab-pc-node", label: "Lab PC", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.99", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
+  s.tags.push({ targetId: "ui-test", key: "web", tag: "web" }, { targetId: "lab-pc", key: "web", tag: "web" });
+  const job = (id, target, script, day, h, m, status, exitCode, extra = {}) => {
+    const sent = at(day, h, m), done = ["succeeded", "failed"].includes(status);
+    logJob({ jobId: id, targetId: target, script, status, exitCode, startedAt: new Date(sent + 1000).toISOString(), finishedAt: done ? new Date(sent + 9000).toISOString() : null, ...extra }, sent);
+    if (target === "ui-test") s.jobs.push({ id, masterId: MASTER_ID, script, cwd: extra.cwd || "/", status, createdAt: new Date(sent).toISOString(), startedAt: new Date(sent + 1000).toISOString(), exitCode, live: extra.live });
+  };
+  job("job-old", "ui-test", "apt-get update", 3, 10, 0, "failed", 100);
+  job("job-yesterday", "ui-test", "systemctl restart nginx\nsystemctl status nginx", 1, 14, 3, "succeeded", 0, { cwd: "/etc/nginx", env: { TOKEN: "x" } });
+  job("job-lab", "lab-pc", "df -h", 1, 23, 50, "running", null, { channel: "cli" });
+  const selector = { tag: "web" };
+  job("job-g1", "ui-test", "uptime", 0, 0, 20, "succeeded", 0, { groupId: "run-web", selector, label: "UI test target" });
+  job("job-g2", "lab-pc", "uptime", 0, 0, 20, "unreachable", null, { groupId: "run-web", selector, label: "Lab PC", error: "ALL_ROUTES_FAILED: lan 192.0.2.99:22: No route to host" });
+  job("job-live", "ui-test", "sleep 5; echo done", 0, 0, 40, "running", null, { live: true });
+  const line = (day, h, m, action, p, result = "ok", channel = "desktop") => audit(action, p, result, channel, at(day, h, m));
+  line(3, 10, 0, "jobs.start", { targetId: "ui-test", jobId: "job-old" });
+  line(1, 9, 15, "tags.set", { targetId: "ui-test", tags: ["web"] });
+  line(1, 14, 3, "jobs.start", { targetId: "ui-test", jobId: "job-yesterday" });
+  line(1, 16, 30, "files.remove", { targetId: "ui-test", path: "/tmp/cache" }, "E_PERMISSION", "merge: Branch Master");
+  line(1, 23, 50, "jobs.start", { targetId: "lab-pc", jobId: "job-lab" }, "ok", "cli");
+  line(0, 0, 20, "groups.run", { selector }, "ok", "mcp");
+  line(0, 0, 40, "terminal.open", { targetId: "ui-test" });
+}
+function activityFilter(p) {
+  const today = thaiDate(Date.now());
+  let from = -Infinity, to = Infinity;
+  const day = d => thaiMidnight(d);
+  if (p.range === "today") { from = day(today); to = from + DAY; }
+  else if (p.range === "yesterday") { to = day(today); from = to - DAY; }
+  else if (/^\d+d$/.test(p.range || "")) { to = day(today) + DAY; from = to - parseInt(p.range, 10) * DAY; }
+  else if (p.from || p.to) { if (p.from) from = day(p.from); to = day(p.to || today) + DAY; }
+  return { from, to, hosts: Array.isArray(p.hosts) ? new Set(p.hosts) : null, text: String(p.text || "").trim().toLowerCase(), status: p.status || "all" };
+}
+const FINISHED = ["succeeded", "failed", "cancelled", "interrupted", "unreachable"];
+const statusMatches = (wanted, status) => wanted === "succeeded" ? status === "succeeded" : wanted === "failed" ? ["failed", "cancelled", "interrupted", "unreachable"].includes(status)
+  : wanted === "running" ? !FINISHED.includes(status) : true;
+function auditList(p) {
+  const f = activityFilter(p);
+  return s.activity.audit.filter(line => {
+    const at = Date.parse(line.time); if (at < f.from || at >= f.to) return false;
+    const host = line.object.split(" · ")[0];
+    const byHost = f.hosts?.has(host), byText = f.text && (line.action.toLowerCase().includes(f.text) || line.object.toLowerCase().includes(f.text));
+    return (!f.hosts && !f.text) || byHost || byText;
+  }).reverse().map(line => ({ ...line }));
+}
+function jobList(p) {
+  const f = activityFilter(p), out = [], groups = new Map();
+  const rows = s.activity.jobs.filter(j => j.sentMs >= f.from && j.sentMs < f.to).sort((a, b) => b.sentMs - a.sentMs);
+  const matches = j => (!f.hosts || f.hosts.has(j.targetId)) && statusMatches(f.status, j.status);
+  const view = ({ sentMs, ...j }) => ({ ...j });
+  for (const j of rows) {
+    if (!j.groupId) { if (matches(j)) out.push({ kind: "job", job: view(j) }); continue; }
+    if (!groups.has(j.groupId)) { const g = { kind: "group", groupId: j.groupId, selector: j.selector, channel: j.channel, hosts: [], hit: false }; groups.set(j.groupId, g); out.push(g); }
+    const g = groups.get(j.groupId); g.hosts.push(view(j)); if (matches(j)) g.hit = true;
+  }
+  return out.filter(e => e.kind !== "group" || e.hit).map(e => { if (e.kind !== "group") return e; const { hit, ...g } = e; g.hosts.reverse(); g.sentAt = g.hosts[0].sentAt; return g; });
+}
+/** One refresh: lab-pc never answers; the live job finishes; other unfinished jobs move one step. */
+function refreshActivity(p) {
+  for (const entry of jobList(p)) for (const shown of entry.kind === "group" ? entry.hosts : [entry.job]) {
+    if (FINISHED.includes(shown.status)) continue;
+    const row = s.activity.jobs.find(j => j.jobId === shown.jobId);
+    if (row.targetId === "lab-pc") { row.error = "ALL_ROUTES_FAILED: lan 192.0.2.99:22: No route to host"; continue; }
+    const job = s.jobs.find(j => j.id === row.jobId) || s.groupRuns.flatMap(r => r.hosts).find(h => h.jobId === row.jobId);
+    if (job?.live) { job.status = "succeeded"; job.exitCode = 0; job.live = false; }
+    if (job) Object.assign(row, { status: job.status, exitCode: job.exitCode ?? null, error: null });
+  }
+}
+const cell = v => { const t = v == null ? "" : String(v); return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+const csv = (head, rows) => "﻿" + [head, ...rows].map(r => r.map(cell).join(",")).join("\r\n") + "\r\n";
+const thaiText = v => v && !Number.isNaN(Date.parse(v)) ? stamp(Date.parse(v)) : (v ?? "");
+function activityCsv(p) {
+  if (p.view === "audit") return csv(["time", "action", "object", "result", "channel", "user"], auditList(p).map(l => [l.time, l.action, l.object, l.result, l.channel, l.user]));
+  const jobs = jobList(p).flatMap(e => e.kind === "group" ? e.hosts : [e.job]);
+  return csv(["time", "host", "group", "status", "exit_code", "started", "finished", "cwd", "as_admin", "channel", "job_id", "script"],
+    jobs.map(j => [j.sentAt, j.targetId, j.groupId, j.status, j.exitCode, thaiText(j.startedAt), thaiText(j.finishedAt), j.cwd, j.asAdmin, j.channel, j.jobId, j.script]));
+}
+const activityStatus = () => ({ keepDays: s.activity.keepDays, since: s.activity.since, warning: flags.has("activity-warning") });
 function rpc(method, p = {}) {
   switch (method) {
+    case "activity.status": return activityStatus();
+    case "activity.settings": {
+      const days = Number(p.keepDays);
+      if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error("E_ACTIVITY_DAYS: keep 1-3650 days");
+      s.activity.keepDays = days; return activityStatus();
+    }
+    case "activity.audit": return { lines: auditList(p), status: activityStatus() };
+    case "activity.jobs": if (p.refresh) refreshActivity(p); return { jobs: jobList(p), status: activityStatus() };
+    case "activity.csv": return { csv: activityCsv(p) };
     case "groups.preview": return groupHosts(p.selector);
     case "groups.run": return startGroup(p);
     case "groups.status": return p.runId ? groupStatus(p.runId) : { runs: structuredClone(s.groupRuns) };
@@ -258,7 +384,9 @@ function rpc(method, p = {}) {
       if (firstStart) { firstStart = false; const error = new Error("Simulated timeout AFTER acceptance. Retry same form."); error.status = 504; throw error; }
       return job;
     }
-    case "jobs.status": return s.jobs.find(job => job.id === p.jobId);
+    case "jobs.status":
+      if (p.targetId === "lab-pc") throw new Error("E_ROUTE: ALL_ROUTES_FAILED: lan 192.0.2.99:22: No route to host");
+      return s.jobs.find(job => job.id === p.jobId);
     case "jobs.logs": { const log = p.stream === "stderr" ? "Fixture stderr\n" : "Fixture output <script>escaped</script>\n"; return { content: log.slice(p.offset || 0), nextOffset: log.length, eof: true }; }
     case "jobs.cancel": { const job = s.jobs.find(row => row.id === p.jobId); job.status = "cancelled"; return job; }
     case "files.list": return [{ name: "example.txt", path: "/tmp/example.txt", isDirectory: false, isSymlink: false, size: Buffer.byteLength(content) }];
@@ -313,6 +441,19 @@ function rpc(method, p = {}) {
     default: throw new Error("Unsupported fixture method: " + method);
   }
 }
+/** One page request, recorded as the Master records it: audited if it changes something, jobs it starts kept. */
+function recorded(method, p) {
+  let result;
+  try { result = rpc(method, p); }
+  catch (error) { if (audited(method, p)) audit(method, p, (/^E_[A-Z_]+/.exec(error.message) || ["E_OPERATION"])[0]); throw error; }
+  if (audited(method, p)) audit(method, p, "ok");
+  if (method === "jobs.start") logJob({ jobId: result.id, targetId: p.targetId, script: p.script, cwd: p.cwd, shell: p.shell, asAdmin: p.asAdmin, env: p.env, status: result.status });
+  if (method === "groups.run" || method === "groups.retry") for (const h of result.hosts.filter(h => h.state === "started" || h.state === "unreachable"))
+    if (h.state === "unreachable" || !s.activity.jobs.some(j => j.jobId === h.jobId))
+      logJob({ jobId: h.jobId || crypto.randomUUID(), targetId: h.targetId, label: h.label, groupId: result.id, selector: result.selector, script: result.scripts[h.os], cwd: h.cwd, asAdmin: result.asAdmin, env: result.env, status: h.state === "unreachable" ? "unreachable" : h.status, error: h.error });
+  if (method === "groups.status" && p.runId) for (const h of result.hosts) { const row = s.activity.jobs.find(j => j.jobId === h.jobId); if (row) Object.assign(row, { status: h.status, exitCode: h.exitCode }); }
+  return result;
+}
 /** Native (Tauri) commands other than "rpc". */
 function command(name, args) {
   if (name === "open_shell") return !args.ownerSessionId && process.env.SSHCC_FIXTURE_SINGLE_SESSION !== "1"
@@ -348,7 +489,8 @@ function command(name, args) {
     if (kind) { const base = JSON.parse(Buffer.from(makeBackup("fixture passphrase"), "base64").toString("utf8")); if (kind === "newer") base.formatVersion = 2; if (kind === "damaged") base.damaged = true; return { name: kind + ".sshccbak", file: Buffer.from(JSON.stringify(base)).toString("base64") }; }
     return savedBackup ? { ...savedBackup } : null;
   }
-  if (name === "rpc") return rpc(args.method, args.params || {});
+  if (name === "save_csv") { lastCsv = { name: args.name, csv: rpc("activity.csv", args.params || {}).csv }; return "/fixture/Downloads/" + args.name; }
+  if (name === "rpc") return recorded(args.method, args.params || {});
   throw new Error("Unsupported fixture command: " + name);
 }
 const bootstrap = 'window.__TAURI__={core:{invoke:async(command,args)=>{const r=await fetch("/rpc",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({command,args})});const data=await r.json();if(!r.ok)throw new Error(data.error);return data;}}};';
@@ -358,6 +500,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://fixture");
     if (url.pathname === "/calls") return json(res, calls);
+    if (url.pathname === "/last-csv") return json(res, lastCsv);
     if (url.pathname === "/scenario" && req.method === "POST") { reset((await body(req)).flags || []); return json(res, { flags: [...flags] }); }
     if (url.pathname === "/next-backup" && req.method === "POST") { nextBackup = (await body(req)).kind || ""; return json(res, { kind: nextBackup }); }
     if (url.pathname === "/pairing-code") { const row = url.searchParams.get("requestId") ? pairing(url.searchParams.get("requestId")) : s.pairings.find(p => p.state === "awaiting_approval") || pairing(null); return json(res, { code: pairingCode(row.requestId, url.searchParams.get("master") === "other" ? "other-master" : MASTER_ID) }); }
@@ -378,4 +521,6 @@ const server = http.createServer(async (req, res) => {
     res.setHeader("content-type", types[path.extname(file)] + "; charset=utf-8"); res.end(page);
   } catch (error) { res.statusCode = error.status || 400; json(res, { error: error.message }); }
 });
+// After every helper is defined (the Activity seed uses them).
+reset((process.env.SSHCC_FIXTURE_SCENARIO || "").split(","));
 server.listen(Number(process.env.SSHCC_UI_TEST_PORT || 42197), "127.0.0.1", () => console.log("SSHCC isolated UI fixture: http://127.0.0.1:" + server.address().port));

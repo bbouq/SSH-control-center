@@ -68,6 +68,9 @@ jobs:
       - name: Tags and group run
         run: node desktop/tests/tags.cjs
         env: { NODE_PATH: /tmp/pw/node_modules }
+      - name: Activity
+        run: node desktop/tests/activity.cjs
+        env: { NODE_PATH: /tmp/pw/node_modules }
       - name: Keep screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -78,4 +81,5 @@ jobs:
             artifacts/language-ui/
             artifacts/backup-ui/
             artifacts/tags-ui/
+            artifacts/activity-ui/
           if-no-files-found: ignore

@@ -14,7 +14,7 @@ const WINDOWS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 // Words allowed in Thai: proper names that stay English (wording table), English glosses in parentheses, and
 // technical words that are the same in Thai IT use. Everything that comes from the fixture is added at run time.
-const ALLOWED = new Set(`Master Masters Tag Merge SSH SSHCC Approve Owner SSH Control Center CONTROL HOST KEY EN
+const ALLOWED = new Set(`Master Masters Tag Merge SSH SSHCC Audit log CSV Approve Owner SSH Control Center CONTROL HOST KEY EN
   AI ID OS IP CPU JSON CLI MCP LAN Tailscale Windows Server Ubuntu Debian Linux Desktop ProxyJump hostKeys identityFile
   PowerShell Bash Shell stdout stderr UTF SHA B KB MB GB TB GiB KiB Node Host key host Bridge session Session Terminal
   Repository WebView tray named pipe Unix socket Services SSHControlCenter Cursor Claude Code Codex docker podman path
@@ -256,10 +256,31 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator('#confirm-group button[type="submit"]').click();
     await th.locator("#group-run .group-summary").waitFor();
     await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
-    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
-    await th.locator("#recent-groups tbody tr").waitFor();
-    await assertThai(th, "recent group runs", mixWords);
-    await shots(th, "recent-groups");
+    await th.locator('[data-action="dc-tab"][data-tab="activity"]').click();
+    await th.locator("#activity-list tr.group-row").first().locator('[data-action="activity-toggle"]').click();
+    await th.locator("#activity-list tr.group-host").first().waitFor();
+    await assertThai(th, "Activity: jobs with a group run", mixWords);
+    await shots(th, "activity-jobs");
+    await th.locator('[data-action="activity-view"][data-view="audit"]').click();
+    await th.locator("#activity-list .audit-table").waitFor();
+    await assertThai(th, "Activity: audit log", mixWords);
+    await shots(th, "activity-audit");
+    // History, the offline host's recorded job, the warning and the keep-days setting.
+    await scenario(th, url, ["activity-history", "activity-warning"]); await th.reload(); await ready(th);
+    const historyWords = [...words, ...await fixtureWords(th, url), "web"];
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator("#activity-keep").waitFor();
+    await assertThai(th, "Summary: keep activity, with the warning", historyWords);
+    await th.locator('[data-action="dc-tab"][data-tab="activity"]').click();
+    await th.locator('[data-action="activity-range"][data-range="7d"]').click();
+    await th.locator("#activity-list tr.group-row").waitFor();
+    await th.locator('#activity-list [data-job="job-lab"]').click();
+    await th.locator("#activity-detail").waitFor();
+    await assertThai(th, "Activity: an offline host's recorded job", historyWords);
+    await th.locator('[data-action="activity-range"][data-range="custom"]').click();
+    await th.locator("#activity-from").waitFor();
+    await assertThai(th, "Activity: custom range", historyWords);
+    await shots(th, "activity-history");
 
     // Backup and restore (roadmap entry 3): the section, both flows and their errors.
     const fileWords = [...words, "sshcc", "backup", "sshccbak", "Backups", "fixture"];
