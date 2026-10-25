@@ -28,7 +28,7 @@ const state = {
   // Tags: {tags: [{tag, hosts}], hosts: {id: [tag]}}; tagError: the last refused change, shown under the Tag box.
   tags: { tags: [], hosts: {} }, tagError: null,
   // Group runs: the draft waiting in the confirmation, and the run shown in place of the New job form.
-  groupDraft: null, groupRun: null, groupRuns: []
+  groupDraft: null, groupRun: null, activity: null
 };
 addReset();
 const native = (command, args = {}) => {
@@ -212,7 +212,7 @@ async function refreshFleet() {
     rpc("backup.status").catch(() => null), rpc("keys.rotation_status").catch(() => null), rpc("tags.list").catch(() => null)
   ]);
   state.backupStatus = backup; state.rotation = rotation;
-  void refreshRecentGroups().then(() => { if ($("#recent-groups")) $("#recent-groups").outerHTML = renderRecentGroups(); });
+  void refreshActivityStatus().then(() => { if ($("#activity-warning")) $("#activity-warning").outerHTML = renderActivityWarning(); });
   if (tags) state.tags = tags;
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
@@ -305,7 +305,7 @@ function hostRole(item) {
   return state.masterCheck.get(item.id) || state.health.get(item.id)?.isMaster ? role.master : role.target;
 }
 /** Every host page — target host or Master — has the same tabs. */
-const hostPageTabs = () => ["summary", "jobs", "files", "containers", "monitoring"].map(id => [id, T.host.tabs[id]]);
+const hostPageTabs = (current = false) => ["summary", ...(current ? ["activity"] : []), "jobs", "files", "containers", "monitoring"].map(id => [id, T.host.tabs[id]]);
 /** This Master registered as a target host of itself (needed for its own jobs, files and terminal). */
 const selfTarget = () => state.service ? state.targets.find(item => !item.relayed && item.nodeId === state.service.nodeId) : null;
 /** The target host behind the open page: the host itself, a merged Master, or this Master's self registration. */
@@ -632,16 +632,137 @@ function renderGroupRun(run) {
     '<p class="group-summary"><strong>' + esc(run.done ? t.groupSummary(ok, counted.length) : t.groupRunning(finished, counted.length)) + "</strong></p>" +
     '<div class="table-wrap"><table><thead><tr><th>' + T.inv.head.host + "</th><th>" + T.inv.head.status + "</th><th>" + t.exitCode + "</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section>";
 }
-/** The current Master's Jobs tab: the most recent group runs, newest first; Open shows one in place. */
-function renderRecentGroups() {
-  const t = T.jobs, runs = state.groupRuns || [];
-  const counts = run => { const hosts = run.hosts.filter(row => row.state !== "skipped"); return t.groupSummary(hosts.filter(row => row.status === "succeeded").length, hosts.length); };
-  return '<section class="section recent-groups" id="recent-groups"><div class="section-heading"><h2>' + t.recentTitle + "</h2></div>" +
-    (runs.length ? '<div class="table-wrap"><table><tbody>' + runs.map(run => "<tr><td><strong>" + esc(run.selector?.label || "") + "</strong><small>" + esc(timestamp(run.createdAt)) + "</small></td><td>" + esc(counts(run)) +
-      '</td><td class="actions"><button class="small" data-action="group-open" data-run="' + esc(run.id) + '">' + t.open + "</button></td></tr>").join("") + "</tbody></table></div>"
-      : '<div class="empty-inline">' + t.recentEmpty + "</div>") + "</section>";
+/* Activity (roadmap entry 5): the current Master's Recent Jobs and audit log. The Master filters by time range, hosts
+   and status; this page turns the search box into host IDs with the same `hostMatches` as the tree. Times are always
+   Thailand time, whatever the machine's time zone. */
+const thaiTime = value => {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString(T.locale, { timeZone: "Asia/Bangkok", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+};
+/** Today in Thailand as YYYY-MM-DD, for file names and the custom range. */
+const thaiDay = () => new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+const activityState = () => state.activity || (state.activity = { view: "jobs", search: "", range: "today", from: "", to: "", status: "all", jobs: null, lines: null, info: null, open: new Set(), detail: null });
+function activityParams(view = activityState().view) {
+  const a = activityState(), params = a.range === "custom" ? { from: a.from, to: a.to || thaiDay() } : { range: a.range };
+  if (view === "jobs" && a.status !== "all") params.status = a.status;
+  if (a.search.trim()) { params.hosts = state.targets.filter(item => hostMatches(item, a.search)).map(item => item.id); params.text = a.search.trim(); }
+  return params;
 }
-async function refreshRecentGroups() { state.groupRuns = (await rpc("groups.status", {}).catch(() => null))?.runs || state.groupRuns || []; }
+async function loadActivity(refresh = false) {
+  const a = activityState(), view = a.view;
+  const reply = view === "audit" ? await rpc("activity.audit", activityParams()) : await rpc("activity.jobs", { ...activityParams(), refresh });
+  if (a.view !== view) return;
+  if (view === "audit") a.lines = reply.lines || []; else a.jobs = reply.jobs || [];
+  a.info = reply.status || a.info;
+  redrawActivity();
+}
+function redrawActivity() {
+  if ($("#activity-list")) $("#activity-list").innerHTML = renderActivityList();
+  if ($("#activity-warning")) $("#activity-warning").outerHTML = renderActivityWarning();
+}
+const renderActivityWarning = () => activityState().info?.warning
+  ? '<div class="callout pending" id="activity-warning" role="status">' + icons.alert + "<div><strong>" + T.activity.warningTitle + "</strong><p>" + T.activity.warningText + "</p></div></div>"
+  : '<div id="activity-warning" hidden></div>';
+const activityHost = (id, label) => esc([...state.targets].find(item => item.id === id)?.label || label || id);
+const activityBadge = status => status === "unreachable" ? '<span class="badge bad">' + T.activity.unreachable + "</span>" : badge(status);
+function selectorLabel(selector) {
+  const t = T.activity;
+  if (selector?.tag) return t.byTag(selector.tag);
+  const folder = (state.folders.folders || []).find(row => row.id === selector?.folder);
+  return t.byFolder(folder?.name || selector?.folder || "");
+}
+function renderActivity() {
+  const a = activityState(), t = T.activity;
+  const views = ["jobs", "audit"].map(view => '<button data-action="activity-view" data-view="' + view + '" aria-pressed="' + (a.view === view) + '">' + (view === "jobs" ? t.jobsView : t.auditView) + "</button>").join("");
+  const ranges = ["today", "yesterday", "7d", "custom"].map(range => '<button data-action="activity-range" data-range="' + range + '" aria-pressed="' + (a.range === range) + '">' + t.ranges[range] + "</button>").join("");
+  const custom = a.range === "custom" ? '<label>' + t.from + '<input type="date" id="activity-from" value="' + esc(a.from) + '" max="' + thaiDay() + '"></label><label>' + t.to + '<input type="date" id="activity-to" value="' + esc(a.to || thaiDay()) + '" max="' + thaiDay() + '"></label>' : "";
+  const status = a.view === "jobs" ? '<label>' + t.status + '<select id="activity-status">' + ["all", "succeeded", "failed", "running"].map(value => '<option value="' + value + '"' + (a.status === value ? " selected" : "") + ">" + t.statuses[value] + "</option>").join("") + "</select></label>" : "";
+  return '<section class="section activity" id="activity">' + renderActivityWarning() +
+    '<div class="activity-bar"><div class="segmented" role="group" aria-label="' + esc(t.views) + '">' + views + "</div>" +
+    '<input type="search" id="activity-search" value="' + esc(a.search) + '" placeholder="' + esc(a.view === "audit" ? t.searchAudit : t.search) + '" aria-label="' + esc(a.view === "audit" ? t.searchAudit : t.search) + '">' +
+    '<div class="segmented" role="group" aria-label="' + esc(t.range) + '">' + ranges + "</div>" + custom + status +
+    '<button class="right" data-action="activity-export">' + t.export + "</button></div>" +
+    '<div id="activity-list">' + renderActivityList() + "</div></section>";
+}
+function renderActivityList() {
+  const a = activityState(), t = T.activity, rows = a.view === "audit" ? a.lines : a.jobs;
+  if (!rows) return '<div class="empty-inline">' + T.activity.loading + "</div>";
+  const since = a.info?.since ? '<p class="help activity-since">' + esc(t.since(thaiTime(a.info.since))) + "</p>" : "";
+  if (!rows.length) return '<div class="empty-inline">' + t.nothing + "<br><small>" + t.nothingHint + "</small></div>" + since;
+  return (a.detail ? renderActivityDetail(a.detail) : "") + (a.view === "audit" ? renderAuditTable(rows) : renderActivityJobs(rows)) + since;
+}
+function activityJobRow(job, cls = "") {
+  return '<tr class="' + cls + '"><td>' + esc(thaiTime(job.sentAt)) + "</td><td>" + activityHost(job.targetId, job.label) + '</td><td><code class="script-line">' + esc(String(job.script || "").split("\n")[0]) + "</code></td><td>" + activityBadge(job.status) +
+    "</td><td>" + (job.exitCode ?? "—") + '</td><td class="actions"><button class="small" data-action="activity-open" data-target="' + esc(job.targetId) + '" data-job="' + esc(job.jobId) + '">' + T.activity.open + "</button></td></tr>";
+}
+function renderActivityJobs(entries) {
+  const t = T.activity, open = activityState().open;
+  const body = entries.map(entry => {
+    if (entry.kind !== "group") return activityJobRow(entry.job);
+    // A retried host has a row per attempt; the counts use each host's latest one.
+    const hosts = entry.hosts || [], latest = [...new Map(hosts.map(job => [job.targetId, job])).values()];
+    const ok = latest.filter(job => job.status === "succeeded").length, shown = open.has(entry.groupId);
+    return '<tr class="group-row"><td>' + esc(thaiTime(entry.sentAt)) + '</td><td colspan="2"><strong>' + esc(t.group(selectorLabel(entry.selector), latest.length)) + "</strong></td><td>" + esc(t.groupDone(ok, latest.length)) +
+      '</td><td></td><td class="actions"><button class="small" data-action="activity-toggle" data-group="' + esc(entry.groupId) + '" aria-expanded="' + shown + '">' + (shown ? t.hide : t.show) + "</button></td></tr>" +
+      (shown ? hosts.map(job => activityJobRow(job, "group-host")).join("") : "");
+  }).join("");
+  const h = t.head;
+  return '<div class="table-wrap"><table class="activity-table"><thead><tr><th>' + h.time + "</th><th>" + h.host + "</th><th>" + h.script + "</th><th>" + h.status + "</th><th>" + h.exit + "</th><th></th></tr></thead><tbody>" + body + "</tbody></table></div>";
+}
+function channelLabel(channel) {
+  const names = T.activity.channels, text = String(channel || "unknown");
+  return text.startsWith("merge: ") ? names.merge(text.slice(7)) : names[text] || text;
+}
+function renderAuditTable(lines) {
+  const t = T.activity, h = t.head;
+  const body = lines.map(line => '<tr class="' + (line.result === "ok" ? "" : "failed") + '"><td>' + esc(thaiTime(line.time)) + "</td><td>" + esc(t.actions[line.action] || line.action) + '</td><td class="mono">' + esc(line.object) +
+    "</td><td>" + (line.result === "ok" ? esc(t.ok) : '<code class="badge bad">' + esc(line.result) + "</code>") + "</td><td>" + esc(channelLabel(line.channel)) + "</td></tr>").join("");
+  return '<div class="table-wrap"><table class="activity-table audit-table"><thead><tr><th>' + h.time + "</th><th>" + h.action + "</th><th>" + h.object + "</th><th>" + h.result + "</th><th>" + h.channel + "</th></tr></thead><tbody>" + body + "</tbody></table></div>";
+}
+/** A recorded job whose host can't be reached: what the Master wrote down, and why the output can't be read. */
+function renderActivityDetail({ job, reason }) {
+  const t = T.activity;
+  const field = (label, value) => "<div><dt>" + label + "</dt><dd>" + value + "</dd></div>";
+  return '<section class="surface activity-detail" id="activity-detail"><div class="section-heading"><h2>' + t.detailTitle + " · " + activityHost(job.targetId, job.label) + '</h2><button class="small" data-action="activity-detail-close">' + t.close + "</button></div>" +
+    '<div class="callout pending">' + icons.alert + "<div><p>" + esc(t.offline) + '</p><small class="error-detail">' + esc(reason) + "</small></div></div>" +
+    '<div class="output light"><pre>' + esc(job.script) + "</pre></div>" +
+    '<dl class="activity-fields">' + field(T.activity.head.status, activityBadge(job.status)) + field(t.cwd, "<code>" + esc(job.cwd || "—") + "</code>") + field(t.sent, esc(thaiTime(job.sentAt))) +
+    field(t.started, esc(job.startedAt ? thaiTime(job.startedAt) : "—")) + field(t.finished, esc(job.finishedAt ? thaiTime(job.finishedAt) : "—")) +
+    ((job.envNames || []).length ? field(t.envNames, "<code>" + esc(job.envNames.join(", ")) + "</code>") : "") + "</dl></section>";
+}
+function findActivityJob(jobId) {
+  for (const entry of activityState().jobs || []) {
+    if (entry.kind === "group") { const job = entry.hosts.find(row => row.jobId === jobId); if (job) return job; }
+    else if (entry.job.jobId === jobId) return entry.job;
+  }
+  return null;
+}
+/** Open: the host's Jobs tab with the job selected; when the host doesn't answer, the recorded details here. */
+async function openActivityJob(targetId, jobId) {
+  const a = activityState();
+  try {
+    const job = await rpc("jobs.status", { targetId, jobId });
+    a.detail = null;
+    await selectTarget(targetId, "jobs");
+    state.job = job; state.groupRun = null; render(); await refreshSelectedJob(true);
+  } catch (error) {
+    a.detail = { job: findActivityJob(jobId) || { jobId, targetId }, reason: String(error?.message || error).replace(/^Error:\s*/, "") };
+    redrawActivity();
+  }
+}
+async function exportActivity() {
+  const a = activityState(), t = T.activity;
+  const path = await native("save_csv", { params: { ...activityParams(), view: a.view }, name: t.fileName(a.view, thaiDay()), title: T.dialogs.exportCsv });
+  if (path) notify(t.exported(path));
+}
+/** Keep-days field on the current Master's Summary tab, next to the backup section. */
+function renderActivityKeep() {
+  const t = T.activity, info = activityState().info;
+  return '<section class="section mt" id="activity-keep"><div class="section-heading"><div><h2>' + t.keepTitle + "</h2><p>" + t.keepLead + "</p></div></div>" + renderActivityWarning() +
+    '<form id="activity-keep-form" class="inline-form"><label>' + t.keepDays + '<input name="keepDays" type="number" min="1" max="3650" required value="' + esc(info?.keepDays ?? 14) + '"></label>' +
+    '<button type="submit">' + t.keepSave + "</button></form></section>";
+}
+async function refreshActivityStatus() { activityState().info = await rpc("activity.status").catch(() => activityState().info); }
 let groupTimer = 0;
 /** Polls the shown run until every host has finished; only the run's own panel is redrawn. */
 async function watchGroup() {
@@ -653,7 +774,7 @@ async function watchGroup() {
   if (run) state.groupRun = run;
   const panel = $("#group-run"); if (panel) panel.outerHTML = renderGroupRun(state.groupRun);
   if (!state.groupRun.done) groupTimer = setTimeout(() => void watchGroup(), 2000);
-  else { await refreshRecentGroups(); if ($("#recent-groups")) $("#recent-groups").outerHTML = renderRecentGroups(); }
+  else if (activityShown()) await loadActivity();
 }
 /** Open log: that host's Jobs tab with the group's job selected. */
 async function openGroupLog(id, jobId) {
@@ -1281,7 +1402,7 @@ function renderDcPanel() {
   }
   if (found.kind === "master") {
     const master = found.master, target = pageTarget();
-    const tabs = dcTabs(hostPageTabs());
+    const tabs = dcTabs(hostPageTabs(master.current));
     const actions = target ? terminalButton(target).replace('class="small"', 'class="primary"') : "";
     const t = T.host;
     const head = heading(master.label, (master.current ? t.currentLead : t.mergedLead), actions);
@@ -1290,8 +1411,9 @@ function renderDcPanel() {
     const body = state.dc.tab === "summary"
       ? '<div class="stat-grid">' + stat(t.role, master.current ? t.currentMaster : t.mergedMaster) + stat(t.targetHosts, String(master.machines.length)) + stat(t.online, String(dcOnline(master.machines))) + "</div>" +
         '<section class="section mt"><div class="section-heading"><h2>' + t.targetHosts + "</h2></div>" + dcMachineTable(master.machines) + "</section>" +
-        (master.current ? renderBackupSection() : "")
-      : state.dc.tab === "jobs" ? (master.current ? renderRecentGroups() : "") + (target ? renderJobs(target) : (state.groupRun ? renderGroupRun(state.groupRun) : "") + needsSelf)
+        (master.current ? renderBackupSection() + renderActivityKeep() : "")
+      : state.dc.tab === "activity" && master.current ? renderActivity()
+      : state.dc.tab === "jobs" ? (target ? renderJobs(target) : (state.groupRun ? renderGroupRun(state.groupRun) : "") + needsSelf)
       : state.dc.tab === "files" ? (target ? renderFiles(target) : needsSelf)
       : state.dc.tab === "monitoring" ? renderMonitorTab(dcKey(master.item), master.label) : renderContainerTab(dcKey(master.item), master.label);
     return head + tabs + body;
@@ -1720,6 +1842,7 @@ async function loadContainersIfShown(force = false) {
   if (key && (force || !state.containers.has(key))) await loadContainers(key);
 }
 /** The machine page in the Datacenter shows `tab` ("jobs", "files", …). */
+const activityShown = () => state.page === "datacenter" && !state.dc.adding && state.dc.tab === "activity" && state.dc.node === "master:local";
 const machineTab = tab => state.page === "datacenter" && !state.dc.adding && state.dc.tab === tab && Boolean(pageTarget());
 async function selectTarget(id, tab = "summary") {
   state.page = "datacenter"; state.dc.node = "node:" + id; state.dc.tab = tab; state.dc.adding = null; state.ctLogs = null;
@@ -1974,7 +2097,12 @@ document.addEventListener("click", event => {
     if (action === "group-log") return openGroupLog(button.dataset.id, button.dataset.job);
     if (action === "group-cancel") { state.groupRun = await rpc("groups.cancel", { runId: state.groupRun.id, ...(button.dataset.id ? { targetId: button.dataset.id } : {}) }); render(); return watchGroup(); }
     if (action === "group-retry") { state.groupRun = await rpc("groups.retry", { runId: state.groupRun.id }); render(); return watchGroup(); }
-    if (action === "group-open") { state.groupRun = await rpc("groups.status", { runId: button.dataset.run }); render(); return watchGroup(); }
+    if (action === "activity-view") { const a = activityState(); a.view = button.dataset.view; a.detail = null; $("#dc-panel").innerHTML = renderDcPanel(); return loadActivity(); }
+    if (action === "activity-range") { const a = activityState(); a.range = button.dataset.range; if (a.range === "custom" && !a.from) a.from = thaiDay(); $("#dc-panel").innerHTML = renderDcPanel(); return loadActivity(); }
+    if (action === "activity-toggle") { const open = activityState().open, id = button.dataset.group; if (open.has(id)) open.delete(id); else open.add(id); redrawActivity(); return; }
+    if (action === "activity-open") return openActivityJob(button.dataset.target, button.dataset.job);
+    if (action === "activity-detail-close") { activityState().detail = null; redrawActivity(); return; }
+    if (action === "activity-export") return exportActivity();
     if (action === "ctx-tag") {
       state.page = "datacenter"; state.dc.node = button.dataset.node; state.dc.adding = null; state.backup = null;
       await selectTarget(state.dc.node.slice(5), "summary");
@@ -2066,6 +2194,7 @@ document.addEventListener("click", event => {
     if (action === "dc-tab") {
       state.dc.tab = button.dataset.tab; state.ctLogs = null; $("#dc-panel").innerHTML = renderDcPanel();
       if (machineTab("jobs")) await refreshJobs();
+      if (activityShown()) await loadActivity(true);
       await loadContainersIfShown(); await loadFilesIfShown();
       if (visibleMonitorKey()) await loadStats(visibleMonitorKey());
     }
@@ -2219,6 +2348,7 @@ document.addEventListener("click", event => {
     if (action === "close-file") { state.file = null; $("#file-editor").innerHTML = ""; }
   });
 });
+let activitySearchTimer = 0;
 document.addEventListener("input", event => {
   if (event.target.form?.id === "create-pairing" && ["address", "port"].includes(event.target.name)) onWhereInput(event.target.form);
   if (event.target.id === "add-code") onCodeInput(event.target, event.inputType === "insertFromPaste");
@@ -2226,6 +2356,7 @@ document.addEventListener("input", event => {
   if (event.target.name === "runOn" && event.target.form?.id === "start-job") onRunOnChange(event.target.form);
   if (event.target.id === "restore-off") $("#restore-run").disabled = !event.target.checked;
   if (event.target.closest?.("#confirm-delete")) { const form = $("#confirm-delete"); form.querySelector('[type="submit"]').disabled = event.target.value !== form.dataset.name; }
+  if (event.target.id === "activity-search") { activityState().search = event.target.value; clearTimeout(activitySearchTimer); activitySearchTimer = setTimeout(() => void loadActivity().catch(error => notifyError(error)), 250); }
   if (event.target.id === "file-filter") { state.fileQuery = event.target.value; $("#files-output").innerHTML = renderFileList(); }
   if (event.target.id === "fleet-search") { state.query = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
   if (event.target.id === "dc-search") {
@@ -2235,6 +2366,8 @@ document.addEventListener("input", event => {
 });
 document.addEventListener("change", event => {
   if (event.target.id === "group-filter") { state.group = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
+  if (event.target.id === "activity-status") { activityState().status = event.target.value; void loadActivity().catch(error => notifyError(error)); }
+  if (["activity-from", "activity-to"].includes(event.target.id)) { activityState()[event.target.id.slice(9)] = event.target.value; void loadActivity().catch(error => notifyError(error)); }
 });
 document.addEventListener("submit", event => {
   const form = event.target;
@@ -2243,6 +2376,10 @@ document.addEventListener("submit", event => {
   const submittedPairing = state.pairing;
   void busy($('button[type="submit"]', form), async () => {
     if (form.id === "backup-pass-form") return saveBackup();
+    if (form.id === "activity-keep-form") {
+      activityState().info = await rpc("activity.settings", { keepDays: Number(form.elements.keepDays.value) });
+      return notify(T.activity.keepSaved(activityState().info.keepDays));
+    }
     if (form.id === "tag-add") { const tag = form.elements.tag.value; if (tag.trim()) return setHostTags(form.dataset.id, [...hostTags(form.dataset.id), tag]); return; }
     if (form.id === "restore-pass-form") { if (!state.backup?.summary) return openBackup(form); return; }
     if (form.id === "open-shell-session") {
@@ -2366,6 +2503,15 @@ $("#refresh-all").addEventListener("click", event => void busy(event.currentTarg
   if (state.page === "enroll") await refreshPairings();
   render();
 }));
+/* Activity: running jobs are asked again while the Jobs view is open. */
+setInterval(async () => {
+  const a = state.activity;
+  if (document.hidden || state.activityPolling || !activityShown() || a?.view !== "jobs") return;
+  const running = (a.jobs || []).some(entry => (entry.kind === "group" ? entry.hosts : [entry.job]).some(job => ["queued", "running"].includes(job.status)));
+  if (!running) return;
+  state.activityPolling = true;
+  try { await loadActivity(true); } catch {} finally { state.activityPolling = false; }
+}, 5000);
 setInterval(async () => {
   if (document.hidden || state.polling || !machineTab("jobs") || !target()?.runnerInstalled) return;
   state.polling = true;

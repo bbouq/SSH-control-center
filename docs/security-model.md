@@ -209,6 +209,8 @@ When a job starts, the Target saves the whole request in its job database, `jobs
 
 The Master keeps a copy too. Its `fleet.sqlite` also stores each job request (script, working folder, environment values and options) so that an identical retry can be recognised. The same no-secrets rule applies.
 
+The Master's Activity tab keeps its own list of the jobs it started (`job_log` in `fleet.sqlite`, for 14 days by default): the first 4,096 characters of each script and the names of the environment variables, never their values.
+
 Do not put passwords or tokens in scripts, command lines or environment values. Provision credentials on the Target instead ([INSTALL.md](INSTALL.md) explains how).
 
 *For developers:* `crates/core/src/jobs.rs` (the `payload` and `record` columns, `start`, `list`); `crates/core/src/fleet.rs` (the Master's `dispatches` table).
@@ -244,6 +246,14 @@ Installers built from this source are not code-signed. The generated `SHA256SUMS
 ### 4.11 No third-party audit, and limited testing
 
 This repository contains no third-party security audit. It ships no continuous-integration configuration and no dependency-scan configuration. It does have automated tests, including ones for host-key mismatch, revoked keys and rejected local callers. [VALIDATION.md](VALIDATION.md) lists what is tested and, just as important, what is not. For example, nothing in the tree runs the Windows installer end to end.
+
+### 4.12 The audit log is a record for the owner, not proof
+
+The Master writes one line to `audit.jsonl` in its state folder for each action that changes something (and for each Shell opened or file downloaded), refused ones included. It holds the time, the action, what it was done to, the result, the channel and the OS account. It never holds scripts, file contents, output, environment values or passphrases. It is kept 14 days by default, and it is not in backups.
+
+It is not tamper-proof. The Owner or an administrator on the Master can edit or delete it, and nothing signs it. The channel (`desktop`, `cli`, `mcp`, `merge: <Master>`) is a label the client reports, not a check: any program running as the Owner can claim any channel ([ADR 0002](adr/0002-team-sharing-through-merged-masters.md)). If writing fails (a full disk, for example), the action still goes ahead and the window shows a warning until writing works again. Use it to look back at what happened, not as evidence against someone with access to the Master.
+
+*For developers:* `crates/core/src/activity.rs` (`AUDITED`, `after`); `crates/core/src/service.rs` (`handle_as`).
 
 ## 5. Safe use checklist
 

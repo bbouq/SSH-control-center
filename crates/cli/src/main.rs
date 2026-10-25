@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+mod activity;
 mod backup;
 mod shell;
 use clap::{Parser, Subcommand};
@@ -98,6 +99,19 @@ enum Action {
         host: Option<String>,
         #[arg(long, requires = "host")]
         set: Option<String>,
+    },
+    /// This Master's Recent Jobs or audit log, in Thailand time (`--csv`: the CSV the window exports).
+    Activity {
+        #[arg(value_parser = ["jobs", "audit"])]
+        view: String,
+        /// Host name, ID, address, folder or Tag, as in the window's search box.
+        #[arg(long)]
+        host: Option<String>,
+        /// today, yesterday, 7d (the default), 30d, or a date such as 2026-10-24.
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        csv: bool,
     },
     Targets,
     Doctor {
@@ -293,6 +307,7 @@ fn main() {
 }
 fn run() -> Result<()> {
     let args = Args::parse();
+    sshcc_core::client::set_channel(if matches!(args.command, Action::Mcp) { "mcp" } else { "cli" });
     if let Some(path) = args.data_dir {
         std::env::set_var("SSHCC_DATA_DIR", path);
     }
@@ -588,6 +603,10 @@ fn run() -> Result<()> {
         Action::Tags { host: Some(host), set: Some(list) } => {
             let tags: Vec<&str> = list.split(',').map(str::trim).filter(|tag| !tag.is_empty()).collect();
             print(&call("tags.set", json!({"targetId":host,"tags":tags}))?)
+        }
+        Action::Activity { view, host, since, csv } => {
+            print!("{}", activity::run(&view, host.as_deref(), since.as_deref(), csv, &call)?);
+            Ok(())
         }
         Action::Targets => print(&call("targets.list", json!({}))?),
         Action::Doctor { target_id, session } => print(&call(

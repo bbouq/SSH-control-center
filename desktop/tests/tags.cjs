@@ -248,14 +248,15 @@ const checks = {
     await page.locator('[data-action="group-retry"]').click();
     await page.locator("#group-run .group-summary", { hasText: "3 of 3 hosts succeeded" }).waitFor({ timeout: 15000 });
     assert.equal(await page.locator('[data-action="group-retry"]').count(), 0, "nothing left to retry");
-    // Recent group runs on the current Master's Jobs tab, also after a reload.
+    // The run on the current Master's Activity tab (entry 5), also after a reload.
     await page.reload();
     await openTree(page);
     await page.locator('#dc-tree .dc-item[data-node="master:local"]').click();
-    await page.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
-    await page.locator("#recent-groups tr", { hasText: "Every host with Tag mix" }).waitFor();
-    await page.locator('#recent-groups [data-action="group-open"]').first().click();
-    await page.locator("#group-run .group-summary", { hasText: "3 of 3 hosts succeeded" }).waitFor();
+    await page.locator('[data-action="dc-tab"][data-tab="activity"]').click();
+    const row = page.locator("#activity-list tr.group-row", { hasText: "Tag mix · 3 hosts" });
+    await row.waitFor();
+    await row.locator('[data-action="activity-toggle"]').click();
+    await page.locator("#activity-list tr.group-host").first().waitFor();
     await shots(page, "group-recent");
   },
 };

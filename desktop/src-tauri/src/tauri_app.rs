@@ -302,6 +302,36 @@ async fn save_backup(
     .map_err(|error| error.to_string())?
 }
 
+// Activity CSV: the native save dialog first, then the service builds the CSV for the
+// filter on screen. The webview names no path and sends no file content.
+#[tauri::command]
+async fn save_csv(
+    app: AppHandle,
+    params: Value,
+    name: String,
+    title: Option<String>,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_title(title.unwrap_or_else(|| "Export CSV".into()))
+            .add_filter("CSV", &["csv"])
+            .set_file_name(name)
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(|error| error.to_string())?;
+        let made = client::call(&Request { method: "activity.csv".into(), params })
+            .map_err(|error| format!("{error:#}"))?;
+        std::fs::write(&path, made["csv"].as_str().unwrap_or_default()).map_err(|error| error.to_string())?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 // Restore: the person picks a .sshccbak file in the native dialog. The webview gets
 // only its name and its (encrypted) bytes, never a path it could choose itself.
 #[tauri::command]
@@ -600,6 +630,7 @@ fn run_benchmark(app: AppHandle, cycles: u8, report: std::path::PathBuf) {
     });
 }
 pub fn run_tauri(isolated_window: bool) {
+    client::set_channel("desktop");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let benchmark = match benchmark_options(&args) {
         Ok(options) => options,
@@ -643,6 +674,7 @@ pub fn run_tauri(isolated_window: bool) {
             save_remote_file,
             save_backup,
             open_backup,
+            save_csv,
             merge_two_way,
             client_links,
             client_connect,
