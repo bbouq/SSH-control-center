@@ -1,4 +1,5 @@
 use crate::{
+    backup,
     config::{self, Config},
     containers,
     executor::Executor,
@@ -30,7 +31,12 @@ pub struct Service {
     executor: Arc<Executor>,
     terminals: Arc<Terminals>,
     file_mutation: Mutex<()>,
+    /// Set by a restore: the service exits after replying so the OS starts it again with the restored identity.
+    restart: AtomicBool,
 }
+/// Exit code after a restore. systemd (Restart=on-failure) and the Windows service recovery actions start the
+/// service again, and it loads the restored config.json.
+pub const RESTART_EXIT: i32 = 75;
 impl Service {
     pub fn new(state: PathBuf, stop: Arc<AtomicBool>) -> Result<Self> {
         let config = config::load(&state)?;
@@ -47,6 +53,7 @@ impl Service {
             executor,
             terminals,
             file_mutation: Mutex::new(()),
+            restart: AtomicBool::new(false),
         })
     }
     fn target(&self) -> Result<()> {
@@ -248,6 +255,12 @@ impl Service {
             if !self.config.roles.iter().any(|r| r == "master") {
                 bail!("E_ROLE: master role is required");
             }
+        }
+        if let Some(value) = backup::handle(&self.state, &self.config, req, owner)? {
+            if req.method == "backup.restore" {
+                self.restart.store(true, Ordering::SeqCst);
+            }
+            return Ok(value);
         }
         if let Some(value) = pairing::handle(&self.state, &self.config, req)? {
             return Ok(value);
@@ -517,9 +530,18 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<()> {
                     &Response::from_result(result.map(|v| v.unwrap())),
                 );
             }
+            // Only after the restore's reply is written.
+            if service.restart.load(Ordering::SeqCst) {
+                service.stop.store(true, Ordering::SeqCst);
+                wake();
+            }
         });
     }
     service.jobs.shutdown();
     service.terminals.shutdown();
+    if service.restart.load(Ordering::SeqCst) {
+        eprintln!("SSH Control Center restored from a backup; restarting to load the restored identity");
+        std::process::exit(RESTART_EXIT);
+    }
     Ok(())
 }

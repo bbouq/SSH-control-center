@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 const MAX_FOLDERS: i64 = 200;
 
-fn database(state: &Path) -> Result<Connection> {
+pub(crate) fn database(state: &Path) -> Result<Connection> {
     let db = fleet::database(state)?;
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, master TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL);
