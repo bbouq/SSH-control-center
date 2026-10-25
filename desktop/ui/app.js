@@ -24,7 +24,11 @@ const state = {
   monitor: new Map(),
   containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} },
   // Backup and restore: the service's status line, and the open flow (null, or {mode: "backup" | "restore", …}).
-  backupStatus: null, backup: null, rotation: null
+  backupStatus: null, backup: null, rotation: null,
+  // Tags: {tags: [{tag, hosts}], hosts: {id: [tag]}}; tagError: the last refused change, shown under the Tag box.
+  tags: { tags: [], hosts: {} }, tagError: null,
+  // Group runs: the draft waiting in the confirmation, and the run shown in place of the New job form.
+  groupDraft: null, groupRun: null, groupRuns: []
 };
 addReset();
 const native = (command, args = {}) => {
@@ -114,7 +118,7 @@ function fillShellDialog() {
 }
 function badge(status) {
   const styles = { succeeded: "good", failed: "bad", interrupted: "bad", cancelled: "", running: "running", queued: "pending" };
-  return '<span class="badge ' + (styles[status] || "") + '" title="' + esc(status) + '">' + esc(T.status.jobs[status] || status) + "</span>";
+  return '<span class="badge ' + (styles[status] || "") + '">' + esc(T.status.jobs[status] || status) + "</span>";
 }
 async function busy(button, work) {
   if (button?.disabled) return;
@@ -143,6 +147,7 @@ function applyStatic() {
   for (const button of document.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.dataset.lang === lang));
   if ($("#shell-dialog").open) fillShellDialog();
   if ($("#delete-dialog").open) fillDeleteDialog();
+  if ($("#group-dialog").open) fillGroupDialog();
 }
 /** Snapshot of the typed values, open disclosures and focus under `root`; the returned function puts them back
  *  after a re-render (fields are matched by form and name). */
@@ -202,11 +207,13 @@ async function refreshLocal() {
   renderHeader();
 }
 async function refreshFleet() {
-  const [rows, merges, relays, folders, datacenters, backup, rotation] = await Promise.all([
+  const [rows, merges, relays, folders, datacenters, backup, rotation, tags] = await Promise.all([
     rpc("targets.list"), rpc("merges.list").catch(() => []), rpc("relays.list").catch(() => []), rpc("folders.list").catch(() => null), rpc("datacenters.list").catch(() => null),
-    rpc("backup.status").catch(() => null), rpc("keys.rotation_status").catch(() => null)
+    rpc("backup.status").catch(() => null), rpc("keys.rotation_status").catch(() => null), rpc("tags.list").catch(() => null)
   ]);
   state.backupStatus = backup; state.rotation = rotation;
+  void refreshRecentGroups().then(() => { if ($("#recent-groups")) $("#recent-groups").outerHTML = renderRecentGroups(); });
+  if (tags) state.tags = tags;
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
   if (!Array.isArray(rows)) throw new Error(T.common.badFormat);
@@ -338,7 +345,7 @@ function hostRow(item) {
     '<td><span class="muted">—</span></td><td>' + cpuCell({ id: "local" }) + "</td><td>" + memCell({ id: "local" }) + "</td><td>" + localStatus() + '</td><td class="actions">' + terminalButton(selfTarget()) + "</td></tr>";
   const check = state.diagnostics.get(item.id);
   const status = !item.runnerInstalled ? '<span class="badge pending">' + T.status.hosts.legacy + "</span>" : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? T.inv.connected : T.inv.problem) + "</span><small>" + esc(T.common.checkedAt(timestamp(check.checkedAt))) + "</small>" : statusBadge(item);
-  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small></td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
+  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small>" + tagChips(item.id) + "</td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
 }
 const localStatus = () => '<span class="badge ' + (state.service ? "good" : "bad") + '">' + (state.service ? T.status.hosts.online : T.status.unavailable) + "</span>";
 /** Latest CPU % from the Monitoring tab's own samples, or null when the machine was never watched. */
@@ -386,10 +393,48 @@ function graphNode(item, options = {}) {
     (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
     (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(name)) + '" title="' + esc(T.inv.openTerminal) + '">' + icons.shell + "</button>") + "</div>";
 }
+/** The one rule for the filter text: a host matches on its ID, name, tenant, merged Master, addresses, folder name or Tags. */
+function hostMatches(item, text) {
+  const search = String(text || "").trim().toLowerCase();
+  if (!search) return true;
+  const folderId = state.folders.members?.[item.id], folder = folderId && (state.folders.folders || []).find(row => row.id === folderId);
+  return [item.id, item.label, item.tenant, item.viaLabel, folder?.name, ...hostTags(item.id), ...(item.routes || []).map(route => route.address)]
+    .some(value => String(value || "").toLowerCase().includes(search));
+}
+const hostTags = id => state.tags.hosts?.[id] || [];
+/** A host's Tags as chips in a table row or on a topology card (nothing when it has none). */
+const tagChips = id => hostTags(id).length ? '<span class="row-tags">' + hostTags(id).map(tag => tagChip(tag)).join("") + "</span>" : "";
+/** A Tag as a chip: clicking its name filters by it; `removeFrom` adds × to take it off that host. */
+function tagChip(tag, removeFrom = "") {
+  return '<span class="tag-chip"><button type="button" class="tag-name" data-action="tag-filter" data-tag="' + esc(tag) + '" title="' + esc(T.tags.filterBy(tag)) + '">' + esc(tag) + "</button>" +
+    (removeFrom ? '<button type="button" class="tag-remove" data-action="tag-remove" data-id="' + esc(removeFrom) + '" data-tag="' + esc(tag) + '" aria-label="' + esc(T.tags.remove(tag)) + '">' + icons.close + "</button>" : "") + "</span>";
+}
+/** The host page's Tags: chips with ×, and a box that suggests the Tags already in use. */
+function renderTagRow(item) {
+  const t = T.tags, mine = hostTags(item.id), lower = new Set(mine.map(tag => tag.toLowerCase()));
+  const suggestions = (state.tags.tags || []).map(row => row.tag).filter(tag => !lower.has(tag.toLowerCase()));
+  const error = state.tagError?.id === item.id ? '<p class="add-check bad" role="alert">' + errorHtml(explain(state.tagError.error)) + "</p>" : "";
+  return '<section class="tag-row" id="host-tags" aria-label="' + esc(t.title) + '">' + mine.map(tag => tagChip(tag, item.id)).join("") +
+    '<form id="tag-add" data-id="' + esc(item.id) + '" autocomplete="off"><input name="tag" list="tag-suggestions" maxlength="64" placeholder="' + esc(t.add) + '" aria-label="' + esc(t.addLabel) + '">' +
+    '<datalist id="tag-suggestions">' + suggestions.map(tag => '<option value="' + esc(tag) + '">').join("") + "</datalist></form>" + error + "</section>";
+}
+async function refreshTags() { state.tags = await rpc("tags.list").catch(() => state.tags); }
+async function setHostTags(id, tags) {
+  state.tagError = null;
+  try { await rpc("tags.set", { targetId: id, tags }); }
+  catch (error) { state.tagError = { id, error: String(error?.message || error) }; }
+  await refreshTags();
+  const restore = keepInput($("#main")); render(); restore();
+  if (state.tagError) $("#tag-add [name=tag]")?.focus(); else { const box = $("#tag-add [name=tag]"); if (box) { box.value = ""; box.focus(); } }
+}
+/** A chip click: that Tag goes in the filter box, and the tree and host lists follow it. */
+function filterByTag(tag) {
+  state.query = state.dc.query = tag;
+  const box = $("#dc-search"); if (box) box.value = tag;
+  render();
+}
 function matchesFilter(item, ignoreStatus = false) {
-  const search = state.query.toLowerCase();
-  return (ignoreStatus || !state.status || statusBucket(item) === state.status) &&
-    [item.id, item.label, item.tenant, item.viaLabel, ...(item.routes || []).map(route => route.address)].some(value => String(value || "").toLowerCase().includes(search));
+  return (ignoreStatus || !state.status || statusBucket(item) === state.status) && hostMatches(item, state.query);
 }
 function isTwoWay(merge) {
   const peer = state.targets.find(item => item.id === merge?.targetId);
@@ -407,7 +452,7 @@ function renderGraph() {
     const sub = item ? [options.role, osName(item.os), item.relayed ? "" : item.routes?.[0]?.address].filter(Boolean) : [T.inv.cardSelf];
     return '<div class="topo-card is-' + status + (options.wide ? " is-wide" : "") + (item && state.flipped.has(item.id) ? " just-changed" : "") + '" data-host="' + esc(item ? item.id : "local") + '">' +
       '<span class="topo-dot" aria-hidden="true"></span><div class="topo-text"><button class="row-button" data-action="dc-select" data-node="' + (item ? "node:" + esc(item.id) : "master:local") + '">' + esc(name) + "</button>" +
-      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabel(status) || status) + (options.alsoDirect ? " · " + T.inv.alsoDirectLower : "") + "</span></div>" +
+      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabel(status) || status) + (options.alsoDirect ? " · " + T.inv.alsoDirectLower : "") + "</span>" + (item ? tagChips(item.id) : "") + "</div>" +
       (item ? terminalButton(item) : "") + "</div>";
   };
   const group = (title, entries, extra = "", head = "") => '<section class="topo-group"><header><h3>' + title + '</h3><span class="topo-meta">' + esc(T.inv.online(online(entries), entries.length)) + extra + "</span></header>" +
@@ -496,18 +541,139 @@ function renderCheckPanel(item) {
 }
 function renderJobs(item) {
   const t = T.jobs, disabled = !item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "";
-  return (state.newJob ? renderNewJob(item) : "") +
+  return (state.groupRun ? renderGroupRun(state.groupRun) : state.newJob ? renderNewJob(item) : "") +
     '<section class="section"><div class="section-heading"><h2>' + t.title + '</h2><div class="page-actions">' +
     (state.newJob ? "" : '<button class="primary" data-action="toggle-new-job"' + disabled + ">" + icons.plus + t.newJob + "</button>") +
     '<button data-action="refresh-jobs">' + icons.refresh + T.common.refresh + '</button></div></div><div class="job-layout"><div class="job-list" id="job-list">' + renderJobRows() + '</div><div class="job-detail" id="job-detail">' + renderJobDetail() + "</div></div></section>";
 }
+/* Group runs (roadmap entry 4): "Run on" picks this host, every host with a Tag, or every host in a folder. A
+   confirmation names the hosts; the run then shows in place of the form, one row per host, updating until done. */
+function masterLabel(id) {
+  if (id === "local") return state.service?.label || T.inv.thisMaster;
+  return state.merges.find(merge => merge.targetId === id)?.label || id;
+}
+function runOnOptions() {
+  const t = T.jobs, folders = state.folders.folders || [], several = new Set(folders.map(folder => folder.master)).size > 1;
+  return '<option value="">' + esc(t.thisHost) + "</option>" +
+    (state.tags.tags || []).map(row => '<option value="tag:' + esc(row.tag) + '">' + esc(t.withTag(row.tag)) + "</option>").join("") +
+    folders.map(folder => '<option value="folder:' + esc(folder.id) + '">' + esc(t.inFolder((several || folder.master !== "local" ? masterLabel(folder.master) + " / " : "") + folder.name)) + "</option>").join("");
+}
+/** Owner session and Shell are per host, so they are hidden for a group (each OS uses its own shell). A group with Linux and Windows hosts gets a script box
+ *  for each (and each OS's default working folder). */
+async function onRunOnChange(form) {
+  const value = form.elements.runOn.value;
+  for (const field of form.querySelectorAll(".host-only")) field.hidden = Boolean(value);
+  const preview = value ? await rpc("groups.preview", { selector: runOnSelector(form.elements.runOn) }).catch(() => null) : null;
+  if (form.elements.runOn.value !== value) return; // changed again while asking
+  setMixed(form, new Set((preview?.hosts || []).map(row => row.os)).size > 1);
+}
+function setMixed(form, mixed) {
+  form.dataset.mixed = mixed ? "1" : "";
+  for (const field of form.querySelectorAll('[data-script="pair"]')) field.hidden = !mixed;
+  form.querySelector('[data-script="single"]').hidden = mixed;
+  form.querySelector("[data-cwd]").hidden = mixed;
+  form.elements.script.required = !mixed; form.elements.cwd.required = !mixed;
+  form.elements.scriptLinux.required = form.elements.scriptWindows.required = mixed;
+}
+/** The group's selector from the Run on value, with the words shown for it. */
+function runOnSelector(select) {
+  const [kind, ...rest] = select.value.split(":"), value = rest.join(":"), label = select.selectedOptions[0]?.textContent || "";
+  return kind === "tag" ? { tag: value, label } : { folder: value, label };
+}
+async function draftGroupRun(form, values, env) {
+  const selector = runOnSelector(form.elements.runOn), host = target();
+  const preview = await rpc("groups.preview", { selector });
+  const oses = [...new Set(preview.hosts.map(row => row.os))], mixed = oses.length > 1;
+  const scripts = {};
+  if (mixed) Object.assign(scripts, { linux: values.scriptLinux, windows: values.scriptWindows });
+  else for (const os of oses.length ? oses : [host?.os || "linux"]) scripts[os] = values.script;
+  const params = { selector, scripts, cwd: mixed ? { linux: defaultCwd("linux"), windows: defaultCwd("windows") } : values.cwd, env };
+  if (values.asAdmin === "on") params.asAdmin = true;
+  state.groupDraft = { params, preview };
+  fillGroupDialog(); $("#group-dialog").showModal();
+}
+/** The confirmation's words; also re-run when the language changes while it is open. */
+function fillGroupDialog() {
+  const draft = state.groupDraft, t = T.jobs;
+  if (!draft) return;
+  $("#group-title").textContent = t.confirmTitle(draft.preview.hosts.length);
+  $("#group-lead").textContent = t.confirmLead(draft.params.selector.label);
+  $("#group-hosts").innerHTML = draft.preview.hosts.map(row => "<li>" + esc(row.label || row.targetId) + ' <small class="muted">' + esc(osName(row.os)) + "</small></li>").join("");
+  $("#group-skipped").innerHTML = draft.preview.skipped.length ? '<p class="help mt">' + esc(t.skippedTitle) + '</p><ul class="dialog-list">' + draft.preview.skipped.map(row => "<li>" + esc(row.label || row.targetId) + "</li>").join("") + "</ul>" : "";
+  $('#confirm-group [type="submit"]').disabled = !draft.preview.hosts.length;
+}
+async function runGroup() {
+  const draft = state.groupDraft;
+  $("#group-dialog").close();
+  if (!draft) return;
+  state.groupDraft = null;
+  state.groupRun = await rpc("groups.run", draft.params);
+  state.newJob = false; render(); void watchGroup();
+}
+const groupFinished = row => ["succeeded", "failed", "cancelled", "interrupted"].includes(row.status) || ["unreachable", "skipped"].includes(row.state);
+function groupRowStatus(row) {
+  const t = T.jobs;
+  if (row.state === "started") return badge(row.status || "queued");
+  return '<span class="badge' + (row.state === "unreachable" ? " bad" : "") + '">' + esc(t.groupStates[row.state] || row.state) + "</span>";
+}
+function renderGroupRun(run) {
+  const t = T.jobs, hosts = run.hosts || [], counted = hosts.filter(row => row.state !== "skipped");
+  const ok = counted.filter(row => row.status === "succeeded").length, finished = counted.filter(groupFinished).length;
+  const rows = hosts.map(row => '<tr data-host="' + esc(row.targetId) + '"><td><strong>' + esc(row.label || row.targetId) + "</strong><small>" + esc(osName(row.os)) + "</small>" +
+    (row.error && row.state !== "skipped" ? '<small class="error-line">' + errorHtml(explain(row.error, false, row.label || row.targetId)) + "</small>" : "") + "</td><td>" + groupRowStatus(row) + "</td>" +
+    '<td class="num">' + (row.exitCode ?? "—") + '</td><td class="actions">' +
+    (row.state === "started" && !groupFinished(row) ? '<button class="small" data-action="group-cancel" data-id="' + esc(row.targetId) + '">' + t.cancelOne + "</button>" : "") +
+    (row.jobId ? '<button class="small" data-action="group-log" data-id="' + esc(row.targetId) + '" data-job="' + esc(row.jobId) + '">' + t.openLog + "</button>" : "") + "</td></tr>").join("");
+  const failed = counted.some(row => row.state === "unreachable" || ["failed", "interrupted", "cancelled"].includes(row.status));
+  const actions = (!run.done ? '<button data-action="group-cancel">' + t.cancelAll + "</button>" : "") +
+    (run.done && failed ? '<button class="primary" data-action="group-retry">' + t.retryFailed + "</button>" : "") + '<button data-action="group-close">' + t.closeGroup + "</button>";
+  return '<section class="surface group-run" id="group-run" aria-live="polite"><div class="section-heading"><div><h2>' + t.groupTitle + "</h2><p>" + esc(t.groupLead(run.selector?.label || "", timestamp(run.createdAt))) + "</p></div>" +
+    '<div class="page-actions">' + actions + "</div></div>" +
+    '<p class="group-summary"><strong>' + esc(run.done ? t.groupSummary(ok, counted.length) : t.groupRunning(finished, counted.length)) + "</strong></p>" +
+    '<div class="table-wrap"><table><thead><tr><th>' + T.inv.head.host + "</th><th>" + T.inv.head.status + "</th><th>" + t.exitCode + "</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section>";
+}
+/** The current Master's Jobs tab: the most recent group runs, newest first; Open shows one in place. */
+function renderRecentGroups() {
+  const t = T.jobs, runs = state.groupRuns || [];
+  const counts = run => { const hosts = run.hosts.filter(row => row.state !== "skipped"); return t.groupSummary(hosts.filter(row => row.status === "succeeded").length, hosts.length); };
+  return '<section class="section recent-groups" id="recent-groups"><div class="section-heading"><h2>' + t.recentTitle + "</h2></div>" +
+    (runs.length ? '<div class="table-wrap"><table><tbody>' + runs.map(run => "<tr><td><strong>" + esc(run.selector?.label || "") + "</strong><small>" + esc(timestamp(run.createdAt)) + "</small></td><td>" + esc(counts(run)) +
+      '</td><td class="actions"><button class="small" data-action="group-open" data-run="' + esc(run.id) + '">' + t.open + "</button></td></tr>").join("") + "</tbody></table></div>"
+      : '<div class="empty-inline">' + t.recentEmpty + "</div>") + "</section>";
+}
+async function refreshRecentGroups() { state.groupRuns = (await rpc("groups.status", {}).catch(() => null))?.runs || state.groupRuns || []; }
+let groupTimer = 0;
+/** Polls the shown run until every host has finished; only the run's own panel is redrawn. */
+async function watchGroup() {
+  clearTimeout(groupTimer); groupTimer = 0;
+  const shown = state.groupRun;
+  if (!shown) return;
+  const run = await rpc("groups.status", { runId: shown.id }).catch(() => null);
+  if (state.groupRun?.id !== shown.id) return;
+  if (run) state.groupRun = run;
+  const panel = $("#group-run"); if (panel) panel.outerHTML = renderGroupRun(state.groupRun);
+  if (!state.groupRun.done) groupTimer = setTimeout(() => void watchGroup(), 2000);
+  else { await refreshRecentGroups(); if ($("#recent-groups")) $("#recent-groups").outerHTML = renderRecentGroups(); }
+}
+/** Open log: that host's Jobs tab with the group's job selected. */
+async function openGroupLog(id, jobId) {
+  await selectTarget(id, "jobs");
+  state.job = await rpc("jobs.status", { targetId: id, jobId }).catch(() => ({ id: jobId }));
+  state.groupRun = null; render(); await refreshSelectedJob(true);
+}
+/** The working folder a new job starts with: the root of the host's drive, so a quick command needs no path. */
+const defaultCwd = os => /win/i.test(os || "") ? "C:\\" : "/";
 function renderNewJob(item) {
   const windows = isWindows(item), t = T.jobs;
   return '<form id="start-job" class="surface new-job"><h2>' + t.newJob + '</h2><div class="form-grid">' +
-    '<label class="full">' + t.cwd + '<input name="cwd" required class="mono" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
-    '<label class="full">' + t.script + '<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
-    "<details><summary>" + t.advanced + '</summary><div class="form-grid"><label>' + t.shell + '<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
-    "<label>" + t.session + '<input name="ownerSessionId" placeholder="' + esc(t.sessionPlaceholder) + '"></label>' +
+    '<label class="full">' + t.runOn + '<select name="runOn">' + runOnOptions() + "</select></label>" +
+    '<label class="full" data-cwd>' + t.cwd + '<input name="cwd" required class="mono" value="' + defaultCwd(item.os) + '" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
+    '<label class="full" data-script="single">' + t.script + '<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label>' +
+    '<label class="full" data-script="pair" hidden>' + t.scriptLinux + '<textarea name="scriptLinux" rows="4" class="mono" spellcheck="false" placeholder="pwd"></textarea></label>' +
+    '<label class="full" data-script="pair" hidden>' + t.scriptWindows + '<textarea name="scriptWindows" rows="4" class="mono" spellcheck="false" placeholder="Get-Location"></textarea></label>' +
+    '<p class="help full" data-script="pair" hidden>' + t.mixedHelp + "</p></div>" +
+    "<details><summary>" + t.advanced + '</summary><div class="form-grid"><label class="host-only">' + t.shell + '<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
+    '<label class="host-only">' + t.session + '<input name="ownerSessionId" placeholder="' + esc(t.sessionPlaceholder) + '"></label>' +
     (!windows ? '<label class="check-label full"><input type="checkbox" name="asAdmin">' + t.asAdmin + "</label>" : "") +
     '<label class="full">' + t.env + " <small>" + t.envHelp + '</small><textarea name="env" rows="2" class="mono" spellcheck="false">{}</textarea></label></div></details>' +
     '<div class="form-actions"><button type="submit" class="primary"' + (!item.runnerInstalled ? " disabled" : "") + ">" + t.start + "</button>" +
@@ -1009,10 +1175,7 @@ function dcPath(item, master) {
   if (!item.relayed) return T.inv.sshFrom(state.service?.label || T.inv.thisMasterLower);
   return T.inv.through(item.viaLabel || master?.label || item.via);
 }
-function dcMatches(item) {
-  const search = state.dc.query.toLowerCase();
-  return !search || [item.id, item.label, item.tenant, item.viaLabel, ...(item.routes || []).map(route => route.address)].some(value => String(value || "").toLowerCase().includes(search));
-}
+function dcMatches(item) { return hostMatches(item, state.dc.query); }
 function dcRow(node, depth, content, options = {}) {
   const selected = state.page === "datacenter" && state.dc.node === node;
   const toggle = options.branch
@@ -1128,7 +1291,7 @@ function renderDcPanel() {
       ? '<div class="stat-grid">' + stat(t.role, master.current ? t.currentMaster : t.mergedMaster) + stat(t.targetHosts, String(master.machines.length)) + stat(t.online, String(dcOnline(master.machines))) + "</div>" +
         '<section class="section mt"><div class="section-heading"><h2>' + t.targetHosts + "</h2></div>" + dcMachineTable(master.machines) + "</section>" +
         (master.current ? renderBackupSection() : "")
-      : state.dc.tab === "jobs" ? (target ? renderJobs(target) : needsSelf)
+      : state.dc.tab === "jobs" ? (master.current ? renderRecentGroups() : "") + (target ? renderJobs(target) : (state.groupRun ? renderGroupRun(state.groupRun) : "") + needsSelf)
       : state.dc.tab === "files" ? (target ? renderFiles(target) : needsSelf)
       : state.dc.tab === "monitoring" ? renderMonitorTab(dcKey(master.item), master.label) : renderContainerTab(dcKey(master.item), master.label);
     return head + tabs + body;
@@ -1154,7 +1317,7 @@ function renderDcPanel() {
     '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
     (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
   const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs(hostPageTabs());
-  const body = state.dc.tab === "summary" ? renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
+  const body = state.dc.tab === "summary" ? renderTagRow(item) + renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
     : state.dc.tab === "monitoring" ? renderMonitorTab(item.id, item.label || item.id) : renderContainerTab(item.id, item.label || item.id);
   return head + tabs + body;
 }
@@ -1805,6 +1968,19 @@ document.addEventListener("click", event => {
     if (action === "restore-start") { state.page = "datacenter"; state.dc.adding = null; state.backup = { mode: "restore", file: null, summary: null, result: null, error: "", errorStep: 0 }; paintFlow(); return; }
     if (action === "restore-choose") return chooseBackup();
     if (action === "keys-change") return changeKeys();
+    if (action === "tag-filter") { filterByTag(button.dataset.tag); return; }
+    if (action === "close-group-dialog") { state.groupDraft = null; $("#group-dialog").close(); return; }
+    if (action === "group-close") { clearTimeout(groupTimer); state.groupRun = null; render(); return; }
+    if (action === "group-log") return openGroupLog(button.dataset.id, button.dataset.job);
+    if (action === "group-cancel") { state.groupRun = await rpc("groups.cancel", { runId: state.groupRun.id, ...(button.dataset.id ? { targetId: button.dataset.id } : {}) }); render(); return watchGroup(); }
+    if (action === "group-retry") { state.groupRun = await rpc("groups.retry", { runId: state.groupRun.id }); render(); return watchGroup(); }
+    if (action === "group-open") { state.groupRun = await rpc("groups.status", { runId: button.dataset.run }); render(); return watchGroup(); }
+    if (action === "ctx-tag") {
+      state.page = "datacenter"; state.dc.node = button.dataset.node; state.dc.adding = null; state.backup = null;
+      await selectTarget(state.dc.node.slice(5), "summary");
+      $("#tag-add [name=tag]")?.focus(); return;
+    }
+    if (action === "tag-remove") return setHostTags(button.dataset.id, hostTags(button.dataset.id).filter(tag => tag !== button.dataset.tag));
     if (action === "restore-run") { if ($("#restore-off")?.checked) return runRestore(); return; }
     if (action === "add-host" || action === "dc-add") {
       state.page = "datacenter"; state.dc.adding = { folder: button.dataset.folder || "", site: button.dataset.site || "", self: Boolean(button.dataset.self) };
@@ -1922,7 +2098,7 @@ document.addEventListener("click", event => {
       await loadContainers(key);
     }
     if (action === "select-target") await selectTarget(button.dataset.id);
-    if (action === "toggle-new-job") { state.newJob = !state.newJob; render(); if (state.newJob) $('#start-job [name="cwd"]')?.focus(); }
+    if (action === "toggle-new-job") { state.newJob = !state.newJob; render(); if (state.newJob) $('#start-job [name="script"]')?.focus(); }
     if (action === "diagnose") await runDiagnose(state.selected);
     if (action === "check-close") { (state.checkHidden ||= new Set()).add(state.selected); $("#check-slot") && ($("#check-slot").innerHTML = ""); return; }
     if (action === "remove-target") await removeTarget(state.selected);
@@ -2047,6 +2223,7 @@ document.addEventListener("input", event => {
   if (event.target.form?.id === "create-pairing" && ["address", "port"].includes(event.target.name)) onWhereInput(event.target.form);
   if (event.target.id === "add-code") onCodeInput(event.target, event.inputType === "insertFromPaste");
   if (event.target.form?.id === "backup-pass-form") onBackupInput(event.target.form);
+  if (event.target.name === "runOn" && event.target.form?.id === "start-job") onRunOnChange(event.target.form);
   if (event.target.id === "restore-off") $("#restore-run").disabled = !event.target.checked;
   if (event.target.closest?.("#confirm-delete")) { const form = $("#confirm-delete"); form.querySelector('[type="submit"]').disabled = event.target.value !== form.dataset.name; }
   if (event.target.id === "file-filter") { state.fileQuery = event.target.value; $("#files-output").innerHTML = renderFileList(); }
@@ -2066,6 +2243,7 @@ document.addEventListener("submit", event => {
   const submittedPairing = state.pairing;
   void busy($('button[type="submit"]', form), async () => {
     if (form.id === "backup-pass-form") return saveBackup();
+    if (form.id === "tag-add") { const tag = form.elements.tag.value; if (tag.trim()) return setHostTags(form.dataset.id, [...hostTags(form.dataset.id), tag]); return; }
     if (form.id === "restore-pass-form") { if (!state.backup?.summary) return openBackup(form); return; }
     if (form.id === "open-shell-session") {
       $("#shell-dialog").close();
@@ -2145,9 +2323,11 @@ document.addEventListener("submit", event => {
       }
       notify(T.tree.enrollmentCreated);
     }
+    if (form.id === "confirm-group") return runGroup();
     if (form.id === "start-job") {
       const env = JSON.parse(values.env || "{}");
       if (!env || Array.isArray(env) || typeof env !== "object" || Object.values(env).some(value => typeof value !== "string")) throw new Error(T.jobs.envObject);
+      if (values.runOn) return draftGroupRun(form, values, env);
       const params = { targetId: state.selected, script: values.script, cwd: values.cwd, shell: values.shell, env };
       if(values.ownerSessionId) params.ownerSessionId=values.ownerSessionId;
       if(values.asAdmin === 'on') params.asAdmin=true;
@@ -2329,6 +2509,7 @@ function dcMenuItems(node) {
     item(m.jobs, "dc-goto", { node, tab: "jobs" }), item(m.files, "dc-goto", { node, tab: "files" }),
     item(m.containers, "dc-goto", { node, tab: "containers", view: "containers" }), item(m.images, "dc-goto", { node, tab: "containers", view: "images" }),
     item(m.monitoring, "dc-goto", { node, tab: "monitoring" }),
+    "-", item(m.tag, "ctx-tag", { node }),
     // Health only reads the SSH banner, so whether a machine is a Master is asked on click (one SSH call).
     ...(!target.relayed && state.masterCheck.get(target.id) !== false && !state.merges.some(merge => merge.targetId === target.id) ? ["-", item(m.mergeIfMaster, "ctx-merge", { id: target.id })] : []),
     ...(dcFolderOf(target.id) ? ["-", item(m.unfile(dcFolderOf(target.id).name), "folder-unfile", { id: target.id })] : []),

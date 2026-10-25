@@ -112,6 +112,19 @@ const en = {
     again: "Check again", raw: "Raw result", copyJson: "Copy check JSON", copiedJson: "Check result copied",
   },
   jobs: {
+    // Group runs (roadmap entry 4): one job on every host with a Tag or in a folder.
+    runOn: "Run on", thisHost: "This host", withTag: tag => "Every host with Tag " + tag, inFolder: name => "Every host in folder " + name,
+    groupRun: "Run", confirmTitle: n => "Run on " + (n === 1 ? "1 host" : n + " hosts") + "?", confirmLead: what => what + " · each host gets its own job and result",
+    skippedTitle: "Skipped: the SSH Control Center service is not installed",
+    groupTitle: "Group run", groupLead: (what, when) => what + " · started " + when,
+    groupStates: { queued: "Waiting", unreachable: "Couldn’t reach", skipped: "Skipped" },
+    groupSummary: (ok, total) => ok + " of " + total + " hosts succeeded", groupRunning: (done, total) => done + " of " + total + " hosts finished",
+    openLog: "Open log", closeGroup: "Close", exitCode: "Exit code",
+    scriptLinux: "Script for Linux hosts (Bash)", scriptWindows: "Script for Windows hosts (PowerShell)",
+    mixedHelp: "This group has Linux and Windows hosts. Each runs in / or C:\\",
+    cancelAll: "Cancel all", cancelOne: "Cancel", retryFailed: "Try again on the hosts that failed",
+    recentTitle: "Recent group runs", recentEmpty: "No group runs yet · choose “Every host with Tag…” or a folder in a new job",
+    recentRow: (what, when) => what + " · " + when, open: "Open",
     title: "Jobs on this host", newJob: "New job", cwd: "Working directory", script: "Command or script", advanced: "Advanced options", shell: "Shell",
     session: "Owner session ID", sessionPlaceholder: "Leave empty to pick automatically", asAdmin: "Run as admin (root)",
     env: "Environment JSON", envHelp: "Variables for this job only", start: "Start job",
@@ -199,7 +212,7 @@ const en = {
   },
   // The context menus.
   menu: {
-    addHost: "Add host…", addHere: "Add host here…", rename: "Rename", deleteSite: "Delete datacenter", topology: "Topology", refresh: "Refresh", newFolder: "New folder",
+    tag: "Tag…", addHost: "Add host…", addHere: "Add host here…", rename: "Rename", deleteSite: "Delete datacenter", topology: "Topology", refresh: "Refresh", newFolder: "New folder",
     openTerminal: "Open terminal", selfTerminal: "This is the computer you are using; open its own terminal", containers: "Containers", images: "Images", monitoring: "Monitoring",
     manageMerge: "Manage merge", removeMerge: "Remove merge…", deleteFolder: "Delete folder", checkConnection: "Check connection", jobs: "Jobs & logs", files: "Files",
     remoteNote: name => "Add hosts on " + name + "; this Master reaches them through it",
@@ -225,6 +238,11 @@ const en = {
       ["E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED", "The passphrase is wrong, or the file is damaged · check the passphrase and try again"],
       ["E_BACKUP_NEWER", "This backup comes from a newer Master. Update this Master first"],
       ["E_RESTORE_NOT_EMPTY", "This Master already has hosts. Restore only works on a fresh install"],
+      ["E_TAG_LENGTH", "A Tag has 1 to 32 characters"],
+      ["E_TAG_CHARS", "A Tag can’t contain a comma"],
+      ["E_TAG_LIMIT", "A host can have at most 20 Tags"],
+      ["E_GROUP_EMPTY", "No host in this group can run a job"],
+      ["E_GROUP_SCRIPT", "This group has hosts of another OS. Write a script for them too"],
     ],
     pairing: [
       ["SETUP_TEMPLATES_MISSING", "Installer templates are missing. Install or update this Master with the full package, then save the installer again"],
@@ -280,6 +298,11 @@ const en = {
     importFile: "Import registration file…", importV1: "Import v1 registry…", registrationJson: "Registration JSON", import: "Import",
   },
   /* Masters page (Merges both ways) and its notifications. */
+  /* Tags (roadmap entry 4): free-text markers on hosts. */
+  tags: {
+    title: "Tags", add: "+ Tag", addLabel: "Add a Tag to this host", none: "No Tags yet",
+    filterBy: tag => "Show the hosts with Tag " + tag, remove: tag => "Remove Tag " + tag,
+  },
   /* Backup and restore (current Master page, Summary tab). */
   backup: {
     title: "Backup and restore", lead: "One file holds this Master: its identity, its keys and its hosts. Restore it on a new machine to get every host back",
@@ -462,6 +485,18 @@ const th = {
     again: "ตรวจอีกครั้ง", raw: "ผลดิบ", copyJson: "คัดลอกผลการตรวจ (JSON)", copiedJson: "คัดลอกผลการตรวจแล้ว",
   },
   jobs: {
+    runOn: "รันบน", thisHost: "เครื่องนี้", withTag: tag => "ทุกเครื่องที่มี Tag " + tag, inFolder: name => "ทุกเครื่องในโฟลเดอร์ " + name,
+    groupRun: "รัน", confirmTitle: n => "รันบน " + n + " เครื่อง?", confirmLead: what => what + " · แต่ละเครื่องได้งานและผลลัพธ์ของตัวเอง",
+    skippedTitle: "ข้าม: ยังไม่ได้ติดตั้ง service ของ SSH Control Center",
+    groupTitle: "กลุ่มงาน", groupLead: (what, when) => what + " · เริ่มเมื่อ " + when,
+    groupStates: { queued: "รอ", unreachable: "ติดต่อไม่ได้", skipped: "ข้าม" },
+    groupSummary: (ok, total) => "สำเร็จ " + ok + " จาก " + total + " เครื่อง", groupRunning: (done, total) => "เสร็จแล้ว " + done + " จาก " + total + " เครื่อง",
+    openLog: "เปิดผลลัพธ์", closeGroup: "ปิด", exitCode: "รหัสจบงาน",
+    scriptLinux: "สคริปต์สำหรับเครื่อง Linux (Bash)", scriptWindows: "สคริปต์สำหรับเครื่อง Windows (PowerShell)",
+    mixedHelp: "กลุ่มนี้มีทั้งเครื่อง Linux และ Windows แต่ละเครื่องรันใน / หรือ C:\\",
+    cancelAll: "ยกเลิกทั้งหมด", cancelOne: "ยกเลิก", retryFailed: "ลองใหม่เฉพาะเครื่องที่ไม่สำเร็จ",
+    recentTitle: "กลุ่มงานล่าสุด", recentEmpty: "ยังไม่มีกลุ่มงาน · เลือก “ทุกเครื่องที่มี Tag…” หรือโฟลเดอร์ในงานใหม่",
+    recentRow: (what, when) => what + " · " + when, open: "เปิด",
     title: "งานบนเครื่องนี้", newJob: "งานใหม่", cwd: "โฟลเดอร์ทำงาน", script: "คำสั่งหรือสคริปต์", advanced: "ตัวเลือกขั้นสูง", shell: "Shell",
     session: "ID session ของ Owner", sessionPlaceholder: "เว้นว่างเพื่อเลือกให้อัตโนมัติ", asAdmin: "รันด้วยสิทธิ์ผู้ดูแล (root)",
     env: "ตัวแปรสภาพแวดล้อม (JSON)", envHelp: "ตัวแปรสำหรับงานนี้เท่านั้น", start: "เริ่มงาน",
@@ -543,7 +578,7 @@ const th = {
     ready: "พร้อม", stillFailing: "ยังไม่ผ่าน ดูรายละเอียดด้านบน",
   },
   menu: {
-    addHost: "เพิ่มเครื่อง…", addHere: "เพิ่มเครื่องที่นี่…", rename: "เปลี่ยนชื่อ", deleteSite: "ลบดาต้าเซ็นเตอร์", topology: "ผังเครือข่าย", refresh: "รีเฟรช", newFolder: "โฟลเดอร์ใหม่",
+    tag: "Tag…", addHost: "เพิ่มเครื่อง…", addHere: "เพิ่มเครื่องที่นี่…", rename: "เปลี่ยนชื่อ", deleteSite: "ลบดาต้าเซ็นเตอร์", topology: "ผังเครือข่าย", refresh: "รีเฟรช", newFolder: "โฟลเดอร์ใหม่",
     openTerminal: "เปิดเทอร์มินัล", selfTerminal: "นี่คือเครื่องที่คุณใช้อยู่ เปิดเทอร์มินัลของเครื่องนี้เองได้เลย", containers: "คอนเทนเนอร์", images: "อิมเมจ", monitoring: "ติดตามการใช้งาน",
     manageMerge: "จัดการ Merge", removeMerge: "ยกเลิก Merge…", deleteFolder: "ลบโฟลเดอร์", checkConnection: "ตรวจการเชื่อมต่อ", jobs: "งานและล็อก", files: "ไฟล์",
     remoteNote: name => "เพิ่มเครื่องที่ " + name + " · Master นี้เข้าถึงเครื่องเหล่านั้นผ่าน Master นั้น",
@@ -566,6 +601,11 @@ const th = {
       ["E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED", "รหัสผ่านไม่ถูกต้อง หรือไฟล์เสียหาย · ตรวจรหัสผ่านแล้วลองอีกครั้ง"],
       ["E_BACKUP_NEWER", "ไฟล์สำรองนี้มาจาก Master รุ่นใหม่กว่า อัปเดต Master นี้ก่อน"],
       ["E_RESTORE_NOT_EMPTY", "Master นี้มีเครื่องอยู่แล้ว การกู้คืนทำได้เฉพาะบนเครื่องที่เพิ่งติดตั้งใหม่"],
+      ["E_TAG_LENGTH", "Tag ต้องยาว 1 ถึง 32 ตัวอักษร"],
+      ["E_TAG_CHARS", "Tag ห้ามมีเครื่องหมายจุลภาค (,)"],
+      ["E_TAG_LIMIT", "เครื่องหนึ่งมี Tag ได้ไม่เกิน 20 อัน"],
+      ["E_GROUP_EMPTY", "ไม่มีเครื่องในกลุ่มนี้ที่รันงานได้"],
+      ["E_GROUP_SCRIPT", "กลุ่มนี้มีเครื่องที่ใช้ระบบปฏิบัติการอื่นด้วย เขียนสคริปต์ให้เครื่องเหล่านั้นด้วย"],
     ],
     pairing: [
       ["SETUP_TEMPLATES_MISSING", "ไม่พบแม่แบบตัวติดตั้ง ติดตั้งหรืออัปเดต Master นี้ด้วยแพ็กเกจเต็ม แล้วบันทึกตัวติดตั้งอีกครั้ง"],
@@ -618,6 +658,10 @@ const th = {
     mergeReason: "สาเหตุ:", openMasters: "เปิดหน้าเครื่องหลัก", twoWay: "สองทาง", twoWayHelp: "ไม่บังคับ · ให้ Master นั้นสั่งเครื่องของ Master นี้ได้ด้วย",
     admin: "สำหรับผู้ดูแล (นำเข้าจากไฟล์)", adminHelp: "นำเข้าการลงทะเบียนหรือรายการเครื่องแบบ v1 · ยังตรวจ host key ตามปกติ",
     importFile: "นำเข้าไฟล์ลงทะเบียน…", importV1: "นำเข้ารายการเครื่องแบบ v1…", registrationJson: "การลงทะเบียน (JSON)", import: "นำเข้า",
+  },
+  tags: {
+    title: "Tag", add: "+ Tag", addLabel: "เพิ่ม Tag ให้เครื่องนี้", none: "ยังไม่มี Tag",
+    filterBy: tag => "แสดงเครื่องที่มี Tag " + tag, remove: tag => "เอา Tag " + tag + " ออก",
   },
   backup: {
     title: "สำรองและกู้คืน", lead: "ไฟล์เดียวเก็บ Master นี้ไว้ทั้งหมด: ตัวตน กุญแจ และเครื่องทั้งหมด กู้คืนบนเครื่องใหม่แล้วจะได้ทุกเครื่องกลับมา",

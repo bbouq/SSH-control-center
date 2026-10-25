@@ -9,6 +9,9 @@
 //   backed-up        this Master has a last backup date
 //   restored         this Master was restored from a backup and its keys were not changed yet
 //   rotation-trouble Change keys: the first attempt on ui-test fails (the Owner is not logged in); the next one works
+//   group-offline    a group run can't reach hq-master (No route to host)
+//   group-slow       group jobs keep running until cancelled (retried jobs finish as usual)
+//   legacy-host      adds old-box, a host registered without the SSH Control Center service (v1)
 //   two-way-merge    with masters-page: the Merge with branch-master is two-way (it shows as a relay here too)
 // Backups: save_backup "writes" to /fixture/Backups and keeps the file in memory (across scenario resets), so a test can
 // back up, POST /scenario {"flags":["empty"]} and restore it. POST /next-backup {"kind":"good"|"newer"|"damaged"|"other"} makes the
@@ -30,7 +33,7 @@ function reset(list) {
   const empty = flags.has("empty");
   s = {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
-    jobs: [], pairings: [], folders: [], folderMembers: {}, datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
+    jobs: [], pairings: [], folders: [], folderMembers: {}, tags: [], groupRuns: [], datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
     backup: { lastBackupAt: flags.has("backed-up") || flags.has("restored") ? "2026-10-20T09:30:00Z" : null, restoredAt: flags.has("restored") ? "2026-10-24T08:00:00Z" : null, keysChangedAt: null }, rotation: null
   };
   if (flags.has("masters-page")) {
@@ -40,6 +43,7 @@ function reset(list) {
     s.merges.push({ targetId: "branch-master", label: "Branch Master", status: "merged", error: null, syncedAt: now(), children: children("branch-master"), reverse: null });
     s.masters.push({ id: "peer-both", label: "Peer Master", publicKey: "TEST", revoked: false });
     s.relays.push({ masterId: "peer-both", label: "Peer Master", lastUsedAt: now(), revoked: false }, { masterId: "peer-relay", label: "Relay-only Master", lastUsedAt: now(), revoked: true });
+    if (flags.has("legacy-host")) s.targets.push({ ...host("old-box", "Old box", "192.0.2.43"), runnerInstalled: false });
     if (flags.has("two-way-merge")) {
       s.merges[0].reverse = { status: "two-way", error: null };
       s.relays.push({ masterId: "branch-master-node", label: "Branch Master", lastUsedAt: now(), revoked: false });
@@ -114,7 +118,7 @@ async function checkAddress(address, port, own) {
     alreadyAs: target?.label || request?.label || null, alreadyTargetId: target?.id || null, alreadyRequestId: request?.requestId || null };
 }
 /* Backup files are base64 JSON: the passphrase and a copy of the fleet. The real format is tested in Rust. */
-const FLEET_KEYS = ["targets", "folders", "folderMembers", "datacenters", "datacenterMembers", "merges", "masters", "relays"];
+const FLEET_KEYS = ["targets", "folders", "folderMembers", "datacenters", "datacenterMembers", "merges", "masters", "relays", "tags"];
 const isEmpty = () => !s.targets.length && !s.merges.length && !s.folders.length;
 function makeBackup(passphrase) {
   if ([...String(passphrase || "")].length < 12) throw new Error("E_BACKUP_PASSPHRASE_SHORT: the passphrase must be at least 12 characters");
@@ -158,8 +162,81 @@ function rotationStatus() {
   const merged = s.merges.flatMap(m => (m.children || []).map(c => ({ label: c.label, master: m.label })));
   return { active: !r.finishedAt, startedAt: r.startedAt, finishedAt: r.finishedAt || null, total: r.hosts.length, moved, oldKey, hosts: r.hosts.map(({ failed, ...h }) => ({ ...h })), merged };
 }
+/* Tags, as the Master keeps them: rows of {targetId, key, tag}; matched without case, first spelling kept. */
+function tagList() {
+  const byKey = new Map(), hosts = {};
+  for (const row of [...s.tags].sort((a, b) => a.targetId.localeCompare(b.targetId))) {
+    if (!byKey.has(row.key)) byKey.set(row.key, { tag: row.tag, hosts: [] });
+    byKey.get(row.key).hosts.push(row.targetId); (hosts[row.targetId] ||= []).push(row.tag);
+  }
+  return { tags: [...byKey.entries()].sort(([a], [b]) => a < b ? -1 : 1).map(([, v]) => v), hosts };
+}
+function setTags({ targetId, tags }) {
+  if (![...s.targets, ...relayedTargets()].some(t => t.id === targetId)) throw new Error("E_TARGET: unknown host " + targetId);
+  const rows = [];
+  for (const raw of tags || []) {
+    const tag = String(raw).trim(), key = tag.toLowerCase();
+    if (!tag || [...tag].length > 32) throw new Error("E_TAG_LENGTH: a Tag has 1-32 characters");
+    if (/[,\u0000-\u001f]/.test(tag)) throw new Error("E_TAG_CHARS: a Tag can't contain a comma");
+    if (rows.some(row => row.key === key)) continue;
+    const first = s.tags.find(row => row.key === key && row.targetId !== targetId);
+    rows.push({ targetId, key, tag: first ? first.tag : tag });
+  }
+  if (rows.length > 20) throw new Error("E_TAG_LIMIT: a host has at most 20 Tags");
+  s.tags = s.tags.filter(row => row.targetId !== targetId).concat(rows);
+  return { targetId, tags: rows.map(row => row.tag) };
+}
+/* Group runs: hosts chosen by Tag or folder; each groups.status call moves started hosts on (queued → running → succeeded). */
+function groupHosts(selector) {
+  const all = [...s.targets, ...relayedTargets()];
+  const ids = selector?.tag ? s.tags.filter(row => row.key === String(selector.tag).trim().toLowerCase()).map(row => row.targetId)
+    : selector?.folder ? Object.entries(s.folderMembers).filter(([, folder]) => folder === selector.folder).map(([id]) => id) : null;
+  if (!ids) throw new Error("E_ARGUMENT: choose a Tag or a folder");
+  const rows = all.filter(t => ids.includes(t.id)).sort((a, b) => a.id.localeCompare(b.id)).map(t => ({ targetId: t.id, label: t.label, os: t.os, runner: t.runnerInstalled !== false }));
+  return { hosts: rows.filter(r => r.runner).map(({ runner, ...r }) => r), skipped: rows.filter(r => !r.runner).map(({ runner, ...r }) => ({ ...r, reason: "E_RUNNER_NOT_INSTALLED: no service" })) };
+}
+function startGroup(p) {
+  const { hosts, skipped } = groupHosts(p.selector);
+  if (!hosts.length) throw new Error("E_GROUP_EMPTY: no host in this group can run a job");
+  for (const h of hosts) if (!String(p.scripts?.[h.os] || "").trim()) throw new Error("E_GROUP_SCRIPT: this group has " + (h.os === "windows" ? "Windows" : "Linux") + " hosts; write a script for them too");
+  const run = { id: crypto.randomUUID(), createdAt: now(), selector: p.selector, scripts: { linux: p.scripts.linux || null, windows: p.scripts.windows || null }, asAdmin: Boolean(p.asAdmin), env: p.env || {}, done: false,
+    hosts: [...hosts.map(h => flags.has("group-offline") && h.targetId === "hq-master"
+      ? { ...h, jobId: null, state: "unreachable", error: "ALL_ROUTES_FAILED: lan 192.0.2.41:22: No route to host", status: null, exitCode: null }
+      : { ...h, jobId: crypto.randomUUID(), state: "started", error: null, status: "queued", exitCode: null, cwd: typeof p.cwd === "object" ? p.cwd[h.os] : p.cwd }),
+      ...skipped.map(h => ({ ...h, state: "skipped", error: h.reason }))] };
+  s.groupRuns.unshift(run); s.groupRuns = s.groupRuns.slice(0, 20);
+  return structuredClone(run);
+}
+function groupStatus(id) {
+  const run = s.groupRuns.find(r => r.id === id) || (() => { throw new Error("E_NOT_FOUND: this group run is no longer kept"); })();
+  for (const h of run.hosts.filter(h => h.state === "started")) {
+    if (flags.has("group-slow") && !h.retried && ["queued", "running"].includes(h.status)) { h.status = "running"; continue; }
+    if (h.status === "queued") h.status = "running";
+    else if (h.status === "running") { h.status = "succeeded"; h.exitCode = 0; }
+  }
+  run.done = run.hosts.every(h => h.state !== "started" || ["succeeded", "failed", "cancelled", "interrupted"].includes(h.status));
+  return structuredClone(run);
+}
 function rpc(method, p = {}) {
   switch (method) {
+    case "groups.preview": return groupHosts(p.selector);
+    case "groups.run": return startGroup(p);
+    case "groups.status": return p.runId ? groupStatus(p.runId) : { runs: structuredClone(s.groupRuns) };
+    case "groups.cancel": {
+      const run = s.groupRuns.find(r => r.id === p.runId);
+      for (const h of run.hosts.filter(h => (!p.targetId || h.targetId === p.targetId) && h.state === "started" && ["queued", "running"].includes(h.status))) h.status = "cancelled";
+      return structuredClone(run);
+    }
+    // Retry: hosts that failed get new jobs; the unreachable one is back online by then.
+    case "groups.retry": {
+      const run = s.groupRuns.find(r => r.id === p.runId);
+      for (const h of run.hosts.filter(h => h.state === "unreachable" || ["failed", "interrupted", "cancelled"].includes(h.status)))
+        Object.assign(h, { state: "started", jobId: crypto.randomUUID(), error: null, status: "queued", exitCode: null, retried: true });
+      run.done = false;
+      return structuredClone(run);
+    }
+    case "tags.list": return tagList();
+    case "tags.set": return setTags(p);
     case "keys.rotate":
       if (!s.rotation || s.rotation.finishedAt) s.rotation = { startedAt: now(), finishedAt: null, started: false, hosts: s.targets.filter(t => !t.relayed).map(t => ({ targetId: t.id, label: t.label, state: "pending", error: null })) };
       // The slow host goes first, so a check can see it fail before the rest finish.

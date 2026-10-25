@@ -2,7 +2,7 @@
 //! The restored machine becomes the same Master (node ID, label, roles, tenant keys and fleet), so Targets
 //! accept it unchanged. The Owner and execution mode stay as this machine's installer set them.
 //! Owner-only and local-only: the service never routes these methods through a bridge or relay.
-use crate::{config::{self, Config}, folders, protocol::Request, security};
+use crate::{config::{self, Config}, protocol::Request, security};
 use anyhow::{bail, ensure, Context, Result};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -20,7 +20,8 @@ use std::{
 };
 
 /// The payload format this Master writes. Older files are migrated on restore; newer ones are refused.
-pub const FORMAT_VERSION: u16 = 1;
+/// 1: first format. 2: adds Tags (roadmap entry 4).
+pub const FORMAT_VERSION: u16 = 2;
 pub const MIN_PASSPHRASE: usize = 12;
 const MAGIC: &[u8; 8] = b"SSHCCBAK";
 const HEADER: usize = 8 + 2 + 12 + 16 + 24;
@@ -39,6 +40,7 @@ const TABLES: &[(&str, &[&str])] = &[
     ("folder_members", &["target_id", "folder_id"]),
     ("datacenters", &["id", "name", "created_at"]),
     ("datacenter_members", &["master", "datacenter_id"]),
+    ("tags", &["target_id", "key", "tag"]),
 ];
 
 #[derive(Serialize, Deserialize)]
@@ -109,14 +111,14 @@ fn derive(passphrase: &str, salt: &[u8], (memory, passes, lanes): (u32, u32, u32
     Ok(key)
 }
 
-fn seal(contents: &Contents, passphrase: &str) -> Result<Vec<u8>> {
+fn seal(contents: &Contents, passphrase: &str, version: u16) -> Result<Vec<u8>> {
     let mut salt = [0u8; 16];
     let mut nonce = [0u8; 24];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
     let mut header = Vec::with_capacity(HEADER);
     header.extend_from_slice(MAGIC);
-    header.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
+    header.extend_from_slice(&version.to_be_bytes());
     for value in [KDF.0, KDF.1, KDF.2] {
         header.extend_from_slice(&value.to_be_bytes());
     }
@@ -159,8 +161,8 @@ fn open(bytes: &[u8], passphrase: &str) -> Result<(u16, Contents)> {
     Ok((version, contents))
 }
 
-/// Brings an older payload up to the current format. Format 1 is the first, so there is nothing to change yet;
-/// a later format adds its step here (for example Tags, roadmap entry 4).
+/// Brings an older payload up to the current format. Format 1 has no Tags table, which restores as no Tags, so it
+/// needs no change; a later format adds its step here.
 fn migrate(version: u16, payload: Value) -> Result<Contents> {
     let _ = version;
     serde_json::from_value(payload).context("E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED: the backup contents are damaged")
@@ -297,7 +299,7 @@ fn role(config: &Config) -> Result<()> {
 
 pub fn create(state: &Path, config: &Config, passphrase: &str) -> Result<Vec<u8>> {
     role(config)?;
-    let db = folders::database(state)?;
+    let db = crate::tags::database(state)?;
     let mut keys = BTreeMap::new();
     let folder = state.join("keys");
     if folder.is_dir() {
@@ -319,7 +321,7 @@ pub fn create(state: &Path, config: &Config, passphrase: &str) -> Result<Vec<u8>
         keys,
         tables: dump(&db)?,
     };
-    let bytes = seal(&contents, passphrase)?;
+    let bytes = seal(&contents, passphrase, FORMAT_VERSION)?;
     let mut record = read_record(state)?;
     record.last_backup_at = Some(contents.created_at);
     write_record(state, &record)?;
@@ -341,7 +343,7 @@ pub fn inspect(bytes: &[u8], passphrase: &str) -> Result<Value> {
 /// put back if anything later fails, and config.json is replaced last.
 pub fn restore(state: &Path, config: &Config, bytes: &[u8], passphrase: &str) -> Result<Value> {
     role(config)?;
-    let mut db = folders::database(state)?;
+    let mut db = crate::tags::database(state)?;
     ensure!(
         is_empty(&db)?,
         "E_RESTORE_NOT_EMPTY: this Master already has hosts; restore only works on a fresh install"
@@ -440,7 +442,7 @@ pub(crate) fn keys_changed(state: &Path, when: &str) -> Result<()> {
 
 pub fn status(state: &Path, owner: bool) -> Result<Value> {
     let record = read_record(state)?;
-    let db = folders::database(state)?;
+    let db = crate::tags::database(state)?;
     // RFC 3339 times in UTC compare as text.
     let stale = matches!((&record.keys_changed_at, &record.last_backup_at), (Some(changed), Some(backup)) if backup < changed)
         || (record.keys_changed_at.is_some() && record.last_backup_at.is_none());
@@ -472,7 +474,24 @@ fn required(p: &Value) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::old_key_name;
+    use super::{old_key_name, restore, seal, Contents};
+    use crate::{config, security};
+
+    /// A format 1 file (from before Tags) still restores, with no Tags.
+    #[test]
+    fn a_format_one_file_restores_without_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = config::init(dir.path(), "master", &security::current_principal().unwrap(), "New", &[]).unwrap();
+        let node = uuid::Uuid::new_v4().to_string();
+        let tables = serde_json::from_value(serde_json::json!({"folders":[{"id":"f1","master":"local","name":"Web","created_at":"2026-01-01T00:00:00Z"}]})).unwrap();
+        let old = Contents { created_at: "2026-01-01T00:00:00Z".into(), node_id: node.clone(), label: "Old".into(), roles: vec!["master".into()],
+            os: "linux".into(), data_dir: "/var/lib/sshcc".into(), keys: Default::default(), tables };
+        let file = seal(&old, "a long passphrase", 1).unwrap();
+        let result = restore(dir.path(), &cfg, &file, "a long passphrase").unwrap();
+        assert_eq!((result["formatVersion"].as_u64(), result["folders"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(config::load(dir.path()).unwrap().node_id, node);
+        assert_eq!(crate::tags::list(dir.path()).unwrap()["tags"], serde_json::json!([]));
+    }
     #[test]
     fn jump_keys_move_across_windows_and_ubuntu() {
         let win = r"C:\ProgramData\SSHControlCenter";

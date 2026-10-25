@@ -908,6 +908,7 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
             let changed = database(state)?.execute("DELETE FROM targets WHERE id=?1", [id])?;
             ensure!(changed > 0, "unknown target");
             crate::folders::forget(state, id)?;
+            crate::tags::forget(state, id)?;
             json!({"id":id,"removed":true})
         }
         "targets.doctor" => {

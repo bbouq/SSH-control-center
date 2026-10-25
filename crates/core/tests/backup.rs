@@ -1,7 +1,7 @@
 //! Master backup and restore (roadmap entry 3): one encrypted file moves a Master to a fresh install.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use sshcc_core::{backup, config, fleet, folders, jobs::Jobs, protocol::Request, security, service::Service};
+use sshcc_core::{backup, config, fleet, folders, jobs::Jobs, protocol::Request, security, service::Service, tags};
 use std::{
     fs,
     path::Path,
@@ -63,6 +63,8 @@ fn old_master(dir: &Path) -> config::Config {
     folders_call(dir, &cfg, "folders.assign", json!({"targetId":"web-1","folderId":folder["id"]}));
     let site = folders_call(dir, &cfg, "datacenters.create", json!({"name":"Bangkok"}));
     folders_call(dir, &cfg, "datacenters.assign", json!({"master":"local","datacenterId":site["id"]}));
+    tags::set(dir, &cfg, "web-1", &["Web".into(), "บางกอก".into()]).unwrap();
+    tags::set(dir, &cfg, "branch/child", &["web".into()]).unwrap();
     Jobs::open(dir).unwrap();
     cfg
 }
@@ -119,6 +121,8 @@ fn restore_moves_the_master_to_a_fresh_install() {
     assert_eq!(ids(&list("merges.list"), "targetId"), vec!["branch"]);
     assert_eq!(folders_call(new.path(), &restored, "folders.list", json!({})), folders_call(old.path(), &old_cfg, "folders.list", json!({})));
     assert_eq!(folders_call(new.path(), &restored, "datacenters.list", json!({})), folders_call(old.path(), &old_cfg, "datacenters.list", json!({})));
+    assert_eq!(tags::list(new.path()).unwrap(), tags::list(old.path()).unwrap(), "Tags travel with the Master");
+    assert_eq!(tags::list(new.path()).unwrap()["hosts"]["branch/child"], json!(["Web"]));
     // Enrolling another host keeps using the restored tenant key, not a new one.
     let bundle = call(new.path(), &restored, "enrollment.export", json!({"targetId":"web-2","tenant":"company","os":"linux",
         "user":"sshcc-bridge","routes":[{"kind":"lan","address":"10.0.0.3","port":22}]}));

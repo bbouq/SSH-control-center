@@ -182,14 +182,14 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     // The saved installers' file names and folder come from the (fixture's) save dialog.
     words.push("exe", "deb", "Downloads", "fixture", "client", "windows", "pc"); // …and the host name the new host reports (fixture-windows-pc)
     await th.locator('#add-host [aria-current="step"][data-step="3"]').waitFor();
-    await assertThai(th, "add step 3", words);
+    await assertThai(th, "add step 3", [...words, ...await fixtureWords(th, url)]); // the installer name ends in the random target ID
     // 5. Errors: a mapped one is the Thai sentence plus the Master's English underneath.
     await th.locator("#add-code").fill(await codeFor(th, url, "?master=other"));
     const check = th.locator("#add-code-check.bad");
     await check.filter({ hasText: "รหัสนี้ทำมาสำหรับ Master อื่น" }).waitFor();
     assert.match(await check.locator(".error-detail").textContent(), /another Master/, "the English detail sits under the Thai sentence");
     assert.doesNotMatch(await check.textContent(), /E_PAIRING/, "no error code on screen");
-    await assertThai(th, "add step 3 with an error", words);
+    await assertThai(th, "add step 3 with an error", [...words, ...await fixtureWords(th, url)]);
     await th.locator("#add-code").fill(await codeFor(th, url));
     await th.locator("#finish-pairing").waitFor();
     await assertThai(th, "add step 4 review", [...words, ...await fixtureWords(th, url), "SHA256", "fixture"]);
@@ -207,6 +207,59 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     assert.match(await notice.textContent(), /[A-Za-z]{4,}/, "unmapped error stays English");
     assert.equal(await notice.locator(".error-detail").count(), 0, "no detail line for an unmapped error");
     console.log("ok unmapped error");
+
+    // Tags (roadmap entry 4): the host's Tag row, with a Tag and a refused one.
+    await scenario(th, url, []); await th.reload(); await ready(th);
+    await rpc(th, url, "tags.set", { targetId: "ui-test", tags: ["web"] });
+    await th.reload(); await ready(th);
+    await th.locator('#dc-tree .dc-toggle').first().click();
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator("#tag-add [name=tag]").fill("a,b"); await th.locator("#tag-add [name=tag]").press("Enter");
+    await th.locator("#host-tags .add-check.bad").waitFor();
+    await assertThai(th, "host Tags", [...words, "web"]);
+    await shots(th, "host-tags");
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator('#dc-panel tr[data-host="ui-test"] .tag-chip').waitFor();
+    await assertThai(th, "host table with Tags", [...words, "web"]);
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click({ button: "right" });
+    await th.locator(`#dc-menu [data-action="ctx-tag"]`).waitFor(); await assertThai(th, "host menu with Tag…", [...words, "web"]); await th.keyboard.press("Escape");
+    // A group run by Tag: the Run on form, the confirmation and the results.
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator('[data-action="toggle-new-job"]').first().click();
+    await th.locator('#start-job [name="runOn"]').selectOption("tag:web");
+    await assertThai(th, "Run on a group", [...words, "web"]);
+    await th.locator('#start-job [name="script"]').fill("uptime");
+    await th.locator('#start-job button[type="submit"]').click();
+    await th.locator("#group-dialog[open]").waitFor();
+    await assertThai(th, "group confirmation", [...words, "web"]);
+    await th.locator('#confirm-group button[type="submit"]').click();
+    await th.locator("#group-run .group-summary").waitFor();
+    await assertThai(th, "group run results", [...words, "web"]);
+    await shots(th, "group-run");
+    await th.locator('[data-action="group-close"]').click();
+    // A mixed Linux + Windows group (masters-page has a merged Windows host), then Recent group runs.
+    await scenario(th, url, ["masters-page"]);
+    await rpc(th, url, "tags.set", { targetId: "ui-test", tags: ["mix"] });
+    await rpc(th, url, "tags.set", { targetId: "branch-master/child-1", tags: ["mix"] });
+    await th.reload(); await ready(th);
+    const mixWords = [...words, ...await fixtureWords(th, url), "mix"];
+    await th.locator('#dc-tree .dc-toggle').first().click();
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator('[data-action="toggle-new-job"]').first().click();
+    await th.locator('#start-job [name="runOn"]').selectOption("tag:mix");
+    await th.locator('#start-job [name="scriptLinux"]').waitFor();
+    await assertThai(th, "mixed group form", mixWords);
+    await th.locator('#start-job [name="scriptLinux"]').fill("uptime"); await th.locator('#start-job [name="scriptWindows"]').fill("Get-Date");
+    await th.locator('#start-job button[type="submit"]').click();
+    await th.locator('#confirm-group button[type="submit"]').click();
+    await th.locator("#group-run .group-summary").waitFor();
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator("#recent-groups tbody tr").waitFor();
+    await assertThai(th, "recent group runs", mixWords);
+    await shots(th, "recent-groups");
 
     // Backup and restore (roadmap entry 3): the section, both flows and their errors.
     const fileWords = [...words, "sshcc", "backup", "sshccbak", "Backups", "fixture"];
