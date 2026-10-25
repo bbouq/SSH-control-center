@@ -15,6 +15,7 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde_json.workspace = true
+base64.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"

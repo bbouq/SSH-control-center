@@ -18,6 +18,8 @@ use uuid::Uuid;
 mod transport;
 #[path = "fleet_merge.rs"]
 mod merge;
+#[path = "fleet_rotation.rs"]
+pub mod rotation;
 pub(crate) use merge::relay_attach;
 pub use merge::{
     record_merge, relay_health, relay_join, relay_pair, relay_pair_complete, relay_request,

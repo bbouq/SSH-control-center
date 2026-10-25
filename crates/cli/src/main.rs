@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+mod backup;
 mod shell;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -84,6 +85,14 @@ enum Action {
         command: PairingCommand,
     },
     Identity,
+    /// Save this Master (identity, keys and hosts) to one passphrase-encrypted file.
+    Backup {
+        file: PathBuf,
+    },
+    /// Make this fresh Master the one saved in a backup file.
+    Restore {
+        file: PathBuf,
+    },
     Targets,
     Doctor {
         target_id: String,
@@ -516,6 +525,8 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Action::Backup { file } => print(&backup::backup(&file, call)?),
+        Action::Restore { file } => print(&backup::restore(&file, call)?),
         Action::Targets => print(&call("targets.list", json!({}))?),
         Action::Doctor { target_id, session } => print(&call(
             "targets.doctor",

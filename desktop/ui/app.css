@@ -142,6 +142,8 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 label { display: flex; flex-direction: column; gap: 6px; font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--lilac); }
 label > small { text-transform: none; letter-spacing: 0; font-family: var(--body); font-size: 12px; }
 .check-label { flex-direction: row !important; align-items: center; gap: 10px !important; cursor: pointer; }
+/* A confirmation in a sentence ("The old machine is off"): body type, a 44 px target. */
+.check-label.is-body { font-family: var(--body); font-size: 15px; letter-spacing: 0; text-transform: none; color: var(--white); min-height: 44px; }
 
 /* Header: left nav · centered stacked logo · current Master + Add machine. */
 .nav { min-height: 44px; padding: 0; border: 0; background: transparent !important; color: var(--lilac); font-weight: 500; font-size: 20px; letter-spacing: .16em; box-shadow: none; }
@@ -279,6 +281,10 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 /* Rose only on large text (≥ 19 px bold) — 3.6:1 on violet. */
 .callout.pending { border-left-color: var(--amber); } .callout.pending > svg.i { color: var(--amber); }
 .callout ul { margin: 6px 0 0; padding-left: 18px; font-size: 14px; color: var(--white); }
+.callout .follow-ups { margin-bottom: 12px; }
+#keys-choice, #keys-progress { margin-top: 6px; }
+.callout .follow-ups li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 28px; }
+.callout p strong { display: block; font-size: 17px; margin: 6px 0 2px; }
 .callout code { color: var(--acid); }
 
 /* Disclosures: a rule above, square marker. */
