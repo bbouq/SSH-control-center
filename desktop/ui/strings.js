@@ -199,7 +199,7 @@ const en = {
   },
   // The context menus.
   menu: {
-    addHost: "Add host…", addHere: "Add host here…", rename: "Rename", deleteSite: "Delete datacenter", topology: "Topology", refresh: "Refresh", newFolder: "New folder",
+    tag: "Tag…", addHost: "Add host…", addHere: "Add host here…", rename: "Rename", deleteSite: "Delete datacenter", topology: "Topology", refresh: "Refresh", newFolder: "New folder",
     openTerminal: "Open terminal", selfTerminal: "This is the computer you are using; open its own terminal", containers: "Containers", images: "Images", monitoring: "Monitoring",
     manageMerge: "Manage merge", removeMerge: "Remove merge…", deleteFolder: "Delete folder", checkConnection: "Check connection", jobs: "Jobs & logs", files: "Files",
     remoteNote: name => "Add hosts on " + name + "; this Master reaches them through it",
@@ -551,7 +551,7 @@ const th = {
     ready: "พร้อม", stillFailing: "ยังไม่ผ่าน ดูรายละเอียดด้านบน",
   },
   menu: {
-    addHost: "เพิ่มเครื่อง…", addHere: "เพิ่มเครื่องที่นี่…", rename: "เปลี่ยนชื่อ", deleteSite: "ลบดาต้าเซ็นเตอร์", topology: "ผังเครือข่าย", refresh: "รีเฟรช", newFolder: "โฟลเดอร์ใหม่",
+    tag: "Tag…", addHost: "เพิ่มเครื่อง…", addHere: "เพิ่มเครื่องที่นี่…", rename: "เปลี่ยนชื่อ", deleteSite: "ลบดาต้าเซ็นเตอร์", topology: "ผังเครือข่าย", refresh: "รีเฟรช", newFolder: "โฟลเดอร์ใหม่",
     openTerminal: "เปิดเทอร์มินัล", selfTerminal: "นี่คือเครื่องที่คุณใช้อยู่ เปิดเทอร์มินัลของเครื่องนี้เองได้เลย", containers: "คอนเทนเนอร์", images: "อิมเมจ", monitoring: "ติดตามการใช้งาน",
     manageMerge: "จัดการ Merge", removeMerge: "ยกเลิก Merge…", deleteFolder: "ลบโฟลเดอร์", checkConnection: "ตรวจการเชื่อมต่อ", jobs: "งานและล็อก", files: "ไฟล์",
     remoteNote: name => "เพิ่มเครื่องที่ " + name + " · Master นี้เข้าถึงเครื่องเหล่านั้นผ่าน Master นั้น",

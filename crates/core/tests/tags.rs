@@ -104,3 +104,15 @@ fn tags_never_cross_a_bridge_or_relay() {
     }
     assert_eq!(service.handle(&Request { method: "tags.list".into(), params: json!({}) }, &owner).unwrap()["tags"], json!([]));
 }
+
+#[test]
+fn removing_a_host_removes_its_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = master(dir.path());
+    set(dir.path(), &cfg, "web-1", &["web"]).unwrap();
+    set(dir.path(), &cfg, "web-2", &["web", "db"]).unwrap();
+    call(dir.path(), &cfg, "targets.remove", json!({"targetId":"web-2"})).unwrap();
+    let all = list(dir.path(), &cfg);
+    assert_eq!(all["tags"], json!([{"tag":"web","hosts":["web-1"]}]), "db is gone with its only host");
+    assert!(all["hosts"].get("web-2").is_none());
+}

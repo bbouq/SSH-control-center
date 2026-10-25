@@ -341,7 +341,7 @@ function hostRow(item) {
     '<td><span class="muted">—</span></td><td>' + cpuCell({ id: "local" }) + "</td><td>" + memCell({ id: "local" }) + "</td><td>" + localStatus() + '</td><td class="actions">' + terminalButton(selfTarget()) + "</td></tr>";
   const check = state.diagnostics.get(item.id);
   const status = !item.runnerInstalled ? '<span class="badge pending">' + T.status.hosts.legacy + "</span>" : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? T.inv.connected : T.inv.problem) + "</span><small>" + esc(T.common.checkedAt(timestamp(check.checkedAt))) + "</small>" : statusBadge(item);
-  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small></td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
+  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small>" + tagChips(item.id) + "</td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
 }
 const localStatus = () => '<span class="badge ' + (state.service ? "good" : "bad") + '">' + (state.service ? T.status.hosts.online : T.status.unavailable) + "</span>";
 /** Latest CPU % from the Monitoring tab's own samples, or null when the machine was never watched. */
@@ -398,6 +398,8 @@ function hostMatches(item, text) {
     .some(value => String(value || "").toLowerCase().includes(search));
 }
 const hostTags = id => state.tags.hosts?.[id] || [];
+/** A host's Tags as chips in a table row or on a topology card (nothing when it has none). */
+const tagChips = id => hostTags(id).length ? '<span class="row-tags">' + hostTags(id).map(tag => tagChip(tag)).join("") + "</span>" : "";
 /** A Tag as a chip: clicking its name filters by it; `removeFrom` adds × to take it off that host. */
 function tagChip(tag, removeFrom = "") {
   return '<span class="tag-chip"><button type="button" class="tag-name" data-action="tag-filter" data-tag="' + esc(tag) + '" title="' + esc(T.tags.filterBy(tag)) + '">' + esc(tag) + "</button>" +
@@ -446,7 +448,7 @@ function renderGraph() {
     const sub = item ? [options.role, osName(item.os), item.relayed ? "" : item.routes?.[0]?.address].filter(Boolean) : [T.inv.cardSelf];
     return '<div class="topo-card is-' + status + (options.wide ? " is-wide" : "") + (item && state.flipped.has(item.id) ? " just-changed" : "") + '" data-host="' + esc(item ? item.id : "local") + '">' +
       '<span class="topo-dot" aria-hidden="true"></span><div class="topo-text"><button class="row-button" data-action="dc-select" data-node="' + (item ? "node:" + esc(item.id) : "master:local") + '">' + esc(name) + "</button>" +
-      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabel(status) || status) + (options.alsoDirect ? " · " + T.inv.alsoDirectLower : "") + "</span></div>" +
+      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabel(status) || status) + (options.alsoDirect ? " · " + T.inv.alsoDirectLower : "") + "</span>" + (item ? tagChips(item.id) : "") + "</div>" +
       (item ? terminalButton(item) : "") + "</div>";
   };
   const group = (title, entries, extra = "", head = "") => '<section class="topo-group"><header><h3>' + title + '</h3><span class="topo-meta">' + esc(T.inv.online(online(entries), entries.length)) + extra + "</span></header>" +
@@ -1842,6 +1844,11 @@ document.addEventListener("click", event => {
     if (action === "restore-choose") return chooseBackup();
     if (action === "keys-change") return changeKeys();
     if (action === "tag-filter") { filterByTag(button.dataset.tag); return; }
+    if (action === "ctx-tag") {
+      state.page = "datacenter"; state.dc.node = button.dataset.node; state.dc.adding = null; state.backup = null;
+      await selectTarget(state.dc.node.slice(5), "summary");
+      $("#tag-add [name=tag]")?.focus(); return;
+    }
     if (action === "tag-remove") return setHostTags(button.dataset.id, hostTags(button.dataset.id).filter(tag => tag !== button.dataset.tag));
     if (action === "restore-run") { if ($("#restore-off")?.checked) return runRestore(); return; }
     if (action === "add-host" || action === "dc-add") {
@@ -2368,6 +2375,7 @@ function dcMenuItems(node) {
     item(m.jobs, "dc-goto", { node, tab: "jobs" }), item(m.files, "dc-goto", { node, tab: "files" }),
     item(m.containers, "dc-goto", { node, tab: "containers", view: "containers" }), item(m.images, "dc-goto", { node, tab: "containers", view: "images" }),
     item(m.monitoring, "dc-goto", { node, tab: "monitoring" }),
+    "-", item(m.tag, "ctx-tag", { node }),
     // Health only reads the SSH banner, so whether a machine is a Master is asked on click (one SSH call).
     ...(!target.relayed && state.masterCheck.get(target.id) !== false && !state.merges.some(merge => merge.targetId === target.id) ? ["-", item(m.mergeIfMaster, "ctx-merge", { id: target.id })] : []),
     ...(dcFolderOf(target.id) ? ["-", item(m.unfile(dcFolderOf(target.id).name), "folder-unfile", { id: target.id })] : []),

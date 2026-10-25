@@ -218,6 +218,11 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator("#host-tags .add-check.bad").waitFor();
     await assertThai(th, "host Tags", [...words, "web"]);
     await shots(th, "host-tags");
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator('#dc-panel tr[data-host="ui-test"] .tag-chip').waitFor();
+    await assertThai(th, "host table with Tags", [...words, "web"]);
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click({ button: "right" });
+    await th.locator(`#dc-menu [data-action="ctx-tag"]`).waitFor(); await assertThai(th, "host menu with Tag…", [...words, "web"]); await th.keyboard.press("Escape");
 
     // Backup and restore (roadmap entry 3): the section, both flows and their errors.
     const fileWords = [...words, "sshcc", "backup", "sshccbak", "Backups", "fixture"];

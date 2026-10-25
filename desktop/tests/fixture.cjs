@@ -114,7 +114,7 @@ async function checkAddress(address, port, own) {
     alreadyAs: target?.label || request?.label || null, alreadyTargetId: target?.id || null, alreadyRequestId: request?.requestId || null };
 }
 /* Backup files are base64 JSON: the passphrase and a copy of the fleet. The real format is tested in Rust. */
-const FLEET_KEYS = ["targets", "folders", "folderMembers", "datacenters", "datacenterMembers", "merges", "masters", "relays"];
+const FLEET_KEYS = ["targets", "folders", "folderMembers", "datacenters", "datacenterMembers", "merges", "masters", "relays", "tags"];
 const isEmpty = () => !s.targets.length && !s.merges.length && !s.folders.length;
 function makeBackup(passphrase) {
   if ([...String(passphrase || "")].length < 12) throw new Error("E_BACKUP_PASSPHRASE_SHORT: the passphrase must be at least 12 characters");
