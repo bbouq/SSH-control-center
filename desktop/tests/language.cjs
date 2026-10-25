@@ -238,6 +238,28 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await assertThai(th, "group run results", [...words, "web"]);
     await shots(th, "group-run");
     await th.locator('[data-action="group-close"]').click();
+    // A mixed Linux + Windows group (masters-page has a merged Windows host), then Recent group runs.
+    await scenario(th, url, ["masters-page"]);
+    await rpc(th, url, "tags.set", { targetId: "ui-test", tags: ["mix"] });
+    await rpc(th, url, "tags.set", { targetId: "branch-master/child-1", tags: ["mix"] });
+    await th.reload(); await ready(th);
+    const mixWords = [...words, ...await fixtureWords(th, url), "mix"];
+    await th.locator('#dc-tree .dc-toggle').first().click();
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator('[data-action="toggle-new-job"]').first().click();
+    await th.locator('#start-job [name="runOn"]').selectOption("tag:mix");
+    await th.locator('#start-job [name="scriptLinux"]').waitFor();
+    await assertThai(th, "mixed group form", mixWords);
+    await th.locator('#start-job [name="scriptLinux"]').fill("uptime"); await th.locator('#start-job [name="scriptWindows"]').fill("Get-Date");
+    await th.locator('#start-job button[type="submit"]').click();
+    await th.locator('#confirm-group button[type="submit"]').click();
+    await th.locator("#group-run .group-summary").waitFor();
+    await th.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator("#recent-groups tbody tr").waitFor();
+    await assertThai(th, "recent group runs", mixWords);
+    await shots(th, "recent-groups");
 
     // Backup and restore (roadmap entry 3): the section, both flows and their errors.
     const fileWords = [...words, "sshcc", "backup", "sshccbak", "Backups", "fixture"];

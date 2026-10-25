@@ -153,13 +153,20 @@ pub fn drive(state: &Path, _config: &Config, run_id: &str, act: &Act) -> Result<
             scope.spawn(|| loop {
                 let Some(host) = next.lock().unwrap_or_else(PoisonError::into_inner).next() else { break };
                 let target = member(&host);
+                let still_queued = database(state).and_then(|db| read(&db, run_id)).ok()
+                    .and_then(|run| run["hosts"].as_array().cloned())
+                    .is_some_and(|hosts| hosts.iter().any(|h| h["targetId"] == host["targetId"] && h["state"] == "queued"));
+                if !still_queued {
+                    continue;
+                }
                 let script = run["scripts"][target.os.as_str()].as_str().unwrap_or_default();
                 let job = Uuid::new_v4().to_string();
                 let as_admin = run["asAdmin"] == true && target.os != "windows";
                 let result = act(&target, Step::Start { job: &job, script, cwd: host["cwd"].as_str().unwrap_or("/"), as_admin, env: &run["env"] });
                 let _ = update(state, run_id, &target.id, |row| match result {
                     Ok(_) => { row["state"] = json!("started"); row["jobId"] = json!(job); row["status"] = json!("queued"); }
-                    Err(error) => { row["state"] = json!("unreachable"); row["error"] = json!(format!("{error:#}")); }
+                    // The cause only: the job ID note added for one-host jobs means nothing here.
+                    Err(error) => { row["state"] = json!("unreachable"); row["error"] = json!(error.root_cause().to_string()); }
                 });
             });
         }
@@ -204,6 +211,50 @@ pub fn refresh(state: &Path, _config: &Config, run_id: &str, act: &Act) -> Resul
     Ok(run)
 }
 
+/// Cancels the job of one host (`only`) or of every started, unfinished host. Hosts not started yet are dropped
+/// from the run (marked cancelled) so a running `drive` doesn't start them.
+pub fn cancel(state: &Path, _config: &Config, run_id: &str, only: Option<&str>, act: &Act) -> Result<Value> {
+    let run = read(&database(state)?, run_id)?;
+    for host in run["hosts"].as_array().into_iter().flatten().filter(|h| only.is_none_or(|id| h["targetId"] == id)) {
+        let target = member(host);
+        match host["state"].as_str() {
+            Some("queued") => {
+                update(state, run_id, &target.id, |row| { row["state"] = json!("started"); row["status"] = json!("cancelled"); })?;
+            }
+            Some("started") if host["status"].as_str().is_none_or(|s| !FINISHED.contains(&s)) => {
+                let job = host["jobId"].as_str().unwrap_or_default().to_owned();
+                match act(&target, Step::Cancel { job: &job }) {
+                    Ok(reply) => { update(state, run_id, &target.id, |row| { row["status"] = reply.get("status").cloned().unwrap_or(json!("cancelled")); })?; }
+                    Err(error) => { update(state, run_id, &target.id, |row| row["error"] = json!(format!("{error:#}")))?; }
+                }
+            }
+            _ => {}
+        }
+    }
+    read(&database(state)?, run_id)
+}
+
+/// Puts the hosts that couldn't be reached, failed, were interrupted or cancelled back in the queue; `drive` then
+/// starts them with new job IDs. Hosts that succeeded are left alone.
+pub fn retry(state: &Path, _config: &Config, run_id: &str) -> Result<Value> {
+    let _guard = RECORDS.lock().unwrap_or_else(PoisonError::into_inner);
+    let db = database(state)?;
+    let mut run = read(&db, run_id)?;
+    for row in run["hosts"].as_array_mut().into_iter().flatten() {
+        let failed = row["state"] == "unreachable"
+            || (row["state"] == "started" && row["status"].as_str().is_some_and(|s| ["failed", "interrupted", "cancelled"].contains(&s)));
+        if failed {
+            row["state"] = json!("queued");
+            for field in ["jobId", "error", "status", "exitCode"] {
+                row[field] = Value::Null;
+            }
+        }
+    }
+    run["done"] = json!(false);
+    write(&db, &run)?;
+    Ok(run)
+}
+
 /// One run (`runId`), or the recent runs newest first.
 pub fn status(state: &Path, _config: &Config, p: &Value) -> Result<Value> {
     let db = database(state)?;
@@ -233,6 +284,9 @@ pub fn act(state: &Path, config: &Config, target: &Member, step: Step) -> Result
     }
 }
 
+fn run_id(p: &Value) -> Result<&str> {
+    p.get("runId").and_then(Value::as_str).context("E_ARGUMENT: missing runId")
+}
 pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Value>> {
     if !req.method.starts_with("groups.") {
         return Ok(None);
@@ -249,6 +303,15 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
                 if let Err(error) = drive(&state, &config, &id, &|target, step| act(&state, &config, target, step)) {
                     eprintln!("SSH Control Center: group run {id} stopped: {error:#}");
                 }
+            });
+            run
+        }
+        "groups.cancel" => cancel(state, config, run_id(p)?, p.get("targetId").and_then(Value::as_str), &real)?,
+        "groups.retry" => {
+            let run = retry(state, config, run_id(p)?)?;
+            let (state, config, id) = (state.to_path_buf(), config.clone(), run_id(p)?.to_owned());
+            std::thread::spawn(move || {
+                let _ = drive(&state, &config, &id, &|target, step| act(&state, &config, target, step));
             });
             run
         }

@@ -10,6 +10,7 @@
 //   restored         this Master was restored from a backup and its keys were not changed yet
 //   rotation-trouble Change keys: the first attempt on ui-test fails (the Owner is not logged in); the next one works
 //   group-offline    a group run can't reach hq-master (No route to host)
+//   group-slow       group jobs keep running until cancelled (retried jobs finish as usual)
 //   legacy-host      adds old-box, a host registered without the SSH Control Center service (v1)
 //   two-way-merge    with masters-page: the Merge with branch-master is two-way (it shows as a relay here too)
 // Backups: save_backup "writes" to /fixture/Backups and keeps the file in memory (across scenario resets), so a test can
@@ -209,6 +210,7 @@ function startGroup(p) {
 function groupStatus(id) {
   const run = s.groupRuns.find(r => r.id === id) || (() => { throw new Error("E_NOT_FOUND: this group run is no longer kept"); })();
   for (const h of run.hosts.filter(h => h.state === "started")) {
+    if (flags.has("group-slow") && !h.retried && ["queued", "running"].includes(h.status)) { h.status = "running"; continue; }
     if (h.status === "queued") h.status = "running";
     else if (h.status === "running") { h.status = "succeeded"; h.exitCode = 0; }
   }
@@ -220,6 +222,19 @@ function rpc(method, p = {}) {
     case "groups.preview": return groupHosts(p.selector);
     case "groups.run": return startGroup(p);
     case "groups.status": return p.runId ? groupStatus(p.runId) : { runs: structuredClone(s.groupRuns) };
+    case "groups.cancel": {
+      const run = s.groupRuns.find(r => r.id === p.runId);
+      for (const h of run.hosts.filter(h => (!p.targetId || h.targetId === p.targetId) && h.state === "started" && ["queued", "running"].includes(h.status))) h.status = "cancelled";
+      return structuredClone(run);
+    }
+    // Retry: hosts that failed get new jobs; the unreachable one is back online by then.
+    case "groups.retry": {
+      const run = s.groupRuns.find(r => r.id === p.runId);
+      for (const h of run.hosts.filter(h => h.state === "unreachable" || ["failed", "interrupted", "cancelled"].includes(h.status)))
+        Object.assign(h, { state: "started", jobId: crypto.randomUUID(), error: null, status: "queued", exitCode: null, retried: true });
+      run.done = false;
+      return structuredClone(run);
+    }
     case "tags.list": return tagList();
     case "tags.set": return setTags(p);
     case "keys.rotate":

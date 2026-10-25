@@ -139,6 +139,8 @@ input::placeholder, textarea::placeholder { color: var(--lilac); opacity: 1; }
 input:hover, select:hover, textarea:hover { border-color: var(--white); }
 input:focus-visible, select:focus-visible, textarea:focus-visible { border-color: var(--acid); outline: 2px solid var(--acid); outline-offset: 3px; }
 input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var(--acid); }
+/* `hidden` always wins, also over components that set their own display (labels, flex rows). */
+[hidden] { display: none !important; }
 label { display: flex; flex-direction: column; gap: 6px; font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--lilac); }
 label > small { text-transform: none; letter-spacing: 0; font-family: var(--body); font-size: 12px; }
 .check-label { flex-direction: row !important; align-items: center; gap: 10px !important; cursor: pointer; }
@@ -275,6 +277,7 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .tag-chip .tag-remove svg.i { width: 12px; height: 12px; }
 .tag-chip button:hover { background: var(--acid); color: var(--ink-on-green); }
 .group-run .group-summary { margin: 0 0 12px; }
+.group-run + .callout, .recent-groups + .surface { margin-top: 28px; }
 .group-run td small.error-line { display: block; color: var(--rose); white-space: normal; }
 .row-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .row-tags .tag-chip { font-size: 11px; }

@@ -105,8 +105,19 @@ enum Action {
         #[arg(long)]
         session: Option<String>,
     },
+    /// Run a script on one host, or on every host with a Tag (`--tag`) or in a folder (`--folder`).
     Exec {
-        target_id: String,
+        #[arg(required_unless_present_any = ["tag", "folder"], conflicts_with_all = ["tag", "folder"])]
+        target_id: Option<String>,
+        #[arg(long, conflicts_with = "folder")]
+        tag: Option<String>,
+        #[arg(long)]
+        folder: Option<String>,
+        /// For a group with both Linux and Windows hosts: one script each.
+        #[arg(long)]
+        script_linux: Option<String>,
+        #[arg(long)]
+        script_windows: Option<String>,
         /// Working folder; defaults to / (or C:\ on a Windows host).
         #[arg(long)]
         cwd: Option<String>,
@@ -229,6 +240,35 @@ fn load_code(path: &std::path::Path) -> Result<String> {
         "E_PAIRING_SIZE: code exceeds 64 KiB"
     );
     Ok(String::from_utf8(bytes)?)
+}
+/// `sshcc exec --tag/--folder`: one job on every host of the group. One `--script` is enough when the group has
+/// one OS; a mixed group needs `--script-linux` and `--script-windows`. Waits until every host has finished.
+fn group_exec(selector: Value, script: Option<String>, linux: Option<String>, windows: Option<String>, cwd: Option<String>) -> Result<Value> {
+    let preview = call("groups.preview", json!({"selector":selector}))?;
+    let mut oses: Vec<&str> = preview["hosts"].as_array().into_iter().flatten().filter_map(|h| h["os"].as_str()).collect();
+    oses.sort_unstable();
+    oses.dedup();
+    let mut scripts = json!({"linux":linux,"windows":windows});
+    if let (Some(script), [os]) = (script, oses.as_slice()) {
+        scripts[*os] = json!(script);
+    }
+    for skipped in preview["skipped"].as_array().into_iter().flatten() {
+        eprintln!("skipped {}: no SSH Control Center service", skipped["label"].as_str().unwrap_or("?"));
+    }
+    let mut params = json!({"selector":selector,"scripts":scripts});
+    if let Some(cwd) = cwd {
+        params["cwd"] = json!(cwd);
+    }
+    let run = call("groups.run", params)?;
+    let id = run["id"].as_str().context("the service returned no run")?.to_owned();
+    eprintln!("runId={id}");
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let run = call("groups.status", json!({"runId":id}))?;
+        if run["done"] == true {
+            return Ok(run);
+        }
+    }
 }
 /// The working folder a job starts in when none is given: the root of the host's drive.
 fn default_cwd(target_id: &str) -> Result<String> {
@@ -556,16 +596,28 @@ fn run() -> Result<()> {
         )?),
         Action::Exec {
             target_id,
+            tag,
+            folder,
+            script_linux,
+            script_windows,
             cwd,
             script,
             script_file,
             job_id,
         } => {
-            let script = if let Some(path) = script_file {
-                std::fs::read_to_string(path)?
-            } else {
-                script.context("--script or --script-file is required")?
+            let script = match script_file {
+                Some(path) => Some(std::fs::read_to_string(path)?),
+                None => script,
             };
+            let Some(target_id) = target_id else {
+                let selector = match (tag, folder) {
+                    (Some(tag), _) => json!({"tag":tag,"label":format!("Tag {tag}")}),
+                    (_, Some(folder)) => json!({"folder":folder,"label":format!("folder {folder}")}),
+                    _ => unreachable!("clap requires a host, --tag or --folder"),
+                };
+                return print(&group_exec(selector, script, script_linux, script_windows, cwd)?);
+            };
+            let script = script.context("--script or --script-file is required")?;
             let cwd = match cwd {
                 Some(cwd) => cwd,
                 None => default_cwd(&target_id)?,

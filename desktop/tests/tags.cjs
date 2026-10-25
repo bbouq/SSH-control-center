@@ -173,7 +173,7 @@ const checks = {
     const form = await newJob(page, "branch-master");
     assert.equal(await form.locator('[name="cwd"]').inputValue(), "/", "pre-filled");
     await d.select(form.locator('[name="runOn"]'), "tag:web", "run on every host with Tag web");
-    assert.ok(await form.locator(".host-only").isHidden(), "no Owner session for a group");
+    assert.ok(await form.locator(".host-only").evaluateAll(els => els.length === 2 && els.every(el => el.hidden)), "no Owner session or Shell for a group");
     await d.fill(form.locator('[name="script"]'), "uptime", "command");
     await form.locator('button[type="submit"]').click();
     const dialog = page.locator("#group-dialog");
@@ -216,9 +216,51 @@ const checks = {
     await page.locator('[data-action="dc-tab"][data-tab="jobs"][aria-selected="true"]').waitFor();
     assert.equal(await page.locator("#group-run").count(), 0);
   },
+  /** Mixed OS: two script boxes; cancel one, cancel all; retry only what failed; recent runs after a reload. */
+  async "group-more"(page, url) {
+    await rpc(page, url, "tags.set", { targetId: "ui-test", tags: ["mix"] });
+    await rpc(page, url, "tags.set", { targetId: "branch-master/child-1", tags: ["mix"] }); // Windows
+    await rpc(page, url, "tags.set", { targetId: "hq-master", tags: ["mix"] });
+    await page.goto(url);
+    await openTree(page);
+    const form = await newJob(page, "ui-test");
+    await form.locator('[name="runOn"]').selectOption("tag:mix");
+    await form.locator('[name="scriptLinux"]').waitFor();
+    assert.ok(await form.locator('[name="script"]').isHidden(), "one box per OS instead of one");
+    assert.ok(await form.locator('[name="cwd"]').isHidden(), "each OS runs in its own default folder");
+    assert.ok(await form.locator(".host-only").evaluateAll(els => els.every(el => el.hidden)));
+    await form.locator('[name="scriptLinux"]').fill("uname -a");
+    await form.locator('[name="scriptWindows"]').fill("Get-ComputerInfo");
+    await form.locator("details summary").click();
+    await form.locator('[name="asAdmin"]').check();
+    await form.locator('[name="env"]').fill('{"STAGE":"prod"}');
+    await shots(page, "group-mixed");
+    await form.locator('button[type="submit"]').click();
+    await page.locator("#group-dialog").getByRole("button", { name: "Run" }).click();
+    const sent = (await calls(page, url)).find(c => c.method === "groups.run").params;
+    assert.deepEqual([sent.scripts, sent.cwd, sent.asAdmin, sent.env], [{ linux: "uname -a", windows: "Get-ComputerInfo" }, { linux: "/", windows: "C:\\" }, true, { STAGE: "prod" }]);
+    // Cancel one host, then the rest.
+    await page.locator('#group-run tr[data-host="hq-master"] [data-action="group-cancel"]').click();
+    await page.locator('#group-run tr[data-host="hq-master"] .badge', { hasText: "Cancelled" }).waitFor();
+    await page.locator('#group-run .page-actions [data-action="group-cancel"]').click();
+    await page.locator("#group-run .group-summary", { hasText: "0 of 3 hosts succeeded" }).waitFor({ timeout: 15000 });
+    // Try again: only the hosts that didn't succeed get new jobs.
+    await page.locator('[data-action="group-retry"]').click();
+    await page.locator("#group-run .group-summary", { hasText: "3 of 3 hosts succeeded" }).waitFor({ timeout: 15000 });
+    assert.equal(await page.locator('[data-action="group-retry"]').count(), 0, "nothing left to retry");
+    // Recent group runs on the current Master's Jobs tab, also after a reload.
+    await page.reload();
+    await openTree(page);
+    await page.locator('#dc-tree .dc-item[data-node="master:local"]').click();
+    await page.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await page.locator("#recent-groups tr", { hasText: "Every host with Tag mix" }).waitFor();
+    await page.locator('#recent-groups [data-action="group-open"]').first().click();
+    await page.locator("#group-run .group-summary", { hasText: "3 of 3 hosts succeeded" }).waitFor();
+    await shots(page, "group-recent");
+  },
 };
 const scenarios = { "filter-folders": ["masters-page"], "host-tags": ["masters-page"], "tags-everywhere": ["masters-page"], "prefilled-cwd": ["masters-page"],
-  "core-task": ["masters-page"], "group-offline": ["masters-page", "legacy-host", "group-offline"] };
+  "core-task": ["masters-page"], "group-offline": ["masters-page", "legacy-host", "group-offline"], "group-more": ["masters-page", "group-slow"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

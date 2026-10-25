@@ -28,7 +28,7 @@ const state = {
   // Tags: {tags: [{tag, hosts}], hosts: {id: [tag]}}; tagError: the last refused change, shown under the Tag box.
   tags: { tags: [], hosts: {} }, tagError: null,
   // Group runs: the draft waiting in the confirmation, and the run shown in place of the New job form.
-  groupDraft: null, groupRun: null
+  groupDraft: null, groupRun: null, groupRuns: []
 };
 addReset();
 const native = (command, args = {}) => {
@@ -212,6 +212,7 @@ async function refreshFleet() {
     rpc("backup.status").catch(() => null), rpc("keys.rotation_status").catch(() => null), rpc("tags.list").catch(() => null)
   ]);
   state.backupStatus = backup; state.rotation = rotation;
+  void refreshRecentGroups().then(() => { if ($("#recent-groups")) $("#recent-groups").outerHTML = renderRecentGroups(); });
   if (tags) state.tags = tags;
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
@@ -557,9 +558,22 @@ function runOnOptions() {
     (state.tags.tags || []).map(row => '<option value="tag:' + esc(row.tag) + '">' + esc(t.withTag(row.tag)) + "</option>").join("") +
     folders.map(folder => '<option value="folder:' + esc(folder.id) + '">' + esc(t.inFolder((several || folder.master !== "local" ? masterLabel(folder.master) + " / " : "") + folder.name)) + "</option>").join("");
 }
-/** Owner session is per host, so it is hidden when the job runs on a group. */
-function onRunOnChange(form) {
-  for (const field of form.querySelectorAll(".host-only")) field.hidden = Boolean(form.elements.runOn.value);
+/** Owner session and Shell are per host, so they are hidden for a group (each OS uses its own shell). A group with Linux and Windows hosts gets a script box
+ *  for each (and each OS's default working folder). */
+async function onRunOnChange(form) {
+  const value = form.elements.runOn.value;
+  for (const field of form.querySelectorAll(".host-only")) field.hidden = Boolean(value);
+  const preview = value ? await rpc("groups.preview", { selector: runOnSelector(form.elements.runOn) }).catch(() => null) : null;
+  if (form.elements.runOn.value !== value) return; // changed again while asking
+  setMixed(form, new Set((preview?.hosts || []).map(row => row.os)).size > 1);
+}
+function setMixed(form, mixed) {
+  form.dataset.mixed = mixed ? "1" : "";
+  for (const field of form.querySelectorAll('[data-script="pair"]')) field.hidden = !mixed;
+  form.querySelector('[data-script="single"]').hidden = mixed;
+  form.querySelector("[data-cwd]").hidden = mixed;
+  form.elements.script.required = !mixed; form.elements.cwd.required = !mixed;
+  form.elements.scriptLinux.required = form.elements.scriptWindows.required = mixed;
 }
 /** The group's selector from the Run on value, with the words shown for it. */
 function runOnSelector(select) {
@@ -569,9 +583,11 @@ function runOnSelector(select) {
 async function draftGroupRun(form, values, env) {
   const selector = runOnSelector(form.elements.runOn), host = target();
   const preview = await rpc("groups.preview", { selector });
-  const oses = [...new Set(preview.hosts.map(row => row.os))];
-  const scripts = {}; for (const os of oses.length === 1 ? oses : [host?.os || "linux"]) scripts[os] = values.script;
-  const params = { selector, scripts, cwd: values.cwd, env };
+  const oses = [...new Set(preview.hosts.map(row => row.os))], mixed = oses.length > 1;
+  const scripts = {};
+  if (mixed) Object.assign(scripts, { linux: values.scriptLinux, windows: values.scriptWindows });
+  else for (const os of oses.length ? oses : [host?.os || "linux"]) scripts[os] = values.script;
+  const params = { selector, scripts, cwd: mixed ? { linux: defaultCwd("linux"), windows: defaultCwd("windows") } : values.cwd, env };
   if (values.asAdmin === "on") params.asAdmin = true;
   state.groupDraft = { params, preview };
   fillGroupDialog(); $("#group-dialog").showModal();
@@ -605,12 +621,27 @@ function renderGroupRun(run) {
   const ok = counted.filter(row => row.status === "succeeded").length, finished = counted.filter(groupFinished).length;
   const rows = hosts.map(row => '<tr data-host="' + esc(row.targetId) + '"><td><strong>' + esc(row.label || row.targetId) + "</strong><small>" + esc(osName(row.os)) + "</small>" +
     (row.error && row.state !== "skipped" ? '<small class="error-line">' + errorHtml(explain(row.error, false, row.label || row.targetId)) + "</small>" : "") + "</td><td>" + groupRowStatus(row) + "</td>" +
-    '<td class="num">' + (row.exitCode ?? "—") + '</td><td class="actions">' + (row.jobId ? '<button class="small" data-action="group-log" data-id="' + esc(row.targetId) + '" data-job="' + esc(row.jobId) + '">' + t.openLog + "</button>" : "") + "</td></tr>").join("");
+    '<td class="num">' + (row.exitCode ?? "—") + '</td><td class="actions">' +
+    (row.state === "started" && !groupFinished(row) ? '<button class="small" data-action="group-cancel" data-id="' + esc(row.targetId) + '">' + t.cancelOne + "</button>" : "") +
+    (row.jobId ? '<button class="small" data-action="group-log" data-id="' + esc(row.targetId) + '" data-job="' + esc(row.jobId) + '">' + t.openLog + "</button>" : "") + "</td></tr>").join("");
+  const failed = counted.some(row => row.state === "unreachable" || ["failed", "interrupted", "cancelled"].includes(row.status));
+  const actions = (!run.done ? '<button data-action="group-cancel">' + t.cancelAll + "</button>" : "") +
+    (run.done && failed ? '<button class="primary" data-action="group-retry">' + t.retryFailed + "</button>" : "") + '<button data-action="group-close">' + t.closeGroup + "</button>";
   return '<section class="surface group-run" id="group-run" aria-live="polite"><div class="section-heading"><div><h2>' + t.groupTitle + "</h2><p>" + esc(t.groupLead(run.selector?.label || "", timestamp(run.createdAt))) + "</p></div>" +
-    '<div class="page-actions"><button data-action="group-close">' + t.closeGroup + "</button></div></div>" +
+    '<div class="page-actions">' + actions + "</div></div>" +
     '<p class="group-summary"><strong>' + esc(run.done ? t.groupSummary(ok, counted.length) : t.groupRunning(finished, counted.length)) + "</strong></p>" +
     '<div class="table-wrap"><table><thead><tr><th>' + T.inv.head.host + "</th><th>" + T.inv.head.status + "</th><th>" + t.exitCode + "</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section>";
 }
+/** The current Master's Jobs tab: the most recent group runs, newest first; Open shows one in place. */
+function renderRecentGroups() {
+  const t = T.jobs, runs = state.groupRuns || [];
+  const counts = run => { const hosts = run.hosts.filter(row => row.state !== "skipped"); return t.groupSummary(hosts.filter(row => row.status === "succeeded").length, hosts.length); };
+  return '<section class="section recent-groups" id="recent-groups"><div class="section-heading"><h2>' + t.recentTitle + "</h2></div>" +
+    (runs.length ? '<div class="table-wrap"><table><tbody>' + runs.map(run => "<tr><td><strong>" + esc(run.selector?.label || "") + "</strong><small>" + esc(timestamp(run.createdAt)) + "</small></td><td>" + esc(counts(run)) +
+      '</td><td class="actions"><button class="small" data-action="group-open" data-run="' + esc(run.id) + '">' + t.open + "</button></td></tr>").join("") + "</tbody></table></div>"
+      : '<div class="empty-inline">' + t.recentEmpty + "</div>") + "</section>";
+}
+async function refreshRecentGroups() { state.groupRuns = (await rpc("groups.status", {}).catch(() => null))?.runs || state.groupRuns || []; }
 let groupTimer = 0;
 /** Polls the shown run until every host has finished; only the run's own panel is redrawn. */
 async function watchGroup() {
@@ -622,6 +653,7 @@ async function watchGroup() {
   if (run) state.groupRun = run;
   const panel = $("#group-run"); if (panel) panel.outerHTML = renderGroupRun(state.groupRun);
   if (!state.groupRun.done) groupTimer = setTimeout(() => void watchGroup(), 2000);
+  else { await refreshRecentGroups(); if ($("#recent-groups")) $("#recent-groups").outerHTML = renderRecentGroups(); }
 }
 /** Open log: that host's Jobs tab with the group's job selected. */
 async function openGroupLog(id, jobId) {
@@ -635,9 +667,12 @@ function renderNewJob(item) {
   const windows = isWindows(item), t = T.jobs;
   return '<form id="start-job" class="surface new-job"><h2>' + t.newJob + '</h2><div class="form-grid">' +
     '<label class="full">' + t.runOn + '<select name="runOn">' + runOnOptions() + "</select></label>" +
-    '<label class="full">' + t.cwd + '<input name="cwd" required class="mono" value="' + defaultCwd(item.os) + '" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
-    '<label class="full">' + t.script + '<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label></div>' +
-    "<details><summary>" + t.advanced + '</summary><div class="form-grid"><label>' + t.shell + '<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
+    '<label class="full" data-cwd>' + t.cwd + '<input name="cwd" required class="mono" value="' + defaultCwd(item.os) + '" placeholder="' + (windows ? "C:\\projects\\my-app" : "/srv/my-app") + '"></label>' +
+    '<label class="full" data-script="single">' + t.script + '<textarea name="script" required rows="6" class="mono" spellcheck="false" placeholder="' + (windows ? "Get-Location" : "pwd") + '"></textarea></label>' +
+    '<label class="full" data-script="pair" hidden>' + t.scriptLinux + '<textarea name="scriptLinux" rows="4" class="mono" spellcheck="false" placeholder="pwd"></textarea></label>' +
+    '<label class="full" data-script="pair" hidden>' + t.scriptWindows + '<textarea name="scriptWindows" rows="4" class="mono" spellcheck="false" placeholder="Get-Location"></textarea></label>' +
+    '<p class="help full" data-script="pair" hidden>' + t.mixedHelp + "</p></div>" +
+    "<details><summary>" + t.advanced + '</summary><div class="form-grid"><label class="host-only">' + t.shell + '<select name="shell"><option value="' + (windows ? "powershell" : "bash") + '">' + (windows ? "PowerShell" : "Bash") + "</option></select></label>" +
     '<label class="host-only">' + t.session + '<input name="ownerSessionId" placeholder="' + esc(t.sessionPlaceholder) + '"></label>' +
     (!windows ? '<label class="check-label full"><input type="checkbox" name="asAdmin">' + t.asAdmin + "</label>" : "") +
     '<label class="full">' + t.env + " <small>" + t.envHelp + '</small><textarea name="env" rows="2" class="mono" spellcheck="false">{}</textarea></label></div></details>' +
@@ -1256,7 +1291,7 @@ function renderDcPanel() {
       ? '<div class="stat-grid">' + stat(t.role, master.current ? t.currentMaster : t.mergedMaster) + stat(t.targetHosts, String(master.machines.length)) + stat(t.online, String(dcOnline(master.machines))) + "</div>" +
         '<section class="section mt"><div class="section-heading"><h2>' + t.targetHosts + "</h2></div>" + dcMachineTable(master.machines) + "</section>" +
         (master.current ? renderBackupSection() : "")
-      : state.dc.tab === "jobs" ? (target ? renderJobs(target) : needsSelf)
+      : state.dc.tab === "jobs" ? (master.current ? renderRecentGroups() : "") + (target ? renderJobs(target) : (state.groupRun ? renderGroupRun(state.groupRun) : "") + needsSelf)
       : state.dc.tab === "files" ? (target ? renderFiles(target) : needsSelf)
       : state.dc.tab === "monitoring" ? renderMonitorTab(dcKey(master.item), master.label) : renderContainerTab(dcKey(master.item), master.label);
     return head + tabs + body;
@@ -1937,6 +1972,9 @@ document.addEventListener("click", event => {
     if (action === "close-group-dialog") { state.groupDraft = null; $("#group-dialog").close(); return; }
     if (action === "group-close") { clearTimeout(groupTimer); state.groupRun = null; render(); return; }
     if (action === "group-log") return openGroupLog(button.dataset.id, button.dataset.job);
+    if (action === "group-cancel") { state.groupRun = await rpc("groups.cancel", { runId: state.groupRun.id, ...(button.dataset.id ? { targetId: button.dataset.id } : {}) }); render(); return watchGroup(); }
+    if (action === "group-retry") { state.groupRun = await rpc("groups.retry", { runId: state.groupRun.id }); render(); return watchGroup(); }
+    if (action === "group-open") { state.groupRun = await rpc("groups.status", { runId: button.dataset.run }); render(); return watchGroup(); }
     if (action === "ctx-tag") {
       state.page = "datacenter"; state.dc.node = button.dataset.node; state.dc.adding = null; state.backup = null;
       await selectTarget(state.dc.node.slice(5), "summary");

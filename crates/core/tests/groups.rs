@@ -173,7 +173,7 @@ fn group_runs_never_cross_a_bridge_or_relay() {
     let peer = Uuid::new_v4().to_string();
     fleet::register_master(dir.path(), &json!({"id":peer,"label":"Peer","publicKey":key(3)})).unwrap();
     let fingerprint = fleet::public_key_fingerprint(&key(3)).unwrap();
-    for method in ["groups.preview", "groups.run", "groups.status"] {
+    for method in ["groups.preview", "groups.run", "groups.status", "groups.cancel", "groups.retry"] {
         let bridged = Request { method: "bridge.request".into(), params: json!({"masterId":peer,"masterKey":fingerprint,
             "expectedTargetId":service.config.node_id,"request":{"method":method,"params":{}}}) };
         assert!(format!("{:#}", service.handle(&bridged, &owner).unwrap_err()).contains("not available over bridge"), "{method} over a bridge");
@@ -181,4 +181,88 @@ fn group_runs_never_cross_a_bridge_or_relay() {
         assert!(format!("{:#}", relayed.unwrap_err()).contains("E_PERMISSION"), "{method} over a relay");
     }
     assert_eq!(service.handle(&Request { method: "groups.status".into(), params: json!({}) }, &owner).unwrap()["runs"], json!([]));
+}
+
+#[test]
+fn a_missing_script_for_an_os_in_the_group_starts_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = master(dir.path(), 1);
+    let error = groups::start(dir.path(), &cfg, &json!({"selector":{"tag":"web"},"scripts":{"linux":"uptime"}})).unwrap_err();
+    assert!(format!("{error:#}").contains("E_GROUP_SCRIPT"), "branch/child is Windows");
+    assert_eq!(groups::status(dir.path(), &cfg, &json!({})).unwrap()["runs"], json!([]), "no run recorded");
+}
+
+#[test]
+fn admin_and_environment_reach_every_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = master(dir.path(), 1);
+    let run = groups::start(dir.path(), &cfg, &json!({"selector":{"tag":"web"},"scripts":{"linux":"id","windows":"whoami"},
+        "asAdmin":true,"env":{"STAGE":"prod"},"cwd":{"linux":"/srv","windows":"D:\\apps"}})).unwrap();
+    let seen = Mutex::new(Vec::new());
+    groups::drive(dir.path(), &cfg, run["id"].as_str().unwrap(), &|member, step| {
+        if let Step::Start { as_admin, env, cwd, .. } = step {
+            seen.lock().unwrap().push((member.id.clone(), as_admin, env["STAGE"].as_str().unwrap().to_owned(), cwd.to_owned()));
+        }
+        Ok(json!({}))
+    }).unwrap();
+    let mut seen = seen.into_inner().unwrap();
+    seen.sort();
+    assert_eq!(seen, [
+        ("branch/child".into(), false, "prod".into(), "D:\\apps".into()),
+        ("web-1".into(), true, "prod".into(), "/srv".into()),
+    ], "admin is a Linux option; the working folder is per OS");
+}
+
+fn started(dir: &Path, cfg: &config::Config, n: usize) -> String {
+    let run = groups::start(dir, cfg, &by_tag("sleep 60")).unwrap();
+    let id = run["id"].as_str().unwrap().to_owned();
+    groups::drive(dir, cfg, &id, &|member, _| if member.id == format!("web-{n}") { anyhow::bail!("No route to host") } else { Ok(json!({})) }).unwrap();
+    id
+}
+
+#[test]
+fn cancel_all_or_one_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = master(dir.path(), 3);
+    let id = started(dir.path(), &cfg, 3);
+    let cancelled = Mutex::new(Vec::new());
+    let cancel = |member: &groups::Member, step: Step| match step {
+        Step::Cancel { .. } => { cancelled.lock().unwrap().push(member.id.clone()); Ok(json!({"status":"cancelled","exitCode":null})) }
+        _ => unreachable!(),
+    };
+    let one = groups::cancel(dir.path(), &cfg, &id, Some("web-1"), &cancel).unwrap();
+    assert_eq!(host_of(&one, "web-1")["status"], "cancelled");
+    assert_eq!(*cancelled.lock().unwrap(), ["web-1"]);
+    groups::cancel(dir.path(), &cfg, &id, None, &cancel).unwrap();
+    let mut all = cancelled.into_inner().unwrap();
+    all.sort();
+    assert_eq!(all, ["branch/child", "web-1", "web-2"], "web-1 was already cancelled; web-3 never started");
+}
+
+#[test]
+fn retry_starts_only_the_hosts_that_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = master(dir.path(), 3);
+    let id = started(dir.path(), &cfg, 3);
+    groups::refresh(dir.path(), &cfg, &id, &|member, _| Ok(match member.id.as_str() {
+        "web-1" => json!({"status":"succeeded","exitCode":0}),
+        "web-2" => json!({"status":"failed","exitCode":1}),
+        _ => json!({"status":"succeeded","exitCode":0}),
+    })).unwrap();
+    let before = groups::status(dir.path(), &cfg, &json!({"runId":id})).unwrap();
+    let old_job = host_of(&before, "web-2")["jobId"].clone();
+    groups::retry(dir.path(), &cfg, &id).unwrap();
+    let again = Mutex::new(Vec::new());
+    groups::drive(dir.path(), &cfg, &id, &|member, step| {
+        if let Step::Start { job, .. } = step { again.lock().unwrap().push((member.id.clone(), job.to_owned())); }
+        Ok(json!({}))
+    }).unwrap();
+    let mut again = again.into_inner().unwrap();
+    again.sort();
+    assert_eq!(again.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["web-2", "web-3"], "failed and unreachable hosts only");
+    assert!(again.iter().all(|(_, job)| json!(job) != old_job), "new job IDs");
+    let after = groups::status(dir.path(), &cfg, &json!({"runId":id})).unwrap();
+    assert_eq!(host_of(&after, "web-1")["status"], "succeeded", "a host that worked is left alone");
+    assert_eq!(host_of(&after, "web-3")["state"], "started");
+    assert_eq!(host_of(&after, "web-3")["error"], Value::Null);
 }
