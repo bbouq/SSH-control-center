@@ -288,6 +288,7 @@ function render() {
   if (state.page === "service") main.innerHTML = renderService();
   if (state.page === "enroll" || state.dc.adding) focusAddStep();
   if (state.rotation?.active && $("#keys-progress") && !rotationTimer) rotationTimer = setTimeout(() => void watchRotation(), 2000);
+  watchFetch();
 }
 function heading(title, description, actions = "") {
   return '<div class="page-heading"><div><h1>' + esc(title) + "</h1>" + (description ? "<p>" + esc(description) + "</p>" : "") + "</div>" + (actions ? '<div class="page-actions">' + actions + "</div>" : "") + "</div>";
@@ -1188,9 +1189,38 @@ function addPaste(now) {
   // Done: the pasted code stays where it was (read only, same layout) so nothing above step 4 moves.
   if (now.n > 3) return state.add.code ? '<label>' + addText.code + '<textarea class="mono" rows="3" readonly spellcheck="false">' + esc(state.add.code) + "</textarea></label>" +
     '<p class="add-check good">' + esc(addText.codeAccepted(state.add.accepted)) + '</p><p class="help">' + addText.codeHelp + "</p>" : '<p class="add-check">' + icons.check + addText.codeDone + "</p>";
-  const error = state.add.error;
+  const error = state.add.error, fetched = state.add.fetch?.requestId === state.pairing?.requestId ? state.add.fetch : null;
+  // Entry 8: the Master fetches the code itself and both screens show the same 6 digits; pasting stays as the
+  // fallback, and is the only way with an older installer.
+  // Until the first answer (or for an older installer) the paste box is shown as before.
+  if (fetched && fetched.state !== "old" && !error && !state.add.code) {
+    const paste = "<details" + (state.add.pasting ? " open" : "") + ' id="add-paste-instead"><summary>' + addText.pasteInstead + "</summary><div>" + pasteBox(error) + "</div></details>";
+    if (fetched?.state === "ready") return '<div class="add-compare" id="add-compare"><p>' + addText.compareLead + '</p><p class="compare-digits" aria-live="polite">' + esc(fetched.digits) + "</p>" +
+      '<div class="form-actions"><button class="primary" data-action="add-same" data-focus>' + addText.same + '</button><button class="danger" data-action="add-different">' + addText.different + "</button></div></div>" + paste;
+    return '<p class="add-check" id="add-waiting" aria-live="polite"><span class="dot pending"></span>' + addText.waitingApprove + "</p>" + paste;
+  }
+  return (fetched?.state === "old" ? '<p class="help">' + addText.olderInstaller + "</p>" : "") + pasteBox(error);
+}
+function pasteBox(error) {
   return '<label>' + addText.code + '<textarea id="add-code" class="mono" rows="3" maxlength="65536" autocomplete="off" spellcheck="false" placeholder="SSHCC1.…" data-focus>' + esc(state.add.code) + "</textarea></label>" +
     '<p class="add-check' + (error ? " bad" : "") + '" id="add-code-check" aria-live="polite">' + (error ? errorHtml(explain(error, true)) : esc(addText.codeIdle)) + '</p><p class="help">' + addText.codeHelp + "</p>";
+}
+/** While step 3 waits, ask the new machine for its code every 5 s (only one loop; it stops when step 3 is left). */
+let fetchTimer = 0;
+function watchFetch() {
+  const request = state.pairing, inPaste = (state.page === "enroll" || state.dc.adding) && $('#add-host .add-step[data-step="3"][aria-current="step"]');
+  if (!request || !inPaste || fetchTimer) return;
+  fetchTimer = setTimeout(async () => {
+    fetchTimer = 0;
+    const current = state.pairing;
+    if (!current || current.requestId !== request.requestId) return;
+    const reply = await rpc("pairing.fetch", { requestId: request.requestId }).catch(() => null);
+    const before = JSON.stringify(state.add.fetch || null);
+    if (reply && state.pairing?.requestId === request.requestId) state.add.fetch = reply;
+    // Redraw on news, but never over a code being typed or pasted.
+    if (JSON.stringify(state.add.fetch || null) !== before && !state.add.code) render();
+    if (state.add.fetch?.state !== "ready" && state.add.fetch?.state !== "old") watchFetch();
+  }, state.add.fetch ? 5000 : 800);
 }
 /** Save installer…: the native save dialog; once saved, step 2 is done and the flow moves to step 3. */
 async function saveInstaller() {
@@ -2368,6 +2398,13 @@ document.addEventListener("click", event => {
     }
     if (action === "check-updates") return checkUpdates(button.dataset.id);
     if (action === "host-upgrade") return upgradeHost(button.dataset.id);
+    if (action === "add-same") { const f = state.add.fetch; state.add.preview = { ...f.preview, requestId: f.requestId, fetched: true }; render(); return; }
+    if (action === "add-different") {
+      const id = state.add.fetch?.requestId;
+      try { await rpc("pairing.confirm", { requestId: id, same: false }); }
+      catch (error) { state.pairing = null; addReset(); await refreshPairings().catch(() => {}); render(); notify(explain(error, true).text, true); }
+      return;
+    }
     if (action === "host-upgrade-file") {
       const path = await native("save_upgrade", { targetId: button.dataset.id, os: button.dataset.os, title: T.upgrade.saveTitle });
       if (path) notify(T.upgrade.saved(path)); return;
@@ -2624,6 +2661,8 @@ document.addEventListener("click", event => {
     if (action === "close-file") { state.file = null; $("#file-editor").innerHTML = ""; }
   });
 });
+// "Paste the code instead" stays open across redraws once opened.
+document.addEventListener("toggle", event => { if (event.target.id === "add-paste-instead") state.add.pasting = event.target.open; }, true);
 let activitySearchTimer = 0;
 document.addEventListener("input", event => {
   if (event.target.form?.id === "create-pairing" && ["address", "port"].includes(event.target.name)) onWhereInput(event.target.form);
@@ -2710,8 +2749,10 @@ document.addEventListener("submit", event => {
       const preview = state.add.preview;
       if (!preview) return;
       // Finish: save with the edited name, then file it in the folder chosen on the card (only if it changed).
+      // A code the Master fetched itself (the digits matched) is confirmed; a pasted one is completed.
       const folderId = await chosenFolder(values);
-      const result = await rpc("pairing.complete", { code: preview.code, label: values.label.trim() || preview.label });
+      const label = values.label.trim() || preview.label;
+      const result = preview.fetched ? await rpc("pairing.confirm", { requestId: preview.requestId, same: true, label }) : await rpc("pairing.complete", { code: preview.code, label });
       if (folderId !== (state.folders.members?.[preview.targetId] || "")) { await rpc("folders.assign", { targetId: preview.targetId, folderId: folderId || null }); }
       state.folders = await rpc("folders.list");
       state.pairing = result; state.add.preview = null;

@@ -111,10 +111,45 @@ const checks = {
     await page.locator("#partitions-hint", { hasText: "update this host to see every partition" }).waitFor();
     assert.equal(await page.locator("#partitions").count(), 0);
   },
+  /** Entry 8 core task: add a host by comparing 6 digits; the address is the only decision. */
+  async "six-digit"(page, url, d) {
+    await page.goto(url);
+    await page.locator('[data-action="add-host"]').click();
+    await d.fill(page.locator("#add-address"), "192.0.2.77", "address");
+    await page.getByRole("button", { name: "Save installer…" }).click();
+    await page.locator("#add-waiting", { hasText: "Waiting for Approve on the new machine" }).waitFor({ timeout: 15000 });
+    assert.equal(await page.locator("#add-paste-instead").evaluate(el => el.open), false, "pasting is folded away");
+    // On the new machine: Approve (the fixture marks the request approved).
+    await page.request.get(url + "/pairing-code");
+    const compare = page.locator("#add-compare");
+    await compare.waitFor({ timeout: 15000 });
+    assert.match(await compare.locator(".compare-digits").textContent(), /^\d{3} \d{3}$/);
+    await shots(page, "six-digit");
+    await compare.getByRole("button", { name: "Yes, same number" }).click(); // a confirmation, not a decision
+    await page.locator("#finish-pairing").waitFor();
+    await page.locator('#finish-pairing [type="submit"]').click();
+    await page.locator("#add-host .ready-message, #add-host .add-step[data-step=\"4\"] .callout").first().waitFor();
+    const sent = (await rpcCalls(page, url)).map(c => c.method);
+    assert.ok(sent.includes("pairing.confirm") && !sent.includes("pairing.complete") && !sent.includes("pairing.preview"), "nothing was pasted: " + sent.join(", "));
+    assert.equal(d.count, 1, "only the address");
+  },
+  /** Different digits cancel the pairing with a warning. */
+  async "six-digit-mismatch"(page, url) {
+    await page.goto(url);
+    await page.locator('[data-action="add-host"]').click();
+    await page.locator("#add-address").fill("192.0.2.78");
+    await page.getByRole("button", { name: "Save installer…" }).click();
+    await page.locator("#add-waiting").waitFor({ timeout: 15000 });
+    await page.request.get(url + "/pairing-code");
+    await page.locator("#add-compare").waitFor({ timeout: 15000 });
+    await page.getByRole("button", { name: "No, it’s different" }).click();
+    await page.locator("#notice", { hasText: "The numbers differ, so this pairing was cancelled" }).waitFor();
+    assert.equal((await (await page.request.post(url + "/rpc", { data: { command: "rpc", args: { method: "pairing.status", params: {} } } })).json()).length, 0, "the request is gone");
+  },
 };
 const scenarios = { "badges": ["masters-page", "outdated-hosts"], "update-one": ["masters-page", "outdated-hosts", "upgrade-fails"],
   "update-all": ["masters-page", "outdated-hosts", "upgrade-fails"], "no-templates": ["outdated-hosts", "no-templates"],
-  "partitions": [], "old-disk": ["old-disk"] };
+  "partitions": [], "old-disk": ["old-disk"], "six-digit": ["empty", "six-digit"], "six-digit-mismatch": ["empty", "six-digit"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

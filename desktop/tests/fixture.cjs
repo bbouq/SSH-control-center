@@ -19,6 +19,8 @@
 //   multi-hop        with masters-page: Branch Master also passes on Lab Master (a Master it merged) and Lab's two hosts,
 //                    one of which Lab Master gives View only; 3 more hosts are more than 4 hops away
 //   outdated-merge   with masters-page: Branch Master runs an older version (no relayVersion)
+//   six-digit        pairing.fetch answers like 0.5.0 installers: "waiting" on the first look, then the 6 digits once the
+//                    request was approved (GET /pairing-code); without it, fetch answers "old" (the paste box, as before)
 //   old-disk         monitor.stats reports only / (a host from before entry 8); otherwise three partitions, /var fullest
 //   outdated-hosts   ui-test runs 0.4.0 (this Master 0.5.0); with masters-page, hq-master too and branch-master/child-1
 //                    (updated by Branch Master); targets.upgrade succeeds (hq-master fails with upgrade-fails)
@@ -531,6 +533,20 @@ function rpc(method, p = {}) {
       if (p.routes) { const row = pairing(p.requestId), t = s.targets.find(item => item.id === row.targetId); if (t) t.routes = p.routes; row.routes = p.routes; row.state = "ready"; row.updatedAt = now(); }
       return pairingView(pairing(p.requestId));
     case "pairing.preview": return previewPairing(p);
+    case "pairing.fetch": {
+      const row = pairing(need(p.requestId, "requestId"));
+      if (!flags.has("six-digit")) return { state: "old", requestId: row.requestId };
+      if (row.state !== "awaiting_approval") return { state: "done", requestId: row.requestId };
+      if (!row.approved) return { state: "waiting", requestId: row.requestId };
+      const code = pairingCode(row.requestId);
+      const n = parseInt(crypto.createHash("sha256").update(code).digest("hex").slice(0, 8), 16) % 1000000, digits = String(n).padStart(6, "0");
+      return { state: "ready", requestId: row.requestId, digits: digits.slice(0, 3) + " " + digits.slice(3), preview: previewPairing({ code }) };
+    }
+    case "pairing.confirm": {
+      const row = pairing(need(p.requestId, "requestId"));
+      if (p.same !== true) { s.pairings = s.pairings.filter(item => item !== row && item.requestId !== row.sibling); throw new Error("E_PAIRING_MISMATCH: the numbers differ, so this pairing was cancelled"); }
+      return completePairing({ code: pairingCode(row.requestId), label: p.label });
+    }
     case "pairing.complete": return completePairing(p);
     case "pairing.check": return checkAddress(need(p.address, "address").trim(), Number(p.port || 22), p.requestId);
     case "pairing.cancel": { const row = pairing(need(p.requestId, "requestId")); s.pairings = s.pairings.filter(item => item !== row); return { requestId: row.requestId, cancelled: true }; }
@@ -630,7 +646,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/last-csv") return json(res, lastCsv);
     if (url.pathname === "/scenario" && req.method === "POST") { reset((await body(req)).flags || []); return json(res, { flags: [...flags] }); }
     if (url.pathname === "/next-backup" && req.method === "POST") { nextBackup = (await body(req)).kind || ""; return json(res, { kind: nextBackup }); }
-    if (url.pathname === "/pairing-code") { const row = url.searchParams.get("requestId") ? pairing(url.searchParams.get("requestId")) : s.pairings.find(p => p.state === "awaiting_approval") || pairing(null); return json(res, { code: pairingCode(row.requestId, url.searchParams.get("master") === "other" ? "other-master" : MASTER_ID) }); }
+    if (url.pathname === "/pairing-code") { const row = url.searchParams.get("requestId") ? pairing(url.searchParams.get("requestId")) : s.pairings.find(p => p.state === "awaiting_approval") || pairing(null); row.approved = true; return json(res, { code: pairingCode(row.requestId, url.searchParams.get("master") === "other" ? "other-master" : MASTER_ID) }); }
     if (url.pathname === "/rpc" && req.method === "POST") {
       const { command: name, args = {} } = await body(req);
       calls.push({ command: name, ...args });

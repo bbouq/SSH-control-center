@@ -666,3 +666,76 @@ fn complete_saves_the_name_edited_on_the_review_card() {
     .unwrap();
     assert_eq!(targets(&fx)[0]["label"], "web-01 ใหม่");
 }
+
+/// Entry 8: the 6 digits both screens show.
+#[test]
+fn the_six_digits_are_stable_and_change_with_each_bound_part() {
+    let fx = Fixture::new();
+    let request = fx.create(None);
+    let envelope = request["envelope"].clone();
+    let registration = fx.registration(&envelope);
+    let code = pairing::encode_receipt(&envelope, &registration).unwrap();
+    let digits = pairing::short_code_of(&code).unwrap();
+    assert!(digits.len() == 7 && digits.as_bytes()[3] == b' ' && digits.replace(' ', "").bytes().all(|b| b.is_ascii_digit()), "{digits}");
+    assert_eq!(pairing::short_code_of(&code).unwrap(), digits, "the same code, the same digits");
+    // Another host key (a machine in the middle) gives other digits.
+    let mut other = registration.clone();
+    other["hostKeys"] = json!([key(9)]);
+    assert_ne!(pairing::short_code_of(&pairing::encode_receipt(&envelope, &other).unwrap()).unwrap(), digits);
+    // Another request gives other digits too.
+    let second = fx.create(Some("second-host"));
+    let reg2 = fx.registration(&second["envelope"]);
+    assert_ne!(pairing::short_code_of(&pairing::encode_receipt(&second["envelope"], &reg2).unwrap()).unwrap(), digits);
+}
+
+#[test]
+fn the_master_fetches_the_code_compares_and_finishes_or_falls_back() {
+    let fx = Fixture::new();
+    let request = fx.create(None);
+    let id = request["requestId"].as_str().unwrap().to_owned();
+    let envelope = request["envelope"].clone();
+    let registration = fx.registration(&envelope);
+    let code = pairing::encode_receipt(&envelope, &registration).unwrap();
+    let fetch = |answer: &dyn Fn() -> anyhow::Result<Option<(String, String)>>| pairing::fetch_with(fx.state(), &fx.config, &json!({"requestId":id}), &|_, _| answer()).unwrap();
+    // Before Approve, and while the machine isn't reachable: keep waiting.
+    assert_eq!(fetch(&|| Ok(None))["state"], "waiting");
+    let unreachable = fetch(&|| anyhow::bail!("ALL_ROUTES_FAILED: lan 127.0.0.1:22: Connection refused"));
+    assert_eq!((unreachable["state"].as_str(), unreachable["error"].is_string()), (Some("waiting"), true));
+    // An older installer doesn't know the method: the paste box.
+    assert_eq!(fetch(&|| anyhow::bail!("E_PERMISSION: method is not available over bridge"))["state"], "old");
+    // A code whose host key isn't the one the connection saw is refused.
+    let wrong = pairing::fetch_with(fx.state(), &fx.config, &json!({"requestId":id}), &|_, _| Ok(Some((code.clone(), key(7)))));
+    assert!(format!("{:#}", wrong.unwrap_err()).contains("E_PAIRING_HOSTKEY"));
+    // Ready: the digits match the installer's, with the review facts.
+    let ready = fetch(&|| Ok(Some((code.clone(), key(2)))));
+    assert_eq!(ready["state"], "ready");
+    assert_eq!(ready["digits"], pairing::short_code_of(&code).unwrap());
+    assert_eq!(ready["preview"]["targetId"], registration["id"]);
+    // "No, it's different" cancels the request.
+    let other = fx.create(Some("other-host"));
+    let other_id = other["requestId"].as_str().unwrap().to_owned();
+    let other_code = pairing::encode_receipt(&other["envelope"], &fx.registration(&other["envelope"])).unwrap();
+    pairing::fetch_with(fx.state(), &fx.config, &json!({"requestId":other_id}), &|_, _| Ok(Some((other_code.clone(), key(2))))).unwrap();
+    let different = fx.call("pairing.confirm", json!({"requestId":other_id,"same":false})).unwrap_err();
+    assert!(format!("{different:#}").contains("E_PAIRING_MISMATCH"));
+    assert!(fx.call("pairing.status", json!({"requestId":other_id})).is_err(), "cancelled");
+    // "Yes, same number" finishes it as a pasted code would (the connection check then fails: no network here).
+    fx.no_network();
+    let _ = fx.call("pairing.confirm", json!({"requestId":id,"same":true}));
+    assert!(targets(&fx).as_array().unwrap().iter().any(|t| t["id"] == registration["id"]), "registered");
+    assert_eq!(fetch(&|| Ok(None))["state"], "done");
+}
+
+#[test]
+fn the_new_machine_hands_its_code_only_to_its_own_master() {
+    let fx = Fixture::new();
+    let request = fx.create(None);
+    let envelope = request["envelope"].clone();
+    let code = pairing::encode_receipt(&envelope, &fx.registration(&envelope)).unwrap();
+    let id = request["requestId"].as_str().unwrap();
+    assert_eq!(pairing::stored_receipt(fx.state(), &fx.config.node_id, id).unwrap(), json!({"ready":false}));
+    pairing::store_receipt(fx.state(), &code).unwrap();
+    assert_eq!(pairing::stored_receipt(fx.state(), &fx.config.node_id, id).unwrap(), json!({"ready":true,"code":code}));
+    assert!(format!("{:#}", pairing::stored_receipt(fx.state(), &Uuid::new_v4().to_string(), id).unwrap_err()).contains("another Master"));
+    assert!(pairing::stored_receipt(fx.state(), &fx.config.node_id, "../../etc/passwd").is_err());
+}

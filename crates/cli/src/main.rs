@@ -243,6 +243,23 @@ enum PairingCommand {
         #[arg(long)]
         code_file: Option<PathBuf>,
     },
+    /// The 6 digits to compare on both screens, for a pairing code (the installers print them after Approve).
+    ShortCode {
+        #[arg(long)]
+        code_file: PathBuf,
+    },
+    /// Ask the new machine for its pairing code once; prints the 6 digits when it is ready.
+    Fetch {
+        request_id: String,
+    },
+    /// After comparing the digits: `--same` finishes the pairing, `--different` cancels it.
+    Confirm {
+        request_id: String,
+        #[arg(long, conflicts_with = "different", required_unless_present = "different")]
+        same: bool,
+        #[arg(long)]
+        different: bool,
+    },
 }
 #[derive(Subcommand)]
 enum ConfigureCommand {
@@ -487,6 +504,12 @@ fn run() -> Result<()> {
             as_admin,
         } => shell::run(target, cwd, session, shell, resume, as_admin),
         Action::Pairing { command } => match command {
+            PairingCommand::ShortCode { code_file } => {
+                println!("{}", pairing::short_code_of(std::fs::read_to_string(code_file)?.trim())?);
+                Ok(())
+            }
+            PairingCommand::Fetch { request_id } => print(&call("pairing.fetch", json!({"requestId":request_id}))?),
+            PairingCommand::Confirm { request_id, same, .. } => print(&call("pairing.confirm", json!({"requestId":request_id,"same":same}))?),
             PairingCommand::InspectCode { code_file, request } => {
                 let envelope = request
                     .map(|path| pairing::load_envelope(&path))
@@ -642,6 +665,8 @@ fn run() -> Result<()> {
                     std::fs::write(&output, &code)?;
                     // It contains only public registration data; protect installer result state nonetheless.
                     security::protect(&output, false)?;
+                    // Entry 8: its Master fetches it from here and both screens show the same 6 digits.
+                    pairing::store_receipt(&state, &code)?;
                     print(
                         &json!({"code":code,"requestId":envelope["requestId"],"targetId":registration["id"]}),
                     )

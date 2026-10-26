@@ -120,7 +120,11 @@ try {
             if (-not $script:code.StartsWith('SSHCC1.')) { throw 'รหัสยืนยันไม่ถูกต้อง' }
             New-Item -ItemType Directory -Path $savedDir -Force | Out-Null
             [IO.File]::WriteAllText($savedReceipt,$script:code,$utf8)
-            $script:statusMessage = 'ติดตั้งและตรวจ service สำเร็จแล้ว นำรหัสนี้กลับไปวางที่เครื่องหลัก'
+            # Entry 8: the same 6 digits the Master shows; the code below stays for an older Master.
+            $digits = (@(& $exe pairing short-code --code-file $receiptFile 2>$null) -join '').Trim()
+            $script:statusMessage = if ($LASTEXITCODE -eq 0 -and $digits) {
+                'เทียบเลขนี้กับที่เครื่องหลัก:  '+$digits+[Environment]::NewLine+'ถ้าตรงกัน กด “ใช่ ตรงกัน” ที่เครื่องหลัก · ถ้าเทียบไม่ได้ ใช้รหัสด้านล่างแทน'
+            } else { 'ติดตั้งและตรวจ service สำเร็จแล้ว นำรหัสนี้กลับไปวางที่เครื่องหลัก' }
         } else {
             $configuredOwner=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             if (Test-Path -LiteralPath $resultFile) {
