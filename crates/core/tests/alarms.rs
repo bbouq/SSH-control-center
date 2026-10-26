@@ -252,6 +252,9 @@ fn the_update_output_of_both_systems_is_read() {
     let apt = "Listing...\nopenssl/noble-updates 3.0.13-0ubuntu3.4 amd64 [upgradable from: 3.0.13-0ubuntu3.1]\ncurl/noble-security 8.5.0-2ubuntu10.5 amd64 [upgradable from: 8.5.0-2ubuntu10.4]\n";
     assert_eq!(alarms::parse_apt(apt), json!({"count":2,"packages":["openssl","curl"]}));
     assert_eq!(alarms::parse_apt("Listing...\n"), json!({"count":0,"packages":[]}));
+    // Recorded from a real Ubuntu 24.04 container (2026-10-26) after `apt-get update`, with the image's older packages.
+    let recorded = "Listing...\nliblzma5/noble-updates,noble-security 5.6.1+really5.4.5-1ubuntu0.4 arm64 [upgradable from: 5.6.1+really5.4.5-1ubuntu0.3]\nlibsystemd0/noble-updates,noble-security 255.4-1ubuntu8.18 arm64 [upgradable from: 255.4-1ubuntu8.17]\nlibudev1/noble-updates,noble-security 255.4-1ubuntu8.18 arm64 [upgradable from: 255.4-1ubuntu8.17]\nzlib1g/noble-updates,noble-security 1:1.3.dfsg-3.1ubuntu2.3 arm64 [upgradable from: 1:1.3.dfsg-3.1ubuntu2.2]\n";
+    assert_eq!(alarms::parse_apt(recorded), json!({"count":4,"packages":["liblzma5","libsystemd0","libudev1","zlib1g"]}));
     assert_eq!(alarms::parse_windows("[\"2026-10 Cumulative Update for Windows 11\",\"Defender update\"]").unwrap()["count"], 2);
     assert_eq!(alarms::parse_windows("\"One update\"").unwrap()["packages"], json!(["One update"]));
     assert_eq!(alarms::parse_windows("[]").unwrap()["count"], 0);

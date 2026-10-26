@@ -28,7 +28,8 @@ const state = {
   // Tags: {tags: [{tag, hosts}], hosts: {id: [tag]}}; tagError: the last refused change, shown under the Tag box.
   tags: { tags: [], hosts: {} }, tagError: null,
   // Group runs: the draft waiting in the confirmation, and the run shown in place of the New job form.
-  groupDraft: null, groupRun: null, activity: null
+  groupDraft: null, groupRun: null, activity: null,
+  alarms: { alarms: [], red: 0, yellow: 0 }, alarmRules: null, alarmInterval: 5, alarmTab: "active", alarmEdit: null, updates: {}, seenRed: null
 };
 addReset();
 const native = (command, args = {}) => {
@@ -181,6 +182,9 @@ function setLanguage(next) {
 }
 function renderHeader() {
   $("#fleet-count").textContent = String(hostCount());
+  // Unacknowledged alarms: red if any is red, hidden at 0.
+  const count = $("#alarm-count"), open = (state.alarms.red || 0) + (state.alarms.yellow || 0);
+  if (count) { count.hidden = !open; count.textContent = String(open); count.className = "count alarm-count " + (state.alarms.red ? "is-red" : "is-yellow"); }
   // Always say which Master this window operates from; merged Masters are reached through it.
   $("#service-label").textContent = state.service ? state.service.label : T.side.unavailable;
   if (state.service?.version && $("#app-version")) $("#app-version").textContent = "v" + state.service.version;
@@ -213,6 +217,7 @@ async function refreshFleet() {
   ]);
   state.backupStatus = backup; state.rotation = rotation;
   void refreshActivityStatus().then(() => { if ($("#activity-warning")) $("#activity-warning").outerHTML = renderActivityWarning(); });
+  void refreshAlarms().then(() => { if ($("#dc-tree")) $("#dc-tree").innerHTML = renderDcTree(); if ($("#host-alarms") && pageTarget()) $("#host-alarms").outerHTML = renderHostAlarms(pageTarget()); });
   if (tags) state.tags = tags;
   if (folders) state.folders = folders;
   if (datacenters) state.datacenters = datacenters;
@@ -262,6 +267,7 @@ async function navigate(page) {
     if (!state.health.size) void refreshHealth();
   }
   if (page === "service") { await refreshLocal(); if (state.page === page) render(); }
+  if (page === "alarms") { await Promise.all([refreshAlarms(), refreshAlarmRules()]); if (state.page === page) render(); }
   if (page === "enroll") { try { await refreshPairings(); if (state.page === page) render(); } catch (error) { notifyError(error, true); } }
 }
 function render() {
@@ -271,6 +277,7 @@ function render() {
   if (state.page === "datacenter") main.innerHTML = '<section class="dc-main" id="dc-panel">' + renderDcPanel() + "</section>";
   if (state.page === "enroll") main.innerHTML = renderAddHost();
   if (state.page === "masters") main.innerHTML = renderMasters();
+  if (state.page === "alarms") main.innerHTML = renderAlarms();
   if (state.page === "service") main.innerHTML = renderService();
   if (state.page === "enroll" || state.dc.adding) focusAddStep();
   if (state.rotation?.active && $("#keys-progress") && !rotationTimer) rotationTimer = setTimeout(() => void watchRotation(), 2000);
@@ -393,7 +400,8 @@ function graphNode(item, options = {}) {
   const main = pcIcon(options.master) + '<span class="node-info"><span class="node-label">' + esc(name) +
     (options.alsoDirect ? ' <span class="node-tag">' + T.inv.alsoDirect + "</span>" : "") + (viewOnly(item) ? ' <span class="node-tag">' + T.share.viewOnly + "</span>" : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
     '<span class="node-state"><span class="dot"></span>' + esc(stateLabel(status)) + "</span></span>";
-  return '<div class="node is-' + status + (options.master ? " is-master" : "") + (options.root ? " is-root" : "") + (state.flipped.has(item.id) ? " just-changed" : "") + '">' +
+  const alarm = options.static ? "" : alarmLevel(item.id);
+  return '<div class="node is-' + status + (alarm ? " alarm-" + alarm : "") + (options.master ? " is-master" : "") + (options.root ? " is-root" : "") + (state.flipped.has(item.id) ? " just-changed" : "") + '">' +
     (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
     (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(name)) + '" title="' + esc(T.inv.openTerminal) + '">' + icons.shell + "</button>") + "</div>";
 }
@@ -636,6 +644,107 @@ function renderGroupRun(run) {
     '<p class="group-summary"><strong>' + esc(run.done ? t.groupSummary(ok, counted.length) : t.groupRunning(finished, counted.length)) + "</strong></p>" +
     '<div class="table-wrap"><table><thead><tr><th>' + T.inv.head.host + "</th><th>" + T.inv.head.status + "</th><th>" + t.exitCode + "</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section>";
 }
+/* Health alarms (roadmap entry 7). The service checks rules in the background; this page shows what it found, edits
+   rules, and polls every 60 s while the window is open (a new red alarm shows the notice bar). */
+const alarmLevel = id => { const open = state.alarms.alarms.filter(a => a.host === id && !a.acknowledged); return open.some(a => a.level === "red") ? "red" : open.length ? "yellow" : ""; };
+async function refreshAlarms() {
+  const [list, updates] = await Promise.all([rpc("alarms.list").catch(() => null), rpc("alarms.updates").catch(() => null)]);
+  if (list) {
+    const red = list.alarms.filter(a => a.level === "red" && !a.acknowledged);
+    if (state.seenRed) {
+      const fresh = red.find(a => !state.seenRed.has(a.id));
+      if (fresh) notify(T.alarms.newRed(fresh.label || fresh.host, alarmWhat(fresh)), true);
+    }
+    state.seenRed = new Set(red.map(a => a.id));
+    state.alarms = list;
+  }
+  if (updates) state.updates = updates;
+  renderHeader();
+}
+async function refreshAlarmRules() {
+  const reply = await rpc("alarms.rules").catch(() => null);
+  if (reply) { state.alarmRules = reply.rules; state.alarmInterval = reply.interval; }
+}
+const alarmWhat = alarm => T.alarms.shown[alarm.condition]?.(alarm.value) || alarm.condition;
+function scopeLine(scope) {
+  const t = T.alarms.scopeLine;
+  if (scope.all) return t.all();
+  if (scope.tag) return t.tag(scope.tag);
+  if (scope.folder) return t.folder((state.folders.folders || []).find(f => f.id === scope.folder)?.name || scope.folder);
+  return t.hosts((scope.hosts || []).length) + " · " + (scope.hosts || []).map(id => state.targets.find(h => h.id === id)?.label || id).join(", ");
+}
+const levelBadge = level => '<span class="badge ' + (level === "red" ? "bad" : "warn") + '">' + esc(T.alarms.level[level]) + "</span>";
+function renderAlarms() {
+  const t = T.alarms;
+  const tabs = '<div class="tabs" role="tablist">' + ["active", "rules"].map(tab => '<button role="tab" class="tab ' + (state.alarmTab === tab ? "active" : "") + '" aria-selected="' + (state.alarmTab === tab) + '" data-action="alarm-tab" data-tab="' + tab + '">' + t[tab] + "</button>").join("") + "</div>";
+  return heading(t.title, t.lead) + tabs + (state.alarmTab === "rules" ? renderAlarmRules() : renderActiveAlarms());
+}
+function renderActiveAlarms() {
+  const t = T.alarms, rows = state.alarms.alarms;
+  if (!rows.length) return '<div class="empty-inline" id="alarm-list">' + (state.alarmRules && !state.alarmRules.length ? t.noRules : t.none) + "</div>";
+  return '<div class="table-wrap" id="alarm-list"><table class="alarm-table"><thead><tr><th>' + t.head.level + "</th><th>" + t.head.host + "</th><th>" + t.head.what + "</th><th>" + t.head.since + "</th><th></th></tr></thead><tbody>" +
+    rows.map(a => '<tr class="' + (a.acknowledged ? "acknowledged" : "") + '" data-alarm="' + esc(a.id) + '"><td>' + levelBadge(a.level) + '</td><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(a.host) + '">' + esc(a.label || a.host) + "</button></td><td>" + esc(alarmWhat(a)) +
+      "</td><td>" + esc(a.since ? thaiTime(a.since) : "—") + '</td><td class="actions">' + (a.acknowledged ? '<span class="muted">' + t.acknowledged + "</span>" : '<button class="small" data-action="alarm-ack" data-id="' + esc(a.id) + '">' + t.acknowledge + "</button>") + "</td></tr>").join("") +
+    "</tbody></table></div>";
+}
+function renderAlarmRules() {
+  const t = T.alarms, rules = state.alarmRules || [];
+  const list = rules.length ? '<div class="table-wrap"><table class="alarm-table"><thead><tr><th>' + t.head.rule + "</th><th>" + t.head.hosts + "</th><th>" + t.head.level + "</th><th></th></tr></thead><tbody>" +
+    rules.map(r => '<tr data-rule="' + esc(r.id) + '"><td>' + esc(t.condition[r.condition] + (r.threshold != null ? " " + r.threshold + "%" : "") + ((r.containers || []).length ? " · " + r.containers.join(", ") : "")) + "</td><td>" + esc(scopeLine(r.scope)) + "</td><td>" + levelBadge(r.level) +
+      '</td><td class="actions"><button class="small" data-action="alarm-rule-edit" data-id="' + esc(r.id) + '">' + t.edit + '</button><button class="small danger" data-action="alarm-rule-delete" data-id="' + esc(r.id) + '">' + t.remove + "</button></td></tr>").join("") + "</tbody></table></div>"
+    : '<div class="empty-inline">' + t.noRules + "</div>";
+  const interval = '<form id="alarm-interval" class="inline-form mt"><label>' + t.interval + '<select name="interval">' + [5, 15, 30].map(n => '<option value="' + n + '"' + (state.alarmInterval === n ? " selected" : "") + ">" + t.minutes(n) + "</option>").join("") + '</select></label></form><p class="help">' + t.intervalHelp + "</p>";
+  return '<section class="section">' + (state.alarmEdit ? renderRuleEditor(state.alarmEdit) : '<div class="form-actions"><button class="primary" data-action="alarm-rule-new">' + t.addRule + "</button></div>") + list + interval + "</section>";
+}
+function renderRuleEditor(rule) {
+  const t = T.alarms, kind = rule.scope.all ? "all" : rule.scope.folder ? "folder" : rule.scope.tag != null ? "tag" : "hosts";
+  const folders = (state.folders.folders || []).map(f => '<option value="' + esc(f.id) + '"' + (rule.scope.folder === f.id ? " selected" : "") + ">" + esc(f.name) + "</option>").join("");
+  const chosen = new Set(rule.scope.hosts || []);
+  const hosts = state.targets.filter(h => h.runnerInstalled !== false).map(h => '<label class="check-label"><input type="checkbox" name="host" value="' + esc(h.id) + '"' + (chosen.has(h.id) ? " checked" : "") + ">" + esc(h.label || h.id) + "</label>").join("");
+  const pct = ["disk", "memory"].includes(rule.condition);
+  return '<form id="alarm-rule" class="surface rule-editor" data-id="' + esc(rule.id || "") + '"><h2>' + (rule.id ? t.editRule : t.newRule) + '</h2><div class="form-grid">' +
+    '<label>' + t.which + '<select name="scope">' + ["all", "folder", "tag", "hosts"].map(k => '<option value="' + k + '"' + (k === kind ? " selected" : "") + ">" + t.scope[k] + "</option>").join("") + "</select></label>" +
+    (kind === "folder" ? '<label>' + t.folder + '<select name="folder">' + folders + "</select></label>" : "") +
+    (kind === "tag" ? '<label>' + t.tag + '<input name="tag" list="alarm-tags" value="' + esc(rule.scope.tag || "") + '"><datalist id="alarm-tags">' + (state.tags.tags || []).map(r => '<option value="' + esc(r.tag) + '">').join("") + "</datalist></label>" : "") +
+    (kind === "hosts" ? '<fieldset class="full host-pick"><legend>' + t.chooseHosts + "</legend>" + hosts + "</fieldset>" : "") +
+    '<label>' + t.conditionLabel + '<select name="condition">' + ["disk", "memory", "unreachable", "container", "updates"].map(c => '<option value="' + c + '"' + (c === rule.condition ? " selected" : "") + ">" + t.condition[c] + "</option>").join("") + "</select></label>" +
+    (pct ? '<label>' + t.threshold + '<input name="threshold" type="number" min="1" max="99" value="' + esc(rule.threshold ?? 90) + '"></label>' : "") +
+    (rule.condition === "container" ? '<label class="full">' + t.containers + '<input name="containers" value="' + esc((rule.containers || []).join(", ")) + '" placeholder="web, db"><small class="help">' + t.containersHelp + "</small></label>" : "") +
+    '<label>' + t.levelLabel + '<select name="level">' + ["red", "yellow"].map(l => '<option value="' + l + '"' + (l === rule.level ? " selected" : "") + ">" + t.level[l] + "</option>").join("") + "</select></label></div>" +
+    '<div class="form-actions"><button type="submit" class="primary">' + t.save + '</button><button type="button" data-action="alarm-rule-cancel">' + t.cancel + "</button></div></form>";
+}
+/** The editor's current values as a rule (also used to redraw it when the scope or condition changes). */
+function ruleFromForm(form) {
+  const v = name => form.elements[name]?.value, scope = v("scope");
+  return {
+    id: form.dataset.id || undefined,
+    scope: scope === "all" ? { all: true } : scope === "folder" ? { folder: v("folder") || (state.folders.folders || [])[0]?.id || "" } : scope === "tag" ? { tag: v("tag") ?? "" } : { hosts: [...form.querySelectorAll('[name="host"]:checked')].map(el => el.value) },
+    condition: v("condition"), threshold: v("threshold") != null ? Number(v("threshold")) : 90, level: v("level"),
+    containers: (v("containers") || "").split(",").map(n => n.trim()).filter(Boolean),
+  };
+}
+/** The host page's Alarms row: its alarms, its OS-update result with Check now, and a rule for just this host. */
+function renderHostAlarms(item) {
+  const t = T.alarms, mine = state.alarms.alarms.filter(a => a.host === item.id), up = state.updates[item.id];
+  const updates = !up || (up.count == null && !up.error) ? t.updatesNever : up.error === "view-only" ? t.updatesViewOnly : up.error ? t.updatesError : up.count ? t.updatesCount(up.count) : t.updatesNone;
+  const packages = up?.packages?.length ? "<details><summary>" + t.packages + '</summary><ul class="package-list">' + up.packages.map(p => "<li><code>" + esc(p) + "</code></li>").join("") + "</ul></details>" : "";
+  return '<section class="section host-alarms" id="host-alarms"><div class="section-heading"><h2>' + t.hostAlarms + '</h2><button class="small" data-action="alarm-for-host" data-id="' + esc(item.id) + '">' + t.forHost + "</button></div>" +
+    (mine.length ? '<ul class="alarm-lines">' + mine.map(a => "<li>" + levelBadge(a.level) + " " + esc(alarmWhat(a)) + (a.acknowledged ? ' <span class="muted">· ' + t.acknowledged + "</span>" : "") + "</li>").join("") + "</ul>" : "") +
+    '<p class="updates-line"><strong>' + t.updates + ':</strong> <span class="badge ' + (up?.count ? "warn" : "") + '" id="updates-badge">' + esc(state.checkingUpdates === item.id ? t.checking : updates) + "</span>" +
+    (up?.checkedAt ? ' <small class="muted">' + esc(t.checkedAt(thaiTime(up.checkedAt))) + "</small>" : "") +
+    (up?.error === "view-only" ? "" : ' <button class="small" data-action="check-updates" data-id="' + esc(item.id) + '"' + (state.checkingUpdates === item.id ? " disabled" : "") + ">" + t.checkNow + "</button>") + "</p>" + packages + "</section>";
+}
+async function checkUpdates(id) {
+  state.checkingUpdates = id; render();
+  await rpc("alarms.check_updates", { targetId: id });
+  for (let i = 0; i < 90; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const info = await rpc("alarms.host", { targetId: id }).catch(() => null);
+    if (info?.updates?.checkNow === false && info.updates.checkedAt && info.updates.checkedAt !== state.updates[id]?.checkedAt) { state.updates[id] = info.updates; break; }
+  }
+  state.checkingUpdates = null; await refreshAlarms(); render();
+}
+setInterval(() => { if (!document.hidden) void refreshAlarms().then(() => { if (state.page === "alarms" && state.alarmTab === "active" && $("#alarm-list")) $("#alarm-list").outerHTML = renderActiveAlarms(); $("#dc-tree").innerHTML = renderDcTree(); }); }, 60000);
 /* Activity (roadmap entry 5): the current Master's Recent Jobs and audit log. The Master filters by time range, hosts
    and status; this page turns the search box into host IDs with the same `hostMatches` as the tree. Times are always
    Thailand time, whatever the machine's time zone. */
@@ -1390,7 +1499,8 @@ function dcEditRow(depth, value, label, icon = icons.folder) {
 function dcMachineRow(entry, depth) {
   const item = entry.item, isMaster = state.merges.some(merge => merge.targetId === item.id);
   const cpu = sampledCpu(item.id), hot = isHot(item);
-  return dcRow("node:" + item.id, depth, '<span class="dot ' + (hot ? "hot" : stateStyles[nodeState(item)] || "") + '"></span><span class="dc-name">' + esc(item.label || item.id) + "</span>" +
+  const alarm = alarmLevel(item.id);
+  return dcRow("node:" + item.id, depth, '<span class="dot ' + (alarm ? "alarm-" + alarm : hot ? "hot" : stateStyles[nodeState(item)] || "") + '"' + (alarm ? ' title="' + esc(T.alarms.level[alarm]) + '"' : "") + '></span><span class="dc-name">' + esc(item.label || item.id) + "</span>" +
     (isMaster ? '<span class="dc-tag">Master</span>' : "") + (viewOnly(item) ? '<span class="dc-tag" title="' + esc(T.share.viewOnlyWhy(accessFrom(item))) + '">' + T.share.viewOnly + "</span>" : "") + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
     (cpu == null ? '<span class="dc-os">' + esc(osName(item.os)) + "</span>" : '<span class="dc-os' + (hot ? " is-hot" : "") + '" title="' + esc(osName(item.os)) + '">' + Math.round(cpu) + "%</span>"), { drag: entry.alsoDirect ? "" : item.id });
 }
@@ -1517,7 +1627,7 @@ function renderDcPanel() {
     '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
     (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
   const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs(hostPageTabs());
-  const body = state.dc.tab === "summary" ? renderTagRow(item) + renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
+  const body = state.dc.tab === "summary" ? renderTagRow(item) + renderHostAlarms(item) + renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
     : state.dc.tab === "monitoring" ? renderMonitorTab(item.id, item.label || item.id) : renderContainerTab(item.id, item.label || item.id);
   return head + tabs + body;
 }
@@ -2175,6 +2285,20 @@ document.addEventListener("click", event => {
     if (action === "group-log") return openGroupLog(button.dataset.id, button.dataset.job);
     if (action === "group-cancel") { state.groupRun = await rpc("groups.cancel", { runId: state.groupRun.id, ...(button.dataset.id ? { targetId: button.dataset.id } : {}) }); render(); return watchGroup(); }
     if (action === "group-retry") { state.groupRun = await rpc("groups.retry", { runId: state.groupRun.id }); render(); return watchGroup(); }
+    if (action === "alarm-tab") { state.alarmTab = button.dataset.tab; state.alarmEdit = null; render(); return; }
+    if (action === "alarm-ack") { await rpc("alarms.ack", { id: button.dataset.id }); await refreshAlarms(); render(); return; }
+    if (action === "alarm-rule-new") { state.alarmEdit = { scope: { all: true }, condition: "disk", threshold: 90, level: "red", containers: [] }; render(); return; }
+    if (action === "alarm-rule-edit") { state.alarmEdit = structuredClone(state.alarmRules.find(r => r.id === button.dataset.id)); render(); return; }
+    if (action === "alarm-rule-cancel") { state.alarmEdit = null; render(); return; }
+    if (action === "alarm-rule-delete") {
+      if (!confirm(T.alarms.removeConfirm)) return;
+      await rpc("alarms.rule_delete", { id: button.dataset.id }); await Promise.all([refreshAlarmRules(), refreshAlarms()]); render(); notify(T.alarms.removed); return;
+    }
+    if (action === "alarm-for-host") {
+      state.page = "alarms"; state.alarmTab = "rules"; state.alarmEdit = { scope: { hosts: [button.dataset.id] }, condition: "disk", threshold: 90, level: "red", containers: [] };
+      await refreshAlarmRules(); render(); return;
+    }
+    if (action === "check-updates") return checkUpdates(button.dataset.id);
     if (action === "activity-view") { const a = activityState(); a.view = button.dataset.view; a.detail = null; $("#dc-panel").innerHTML = renderDcPanel(); return loadActivity(); }
     if (action === "activity-range") { const a = activityState(); a.range = button.dataset.range; if (a.range === "custom" && !a.from) a.from = thaiDay(); $("#dc-panel").innerHTML = renderDcPanel(); return loadActivity(); }
     if (action === "activity-toggle") { const open = activityState().open, id = button.dataset.group; if (open.has(id)) open.delete(id); else open.add(id); redrawActivity(); return; }
@@ -2444,6 +2568,9 @@ document.addEventListener("input", event => {
 });
 document.addEventListener("change", event => {
   // One grant change at a time, in order: a quick second change must not be drawn over by the first one's reply.
+  // The rule editor redraws when what it asks depends on the choice (folder / Tag / hosts, percent, container names).
+  if (event.target.form?.id === "alarm-rule" && ["scope", "condition"].includes(event.target.name)) { state.alarmEdit = ruleFromForm(event.target.form); render(); }
+  if (event.target.form?.id === "alarm-interval") void busy(null, async () => { const reply = await rpc("alarms.settings", { interval: Number(event.target.value) }); state.alarmInterval = reply.interval; notify(T.alarms.intervalSaved(reply.interval)); });
   if (event.target.dataset?.grant) { const control = event.target; grantQueue = grantQueue.then(() => busy(null, () => saveGrant(control))); }
   if (event.target.id === "group-filter") { state.group = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
   if (event.target.id === "activity-status") { activityState().status = event.target.value; void loadActivity().catch(error => notifyError(error)); }
@@ -2456,6 +2583,10 @@ document.addEventListener("submit", event => {
   const submittedPairing = state.pairing;
   void busy($('button[type="submit"]', form), async () => {
     if (form.id === "backup-pass-form") return saveBackup();
+    if (form.id === "alarm-rule") {
+      await rpc("alarms.rule_set", ruleFromForm(form)); state.alarmEdit = null;
+      await Promise.all([refreshAlarmRules(), refreshAlarms()]); render(); return notify(T.alarms.saved);
+    }
     if (form.id === "activity-keep-form") {
       activityState().info = await rpc("activity.settings", { keepDays: Number(form.elements.keepDays.value) });
       return notify(T.activity.keepSaved(activityState().info.keepDays));

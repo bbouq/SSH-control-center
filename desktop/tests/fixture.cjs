@@ -19,6 +19,9 @@
 //   multi-hop        with masters-page: Branch Master also passes on Lab Master (a Master it merged) and Lab's two hosts,
 //                    one of which Lab Master gives View only; 3 more hosts are more than 4 hops away
 //   outdated-merge   with masters-page: Branch Master runs an older version (no relayVersion)
+//   alarms-firing    a red disk alarm on ui-test, a yellow memory alarm (acknowledged later in tests), ui-test has 3
+//                    OS updates pending; with masters-page, hq-master is unreachable (red)
+//   alarm-new-red    a red alarm appears after the window's first look (for the notice)
 //   activity-history Activity has history: jobs today, yesterday and 3 days ago (one group run), audit lines, a running
 //                    job that finishes on the next refresh, and lab-pc, whose recorded job's host can't be reached
 //   activity-warning the audit log can't be written (Activity shows its yellow warning)
@@ -45,10 +48,18 @@ function reset(list) {
   s = {
     targets: empty ? [] : [{ schemaVersion: 2, id: "ui-test", nodeId: "ui-test-node", label: "UI test target", tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address: "192.0.2.20", port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true }],
     jobs: [], pairings: [], folders: [], folderMembers: {}, tags: [], groupRuns: [], datacenters: [], datacenterMembers: {}, merges: [], masters: empty ? [] : [{ id: MASTER_ID, label: MASTER_LABEL, publicKey: "TEST", revoked: false }], relays: [], masterHosts: new Set(),
+    alarm: { rules: alarmDefaults(), interval: 5, alarms: [], updates: {}, looked: 0 },
     activity: { keepDays: 14, since: stamp(Date.now() - 20 * DAY), audit: [], jobs: [] },
     backup: { lastBackupAt: flags.has("backed-up") || flags.has("restored") ? "2026-10-20T09:30:00Z" : null, restoredAt: flags.has("restored") ? "2026-10-24T08:00:00Z" : null, keysChangedAt: null }, rotation: null
   };
   if (flags.has("activity-history")) seedActivity();
+  if (flags.has("alarms-firing")) {
+    const since = stamp(Date.now() - 42 * 60000);
+    s.alarm.alarms.push({ id: "default-disk:ui-test", rule: "default-disk", host: "ui-test", label: "UI test target", condition: "disk", level: "red", value: 93.5, since, acknowledged: false, active: true },
+      { id: "mem-yellow:ui-test", rule: "mem-yellow", host: "ui-test", label: "UI test target", condition: "memory", level: "yellow", value: 82, since, acknowledged: false, active: true });
+    s.alarm.rules.push({ id: "mem-yellow", scope: { tag: "web" }, condition: "memory", threshold: 80, containers: [], level: "yellow" });
+    s.alarm.updates["ui-test"] = { count: 3, packages: ["openssl", "curl", "libssl3"], error: null, checkedAt: stamp(Date.now() - 3 * 86400000), checkNow: false };
+  }
   if (flags.has("masters-page")) {
     const host = (id, label, address) => ({ schemaVersion: 2, id, nodeId: id + "-node", label, tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address, port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
     s.targets.push(host("hq-master", "HQ Master", "192.0.2.41"), host("branch-master", "Branch Master", "192.0.2.42"));
@@ -245,8 +256,34 @@ function groupStatus(id) {
   run.done = run.hosts.every(h => h.state !== "started" || ["succeeded", "failed", "cancelled", "interrupted"].includes(h.status));
   return structuredClone(run);
 }
+/* Health alarms (entry 7): the three default rules; alarms come from the scenario flags, not from evaluating rules. */
+function alarmDefaults() {
+  return [["default-unreachable", "unreachable", null], ["default-disk", "disk", 90], ["default-memory", "memory", 90]]
+    .map(([id, condition, threshold]) => ({ id, scope: { all: true }, condition, threshold, containers: [], level: "red" }));
+}
+function alarmList() {
+  s.alarm.looked++;
+  if (flags.has("alarm-new-red") && s.alarm.looked > 1 && !s.alarm.alarms.some(a => a.id === "default-unreachable:ui-test"))
+    s.alarm.alarms.push({ id: "default-unreachable:ui-test", rule: "default-unreachable", host: "ui-test", label: "UI test target", condition: "unreachable", level: "red", value: "No route to host", since: stamp(Date.now()), acknowledged: false, active: true });
+  if (flags.has("alarms-firing") && flags.has("masters-page") && !s.alarm.alarms.some(a => a.host === "hq-master"))
+    s.alarm.alarms.push({ id: "default-unreachable:hq-master", rule: "default-unreachable", host: "hq-master", label: "HQ Master", condition: "unreachable", level: "red", value: "No route to host", since: stamp(Date.now() - 600000), acknowledged: false, active: true });
+  const alarms = [...s.alarm.alarms].sort((a, b) => (b.level === "red") - (a.level === "red") || String(b.since).localeCompare(String(a.since)));
+  const count = level => alarms.filter(a => a.level === level && !a.acknowledged).length;
+  return { alarms: structuredClone(alarms), red: count("red"), yellow: count("yellow") };
+}
+function alarmRule(p) {
+  const scope = p.scope || {};
+  if (!(scope.all || scope.folder || (scope.tag && String(scope.tag).trim()) || (scope.hosts || []).length)) throw new Error("E_ALARM_RULE: choose every host, a folder, a Tag or hosts");
+  if (!["disk", "memory", "unreachable", "container", "updates"].includes(p.condition)) throw new Error("E_ALARM_RULE: the condition is disk, memory, unreachable, container or updates");
+  if (["disk", "memory"].includes(p.condition) && !(p.threshold >= 1 && p.threshold <= 99)) throw new Error("E_ALARM_RULE: a percentage from 1 to 99");
+  if (!["red", "yellow"].includes(p.level)) throw new Error("E_ALARM_RULE: the level is yellow or red");
+  const rule = { id: p.id || crypto.randomUUID(), scope: scope.all ? { all: true } : scope.folder ? { folder: scope.folder } : scope.tag ? { tag: String(scope.tag).trim() } : { hosts: scope.hosts },
+    condition: p.condition, threshold: ["disk", "memory"].includes(p.condition) ? p.threshold : null, containers: p.condition === "container" ? p.containers || [] : [], level: p.level };
+  s.alarm.rules = s.alarm.rules.filter(r => r.id !== rule.id).concat(rule);
+  return rule;
+}
 /* Activity, like the Master: the audited methods, Recent Jobs rows and the filters (Thai calendar days). */
-const AUDITED = new Set(["jobs.start", "jobs.cancel", "groups.run", "groups.cancel", "groups.retry", "targets.import", "targets.update", "targets.import_legacy", "targets.remove",
+const AUDITED = new Set(["alarms.rule_set", "alarms.rule_delete", "alarms.settings", "alarms.ack", "alarms.check_updates", "jobs.start", "jobs.cancel", "groups.run", "groups.cancel", "groups.retry", "targets.import", "targets.update", "targets.import_legacy", "targets.remove",
   "enrollment.export", "enrollment.accept", "masters.revoke", "merges.add", "merges.sync", "merges.pair_request", "merges.pair_complete", "merges.remove", "relays.revoke", "relays.allow",
   "pairing.create", "pairing.complete", "pairing.cancel", "tags.set", "folders.create", "folders.rename", "folders.delete", "folders.assign",
   "datacenters.create", "datacenters.rename", "datacenters.delete", "datacenters.assign", "files.write", "files.mkdir", "files.remove", "containers.action", "terminal.open",
@@ -353,6 +390,21 @@ function activityCsv(p) {
 const activityStatus = () => ({ keepDays: s.activity.keepDays, since: s.activity.since, warning: flags.has("activity-warning") });
 function rpc(method, p = {}) {
   switch (method) {
+    case "alarms.list": return alarmList();
+    case "alarms.rules": return { rules: structuredClone(s.alarm.rules), interval: s.alarm.interval };
+    case "alarms.rule_set": return alarmRule(p);
+    case "alarms.rule_delete": s.alarm.rules = s.alarm.rules.filter(r => r.id !== p.id); s.alarm.alarms = s.alarm.alarms.filter(a => a.rule !== p.id); return { id: p.id, deleted: true };
+    case "alarms.settings": if (![5, 15, 30].includes(p.interval)) throw new Error("E_ALARM_INTERVAL: check every 5, 15 or 30 minutes"); s.alarm.interval = p.interval; return { interval: p.interval };
+    case "alarms.ack": { const a = s.alarm.alarms.find(row => row.id === p.id); a.acknowledged = true; return a; }
+    case "alarms.updates": return structuredClone(s.alarm.updates);
+    case "alarms.host": return { alarms: alarmList().alarms.filter(a => a.host === p.targetId), updates: s.alarm.updates[p.targetId] || null };
+    case "alarms.check_updates": {
+      // The check "finishes" at once: ui-test has one package left, any other host none.
+      for (const t of [...s.targets, ...relayedTargets()].filter(t => p.targetId === "all" || t.id === p.targetId))
+        s.alarm.updates[t.id] = t.access === "view" ? { count: null, packages: [], error: "view-only", checkedAt: stamp(Date.now()), checkNow: false }
+          : { count: t.id === "ui-test" ? 1 : 0, packages: t.id === "ui-test" ? ["openssl"] : [], error: null, checkedAt: stamp(Date.now() + 1000), checkNow: false };
+      return { queued: p.targetId };
+    }
     case "activity.status": return activityStatus();
     case "activity.settings": {
       const days = Number(p.keepDays);

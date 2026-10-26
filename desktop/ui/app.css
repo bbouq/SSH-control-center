@@ -279,6 +279,20 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .group-run .group-summary { margin: 0 0 12px; }
 .group-run + .callout { margin-top: 28px; }
 .group-run td small.error-line { display: block; color: var(--rose); white-space: normal; }
+/* Health alarms: amber for yellow, rose for red, grey once acknowledged. */
+.badge.warn { color: var(--amber); }
+.dot.alarm-yellow { background: var(--amber); border: 0; }
+.dot.alarm-red { background: var(--rose); border: 0; }
+.node.alarm-yellow .node-state .dot { background: var(--amber); }
+.node.alarm-red .node-state .dot { background: var(--rose); }
+.alarm-count.is-red { color: var(--rose); }
+.alarm-count.is-yellow { color: var(--amber); }
+.alarm-table tr.acknowledged td { color: var(--lilac); opacity: .7; }
+.rule-editor { margin-bottom: 22px; }
+.host-pick { display: flex; flex-wrap: wrap; gap: 8px 18px; border: 1px solid var(--rule); padding: 10px 12px; }
+.alarm-lines { list-style: none; padding: 0; margin: 0 0 10px; display: grid; gap: 6px; }
+.updates-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.package-list { columns: 2 220px; margin: 8px 0 0; padding-left: 18px; }
 /* Team sharing: the grant controls on "This Master is controlled by", and the View only badge. */
 .grant { display: grid; gap: 8px; min-width: 220px; }
 .grant label { display: grid; gap: 4px; font-size: 12px; color: var(--lilac); }
