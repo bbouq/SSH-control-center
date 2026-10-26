@@ -50,7 +50,7 @@ jobs:
           foreach ($f in 'installers/windows/Setup.ps1','installers/windows/PairingBootstrap.ps1','installers/windows/Uninstall.ps1') {
             $t = $null; $e = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$t, [ref]$e) | Out-Null
-            if ($e.Count) { $e | ForEach-Object { Write-Error "$f: $($_.Message)" }; exit 1 }
+            if ($e.Count) { $e | ForEach-Object { Write-Error "${f}: $($_.Message)" }; exit 1 }
           }
           $boot = Get-Content installers/windows/PairingBootstrap.ps1 -Raw
           if ($boot -notmatch '\[switch\]\$Update' -or $boot -notmatch '-Unattended') { Write-Error 'PairingBootstrap.ps1 lost its -Update path'; exit 1 }
