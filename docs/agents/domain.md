@@ -52,4 +52,4 @@ If your output contradicts an existing ADR, surface it explicitly rather than si
 
 ## This repo
 
-Single-context: one glossary at `docs/GLOSSARY.md` and decisions in `docs/adr/`. Design rules live in `docs/design/DESIGN.md`.
+Single-context: one glossary at `docs/GLOSSARY.md` and decisions in `docs/adr/`. Design rules live in `docs/design/DESIGN.md` (v6 "Relic Night"; v5 "Engraved Violet" kept as `DESIGN-v5.md`).
