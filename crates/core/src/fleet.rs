@@ -22,7 +22,7 @@ mod merge;
 pub mod rotation;
 pub(crate) use merge::{relay_attach, stream_allowed};
 pub use merge::{
-    record_merge, relay_health, relay_join, relay_pair, relay_pair_complete, relay_request,
+    set_hop, Hop, MAX_HOPS, record_merge, relay_health, relay_join, relay_pair, relay_pair_complete, relay_request,
 };
 pub(crate) type RemoteStream = transport::Stream;
 pub const MAX_TARGETS: usize = 50;
@@ -761,6 +761,7 @@ fn dispatch(state: &Path, config: &Config, request: &Request) -> Result<Value> {
         .context("request params must be an object")?
         .clone();
     remote.remove("targetId");
+    let relay = merge::Relay::take(&mut remote);
     let method = match request.method.as_str() {
         "jobs.start" => "runner.start",
         "jobs.list" => "runner.list",
@@ -818,6 +819,7 @@ fn dispatch(state: &Path, config: &Config, request: &Request) -> Result<Value> {
             &request.method,
             method,
             Value::Object(remote),
+            &relay,
         )
         .with_context(|| {
             format!("jobId={job_id}; use this same ID to reconcile an uncertain dispatch")
@@ -830,6 +832,7 @@ fn dispatch(state: &Path, config: &Config, request: &Request) -> Result<Value> {
         &request.method,
         method,
         Value::Object(remote),
+        &relay,
     )
 }
 pub(crate) fn attach(state: &Path, config: &Config, params: &Value) -> Result<transport::Stream> {
@@ -840,6 +843,10 @@ pub(crate) fn attach(state: &Path, config: &Config, params: &Value) -> Result<tr
         let (peer, child) = merge::relay_target(&db, supplied)?;
         let mut relayed = params.clone();
         relayed["targetId"] = json!(child);
+        // The Relay Path so far (none when this Master opens the Shell), then this Master.
+        let mut path = params["path"].as_array().cloned().unwrap_or_default();
+        path.push(json!({"id":config.node_id,"label":config.label}));
+        relayed["path"] = json!(path);
         return transport::attach(state, config, &peer, "relay.attach", &relayed);
     }
     let target = if let Ok(target) = target(&db, supplied) {
@@ -884,7 +891,7 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
                 .iter()
                 .map(serde_json::to_value)
                 .collect::<serde_json::Result<Vec<_>>>()?;
-            rows.extend(merge::merged_targets(&db, &direct)?);
+            rows.extend(merge::merged_targets(&db, &direct, &config.node_id)?);
             json!(rows)
         }
         "targets.import" | "targets.update" => {

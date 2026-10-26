@@ -1,5 +1,8 @@
-//! Merged Masters: one-hop relay of fleet requests through another Master's own identity.
-//! The merged Master keeps its keys; the merging Master only learns public Target metadata.
+//! Merged Masters: relay of fleet requests through another Master's own identity, up to `MAX_HOPS` Masters deep.
+//! The merged Master keeps its keys; the merging Master only learns public Target metadata. Each relayed request
+//! carries its Relay Path (the Masters before the one that receives it) and the time left; every Master on the way
+//! checks its own grant, refuses loops and paths that are too long, and forwards hosts it reaches through its own
+//! Merges as `peer/child` IDs.
 use super::{
     attach, database, handle, list_targets, printable, role, slug, str_arg, target, transport,
     Target, MAX_TARGETS,
@@ -13,10 +16,10 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Mutex, PoisonError,
+        Arc, Mutex, PoisonError, RwLock,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -73,8 +76,75 @@ pub(crate) const READ_METHODS: &[&str] = &[
     "containers.logs",
     "monitor.stats",
 ];
-/// The relay protocol a Master speaks; 2 adds Merge Roles. A join reply without it comes from an older Master.
+/// The relay protocol a Master speaks; 2 adds Merge Roles, Relay Paths and multi-hop listing. A join reply without
+/// it comes from an older Master, which lists only its direct hosts.
 pub const RELAY_VERSION: u32 = 2;
+/// The most Masters a Relay Path may hold: a host up to this many Merges away is reachable.
+pub const MAX_HOPS: usize = 4;
+/// The originating Master's limit for a relayed request, end to end.
+const RELAY_BUDGET: Duration = Duration::from_secs(60);
+/// What each hop keeps back from the time it passes on, for its own SSH call.
+const HOP_MARGIN: Duration = Duration::from_secs(5);
+
+/// The step that sends one request to the next Master on a path (`relay.request`, `relay.join`, `relay.health`).
+/// Production uses the SSH transport; tests wire in-process Masters with `set_hop`.
+pub type Hop = dyn Fn(&Path, &Config, &Target, &str, Value, Duration) -> Result<Value> + Send + Sync;
+static HOP: RwLock<Option<Arc<Hop>>> = RwLock::new(None);
+#[doc(hidden)]
+pub fn set_hop(hop: Option<Arc<Hop>>) {
+    *HOP.write().unwrap_or_else(PoisonError::into_inner) = hop;
+}
+/// Sends to the next Master and waits at most `timeout`. Running out (or the SSH call timing out) is reported as
+/// `E_RELAY_TIMEOUT` naming that Master; a timeout further down keeps the name of the Master it came from.
+fn hop(state: &Path, config: &Config, peer: &Target, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+    let custom = HOP.read().unwrap_or_else(PoisonError::into_inner).clone();
+    let result = match custom {
+        None => transport::request_within(state, config, peer, method, params, timeout),
+        Some(step) => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (state, config, peer_copy, method) = (state.to_path_buf(), config.clone(), peer.clone(), method.to_owned());
+            thread::spawn(move || {
+                let _ = tx.send(step(&state, &config, &peer_copy, &method, params, timeout));
+            });
+            rx.recv_timeout(timeout).unwrap_or_else(|_| Err(anyhow::anyhow!("relay timed out")))
+        }
+    };
+    result.map_err(|error| {
+        let message = format!("{error:#}");
+        if message.contains("timed out") && !message.contains("E_RELAY_TIMEOUT") {
+            anyhow::anyhow!("E_RELAY_TIMEOUT: {} didn't answer in time", peer.label)
+        } else {
+            error
+        }
+    })
+}
+
+/// Where a relayed request comes from (the Masters before this one, origin first) and when it must be answered.
+/// It rides in the request params as `__relay` from `relay_request` to `send`, and as `path` / `timeoutMs`
+/// between Masters.
+pub(super) struct Relay {
+    path: Vec<Value>,
+    deadline: Instant,
+}
+impl Relay {
+    /// A request this Master starts itself.
+    fn origin() -> Self {
+        Self { path: Vec::new(), deadline: Instant::now() + RELAY_BUDGET }
+    }
+    /// Takes the context `relay_request` put in the params (none: this Master is the origin).
+    pub(super) fn take(params: &mut serde_json::Map<String, Value>) -> Self {
+        match params.remove("__relay") {
+            Some(context) => Self {
+                path: context["path"].as_array().cloned().unwrap_or_default(),
+                deadline: Instant::now() + Duration::from_millis(context["timeoutMs"].as_u64().unwrap_or(0)),
+            },
+            None => Self::origin(),
+        }
+    }
+    fn left(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+}
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -155,27 +225,105 @@ pub fn relay_join(state: &Path, config: &Config, master_id: &str) -> Result<Valu
     let mut targets = Vec::new();
     for t in list_targets(&db)? {
         if t.runner_installed && t.node_id != master_id && grant.reaches(state, &t.id)? {
-            targets.push(json!({"id":t.id,"label":t.label,"os":t.os,"tenant":t.tenant,"nodeId":t.node_id,"runnerInstalled":true}));
+            targets.push(json!({"id":t.id,"label":t.label,"os":t.os,"tenant":t.tenant,"nodeId":t.node_id,"runnerInstalled":true,"hops":1,"masters":[]}));
         }
     }
-    Ok(json!({"nodeId":config.node_id,"label":config.label,"targets":targets,"grant":grant.json(),"relayVersion":RELAY_VERSION}))
+    let (passed, beyond) = if grant.pass_through { passed_on(&db, config, master_id, &grant, state)? } else { (Vec::new(), 0) };
+    targets.extend(passed);
+    Ok(json!({"nodeId":config.node_id,"label":config.label,"targets":targets,"grant":grant.json(),"relayVersion":RELAY_VERSION,"beyond":beyond}))
 }
 
+/// The hosts this Master reaches through its own Merges, as it passes them on to `master_id`: from its stored merge
+/// records (no live calls), one hop further, with the Masters on the way and the lowest grant so far. Rows that would
+/// pass through `master_id` or this Master (loops), or lie more than `MAX_HOPS` away, are left out; the latter are
+/// counted in `beyond`.
+fn passed_on(db: &Connection, config: &Config, master_id: &str, grant: &Grant, state: &Path) -> Result<(Vec<Value>, u64)> {
+    let mut rows = Vec::new();
+    let mut beyond = 0;
+    for merge in merges(db)? {
+        let peer_id = merge["targetId"].as_str().unwrap_or_default();
+        let Ok(peer) = target(db, peer_id) else { continue };
+        if peer.node_id == master_id || merge["status"] != "merged" {
+            continue;
+        }
+        beyond += merge["beyond"].as_u64().unwrap_or(0);
+        let peer_hop = json!({"id":peer.node_id,"label":merge["label"].as_str().unwrap_or(&peer.label)});
+        let peer_view = merge["grant"]["role"] == "view";
+        for child in merge["children"].as_array().into_iter().flatten() {
+            let id = format!("{peer_id}/{}", child["id"].as_str().unwrap_or_default());
+            let hops = child["hops"].as_u64().unwrap_or(1) + 1;
+            let mut masters = vec![peer_hop.clone()];
+            masters.extend(child["masters"].as_array().cloned().unwrap_or_default());
+            if masters.iter().any(|m| m["id"] == master_id || m["id"] == config.node_id.as_str()) || child["nodeId"] == master_id {
+                continue;
+            }
+            if hops as usize > MAX_HOPS {
+                beyond += 1;
+                continue;
+            }
+            if !grant.reaches(state, &id)? {
+                continue;
+            }
+            let (access, from) = if peer_view { ("view", peer_hop["label"].clone()) }
+                else if child["access"] == "view" { ("view", child["accessFrom"].clone()) } else { ("full", Value::Null) };
+            rows.push(json!({"id":id,"label":child["label"],"os":child["os"],"tenant":child["tenant"],"nodeId":child["nodeId"],
+                "runnerInstalled":true,"hops":hops,"masters":masters,"access":access,"accessFrom":from}));
+        }
+    }
+    Ok((rows, beyond))
+}
+
+/// A relayed host ID: `child`, or `peer/…/child` for a host this Master reaches through its Merges.
+fn relayed_id(id: &str) -> Result<()> {
+    let parts: Vec<&str> = id.split('/').collect();
+    ensure!(parts.len() <= MAX_HOPS, "E_RELAY_TOO_FAR: {id} is more than {MAX_HOPS} Masters away");
+    parts.iter().try_for_each(|part| slug(part, "relayed targetId"))
+}
+/// The Relay Path of a request from `master_id`: the one it sent, or just that Master for an older one. It must end
+/// with the Master that sent it, must not hold this Master (a loop), and may hold at most `MAX_HOPS` Masters.
+fn relay_path(db: &Connection, config: &Config, master_id: &str, p: &Value) -> Result<Vec<Value>> {
+    let path = match p.get("path").and_then(Value::as_array) {
+        Some(path) => path.clone(),
+        None => {
+            let label: Option<String> = db.query_row("SELECT label FROM relays WHERE master_id=?1", [master_id], |row| row.get(0)).optional()?;
+            vec![json!({"id":master_id,"label":label.unwrap_or_else(|| master_id.to_owned())})]
+        }
+    };
+    ensure!(path.last().is_some_and(|last| last["id"] == master_id), "E_PERMISSION: the Relay Path doesn't end with the Master that sent it");
+    for hop in &path {
+        Uuid::parse_str(hop["id"].as_str().unwrap_or_default()).context("E_ARGUMENT: invalid Relay Path")?;
+        printable(hop["label"].as_str().unwrap_or_default(), "Relay Path label", 256)?;
+    }
+    ensure!(!path.iter().any(|hop| hop["id"] == config.node_id.as_str()), "E_RELAY_LOOP: this request has already passed through {}", config.label);
+    ensure!(path.len() <= MAX_HOPS, "E_RELAY_TOO_FAR: the host is more than {MAX_HOPS} Masters away; merge a closer Master");
+    Ok(path)
+}
 pub fn relay_request(state: &Path, config: &Config, master_id: &str, p: &Value) -> Result<Value> {
     role(config, "master")?;
     let child = str_arg(p, "targetId")?;
-    slug(child, "relayed targetId")?;
+    relayed_id(child)?;
     let method = str_arg(p, "method")?;
     ensure!(
         RELAY_METHODS.contains(&method),
         "E_PERMISSION: method is not available over relay"
     );
-    grant(&database(state)?, master_id, false)?.allow(state, config, method, child)?;
+    let db = database(state)?;
+    let path = relay_path(&db, config, master_id, p)?;
+    let grant = grant(&db, master_id, false)?;
+    drop(db);
+    grant.allow(state, config, method, child)?;
+    ensure!(
+        grant.pass_through || !child.contains('/'),
+        "E_MERGE_ROLE: {} doesn't pass on the hosts it reaches through other Masters",
+        config.label
+    );
+    let left = p["timeoutMs"].as_u64().map_or(RELAY_BUDGET, Duration::from_millis).min(RELAY_BUDGET);
+    let mut forwarded = path;
+    forwarded.push(json!({"id":config.node_id,"label":config.label}));
     let mut inner = p.get("params").cloned().unwrap_or_else(|| json!({}));
-    inner
-        .as_object_mut()
-        .context("E_ARGUMENT: relay params must be an object")?
-        .insert("targetId".into(), json!(child));
+    let object = inner.as_object_mut().context("E_ARGUMENT: relay params must be an object")?;
+    object.insert("targetId".into(), json!(child));
+    object.insert("__relay".into(), json!({"path":forwarded,"timeoutMs":left.as_millis() as u64}));
     handle(
         state,
         config,
@@ -202,8 +350,20 @@ pub(crate) fn relay_attach(
 /// lowered meanwhile stops the input.
 pub(crate) fn stream_allowed(state: &Path, config: &Config, master_id: &str, p: &Value) -> Result<()> {
     let child = str_arg(p, "targetId")?;
-    slug(child, "relayed targetId")?;
-    grant(&database(state)?, master_id, false)?.allow(state, config, "terminal.open", child)
+    relayed_id(child)?;
+    let db = database(state)?;
+    if p.get("path").is_some() {
+        relay_path(&db, config, master_id, p)?;
+    }
+    let grant = grant(&db, master_id, false)?;
+    drop(db);
+    grant.allow(state, config, "terminal.open", child)?;
+    ensure!(
+        grant.pass_through || !child.contains('/'),
+        "E_MERGE_ROLE: {} doesn't pass on the hosts it reaches through other Masters",
+        config.label
+    );
+    Ok(())
 }
 
 fn relays(state: &Path) -> Result<Value> {
@@ -290,7 +450,7 @@ pub(super) fn relay_target(db: &Connection, id: &str) -> Result<(Target, String)
     let (peer_id, child) = id
         .split_once('/')
         .with_context(|| format!("unknown target: {id}"))?;
-    slug(child, "merged target id")?;
+    relayed_id(child)?;
     let peer = target(db, peer_id)?;
     ensure!(
         peer.runner_installed,
@@ -328,26 +488,34 @@ pub(super) fn send(
     fleet_method: &str,
     bridge_method: &str,
     params: Value,
+    relay: &Relay,
 ) -> Result<Value> {
     match via {
-        Via::Direct(target) => transport::request(state, config, target, bridge_method, params),
-        Via::Relay { peer, child } => transport::request_within(
-            state,
-            config,
-            peer,
-            "relay.request",
-            json!({"targetId":child,"method":fleet_method,"params":params}),
-            transport::RELAY_TIMEOUT,
-        ),
+        // The last hop: this Master's own SSH call, within what is left (a direct request keeps its usual limit).
+        Via::Direct(target) if relay.path.is_empty() => transport::request(state, config, target, bridge_method, params),
+        Via::Direct(target) => {
+            transport::request_within(state, config, target, bridge_method, params, relay.left().max(Duration::from_secs(1)))
+        }
+        Via::Relay { peer, child } => {
+            let wait = relay.left();
+            let pass = wait.checked_sub(HOP_MARGIN).filter(|left| !left.is_zero())
+                .with_context(|| format!("E_RELAY_TIMEOUT: {} didn't answer in time", peer.label))?;
+            let mut path = relay.path.clone();
+            if path.is_empty() {
+                path.push(json!({"id":config.node_id,"label":config.label}));
+            }
+            hop(state, config, peer, "relay.request",
+                json!({"targetId":child,"method":fleet_method,"params":params,"path":path,"timeoutMs":pass.as_millis() as u64}), wait)
+        }
     }
 }
 
 pub(super) fn doctor(state: &Path, config: &Config, id: &str, p: &Value) -> Result<Value> {
     let (peer, child) = relay_target(&database(state)?, id)?;
     let mut params = p.clone();
-    if let Some(object) = params.as_object_mut() {
-        object.remove("targetId");
-    }
+    let object = params.as_object_mut().context("request params must be an object")?;
+    object.remove("targetId");
+    let relay = Relay::take(object);
     let mut result = send(
         state,
         config,
@@ -355,6 +523,7 @@ pub(super) fn doctor(state: &Path, config: &Config, id: &str, p: &Value) -> Resu
         "targets.doctor",
         "",
         params,
+        &relay,
     )?;
     result["targetId"] = json!(id);
     Ok(result)
@@ -411,7 +580,7 @@ pub fn record_merge(state: &Path, target_id: &str, join: &Value) -> Result<Value
     let mut children = Vec::new();
     for child in list {
         let id = str_arg(child, "id")?;
-        slug(id, "merged target id")?;
+        relayed_id(id)?;
         ensure!(seen.insert(id), "duplicate merged target id {id}");
         let label = str_arg(child, "label")?;
         printable(label, "label", 256)?;
@@ -424,8 +593,24 @@ pub fn record_merge(state: &Path, target_id: &str, join: &Value) -> Result<Value
         );
         let node_id = str_arg(child, "nodeId")?;
         Uuid::parse_str(node_id).context("invalid merged Target nodeId")?;
+        // Hosts the merged Master reaches through its own Merges: how far, through whom, and the lowest grant there.
+        let hops = child["hops"].as_u64().unwrap_or(1);
+        ensure!((1..=MAX_HOPS as u64).contains(&hops) && id.split('/').count() as u64 <= hops, "invalid merged target hops for {id}");
+        let mut masters = Vec::new();
+        for hop in child["masters"].as_array().into_iter().flatten() {
+            Uuid::parse_str(hop["id"].as_str().unwrap_or_default()).context("invalid merged target path")?;
+            let label = str_arg(hop, "label")?;
+            printable(label, "Master label", 256)?;
+            masters.push(json!({"id":hop["id"],"label":label}));
+        }
+        ensure!(masters.len() as u64 == hops - 1, "invalid merged target path for {id}");
+        let access = if child["access"] == "view" { "view" } else { "full" };
+        let from = child["accessFrom"].as_str().filter(|_| access == "view");
+        if let Some(from) = from {
+            printable(from, "Master label", 256)?;
+        }
         children.push(
-            json!({"id":id,"label":label,"tenant":tenant,"os":os,"nodeId":node_id}),
+            json!({"id":id,"label":label,"tenant":tenant,"os":os,"nodeId":node_id,"hops":hops,"masters":masters,"access":access,"accessFrom":from}),
         );
     }
     let reverse = merge_document(&db, target_id)?.map_or(Value::Null, |d| d["reverse"].clone());
@@ -436,7 +621,8 @@ pub fn record_merge(state: &Path, target_id: &str, join: &Value) -> Result<Value
         _ => Value::Null,
     };
     let document = json!({"targetId":target_id,"label":label,"status":"merged","error":null,
-        "syncedAt":now(),"children":children,"reverse":reverse,"grant":grant,"relayVersion":join["relayVersion"]});
+        "syncedAt":now(),"children":children,"reverse":reverse,"grant":grant,"relayVersion":join["relayVersion"],
+        "beyond":join["beyond"].as_u64().unwrap_or(0)});
     save_merge(&db, &document)?;
     Ok(document)
 }
@@ -488,7 +674,7 @@ fn join(state: &Path, config: &Config, target_id: &str) -> Result<Value> {
         peer.runner_installed,
         "RUNNER_NOT_INSTALLED: install and import a v2 registration for {target_id}"
     );
-    match transport::request(state, config, &peer, "relay.join", json!({})) {
+    match hop(state, config, &peer, "relay.join", json!({}), transport::RELAY_TIMEOUT) {
         Ok(reply) => record_merge(state, target_id, &reply),
         Err(error) => {
             let message = tidy(&format!("{error:#}"));
@@ -846,6 +1032,13 @@ pub fn relay_health(state: &Path, config: &Config, master_id: &str) -> Result<Va
             rows.push(row);
         }
     }
+    // Hosts passed on from this Master's own Merges: what it last heard (its own health check keeps that fresh).
+    if grant.pass_through {
+        let db = database(state)?;
+        let (passed, _) = passed_on(&db, config, master_id, &grant, state)?;
+        let cached = cached_health(&db)?;
+        rows.extend(passed.iter().filter_map(|row| cached.get(row["id"].as_str()?).cloned()));
+    }
     Ok(json!(rows))
 }
 
@@ -944,25 +1137,39 @@ fn fleet_health(state: &Path, config: &Config, refresh: bool) -> Result<Value> {
     Ok(json!(rows))
 }
 
-/// Children of merged Masters as read-only fleet rows. A machine this Master already
-/// reaches directly is listed only once, as its direct Target.
-pub(super) fn merged_targets(db: &Connection, direct: &[Target]) -> Result<Vec<Value>> {
+/// Hosts reached through merged Masters, as read-only fleet rows. A host is listed once, keyed by its `nodeId`: a
+/// machine this Master reaches directly is left to its direct row, and one reached through several Merges keeps the
+/// route with the fewest hops, then the one whose last health check worked. Rows whose path passes through this
+/// Master (loops) are dropped. Each row carries the Masters on the way (`path`) and the lowest grant along it.
+pub(super) fn merged_targets(db: &Connection, direct: &[Target], node_id: &str) -> Result<Vec<Value>> {
     let known: BTreeSet<&str> = direct.iter().map(|t| t.node_id.as_str()).collect();
-    let mut rows = Vec::new();
+    let health = cached_health(db)?;
+    let mut best: BTreeMap<String, (u64, bool, Value)> = BTreeMap::new();
+    let mut order = Vec::new();
     for merge in merges(db)? {
         let peer = merge["targetId"].as_str().unwrap_or_default();
         let via_label = direct
             .iter()
             .find(|t| t.id == peer)
             .map_or_else(|| merge["label"].clone(), |t| json!(t.label));
-        let access = if merge["grant"]["role"] == "view" { "view" } else { "full" };
+        let master_label = merge["label"].clone();
+        let peer_view = merge["grant"]["role"] == "view";
         for child in merge["children"].as_array().into_iter().flatten() {
-            if known.contains(child["nodeId"].as_str().unwrap_or_default()) {
+            let child_node = child["nodeId"].as_str().unwrap_or_default();
+            let masters = child["masters"].as_array().cloned().unwrap_or_default();
+            if known.contains(child_node) || child_node == node_id || masters.iter().any(|m| m["id"] == node_id) {
                 continue;
             }
-            rows.push(json!({
+            let id = format!("{peer}/{}", child["id"].as_str().unwrap_or_default());
+            let hops = child["hops"].as_u64().unwrap_or(1);
+            let online = health.get(&id).is_some_and(|row| row["online"] == true);
+            let mut path = vec![master_label.clone()];
+            path.extend(masters.iter().map(|m| m["label"].clone()));
+            let (access, from) = if peer_view { ("view", master_label.clone()) }
+                else if child["access"] == "view" { ("view", child["accessFrom"].clone()) } else { ("full", Value::Null) };
+            let row = json!({
                 "schemaVersion": 2,
-                "id": format!("{peer}/{}", child["id"].as_str().unwrap_or_default()),
+                "id": id,
                 "nodeId": child["nodeId"],
                 "label": child["label"],
                 "tenant": child["tenant"],
@@ -975,11 +1182,21 @@ pub(super) fn merged_targets(db: &Connection, direct: &[Target]) -> Result<Vec<V
                 "relayed": true,
                 "via": peer,
                 "viaLabel": via_label,
+                "path": path,
+                "hops": hops,
                 "access": access,
-            }));
+                "accessFrom": from,
+            });
+            let better = best.get(child_node).is_none_or(|(h, o, _)| hops < *h || (hops == *h && online && !*o));
+            if !best.contains_key(child_node) {
+                order.push(child_node.to_owned());
+            }
+            if better {
+                best.insert(child_node.to_owned(), (hops, online, row));
+            }
         }
     }
-    Ok(rows)
+    Ok(order.into_iter().filter_map(|node| best.remove(&node).map(|(_, _, row)| row)).collect())
 }
 
 #[test]

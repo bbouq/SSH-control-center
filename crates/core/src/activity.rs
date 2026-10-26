@@ -193,8 +193,10 @@ pub fn after(state: &Path, config: &Config, req: &Request, user: &str, channel: 
             params["targetId"] = relayed["targetId"].clone();
         }
         if audited(method, &params) {
+            // The full Relay Path, origin first; an older Master sends none, so just its own label.
             let master = req.params["masterId"].as_str().unwrap_or_default();
-            let label = relay_label(state, master).unwrap_or_else(|| master.to_owned());
+            let path: Vec<&str> = relayed["path"].as_array().into_iter().flatten().filter_map(|hop| hop["label"].as_str()).collect();
+            let label = if path.is_empty() { relay_label(state, master).unwrap_or_else(|| master.to_owned()) } else { path.join(" → ") };
             audit(state, line(now, method, &params, result, &format!("merge: {label}"), user));
         }
         return;
