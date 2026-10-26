@@ -13,6 +13,9 @@
 //   group-slow       group jobs keep running until cancelled (retried jobs finish as usual)
 //   legacy-host      adds old-box, a host registered without the SSH Control Center service (v1)
 //   two-way-merge    with masters-page: the Merge with branch-master is two-way (it shows as a relay here too)
+//   view-only-merge  with masters-page: Branch Master gives this Master View only (its hosts carry access "view")
+//   merge-refuses    with masters-page: a job on branch-master/child-2 is refused as if Branch Master's Tag limit had
+//                    changed since the last sync (E_MERGE_ROLE)
 //   activity-history Activity has history: jobs today, yesterday and 3 days ago (one group run), audit lines, a running
 //                    job that finishes on the next refresh, and lab-pc, whose recorded job's host can't be reached
 //   activity-warning the audit log can't be written (Activity shows its yellow warning)
@@ -47,9 +50,11 @@ function reset(list) {
     const host = (id, label, address) => ({ schemaVersion: 2, id, nodeId: id + "-node", label, tenant: "test-only", os: "linux", user: "sshcc-bridge", routes: [{ kind: "lan", address, port: 22 }], hostKeys: ["ssh-ed25519 TEST-FIXTURE-ONLY"], bridgePath: "/usr/bin/sshcc", runnerInstalled: true });
     s.targets.push(host("hq-master", "HQ Master", "192.0.2.41"), host("branch-master", "Branch Master", "192.0.2.42"));
     s.masterHosts = new Set(["hq-master", "branch-master"]);
-    s.merges.push({ targetId: "branch-master", label: "Branch Master", status: "merged", error: null, syncedAt: now(), children: children("branch-master"), reverse: null });
+    s.merges.push({ targetId: "branch-master", label: "Branch Master", status: "merged", error: null, syncedAt: now(), children: children("branch-master"), reverse: null,
+      grant: flags.has("view-only-merge") ? { role: "view", tags: null, passThrough: true } : { role: "full", tags: null, passThrough: true }, relayVersion: 2 });
     s.masters.push({ id: "peer-both", label: "Peer Master", publicKey: "TEST", revoked: false });
-    s.relays.push({ masterId: "peer-both", label: "Peer Master", lastUsedAt: now(), revoked: false }, { masterId: "peer-relay", label: "Relay-only Master", lastUsedAt: now(), revoked: true });
+    const grant = { role: "full", tags: null, passThrough: true };
+    s.relays.push({ masterId: "peer-both", label: "Peer Master", lastUsedAt: now(), revoked: false, ...grant }, { masterId: "peer-relay", label: "Relay-only Master", lastUsedAt: now(), revoked: true, ...grant });
     if (flags.has("legacy-host")) s.targets.push({ ...host("old-box", "Old box", "192.0.2.43"), runnerInstalled: false });
     if (flags.has("two-way-merge")) {
       s.merges[0].reverse = { status: "two-way", error: null };
@@ -74,7 +79,8 @@ const pairing = id => s.pairings.find(p => p.requestId === id) || (() => { throw
 const isMasterHost = id => s.masterHosts.has(id);
 const children = id => [1, 2, 3].map(n => ({ id: "child-" + n, label: "Child " + n + " of " + id, tenant: "lab", os: n === 1 ? "windows" : "linux", nodeId: crypto.randomUUID() }));
 /** A Merge's hosts, listed by targets.list as `<master>/<child>` (as the real Master does). */
-const relayedTargets = () => s.merges.flatMap(m => (m.children || []).map(c => ({ schemaVersion: 2, id: m.targetId + "/" + c.id, nodeId: c.nodeId, label: c.label, tenant: c.tenant, os: c.os, relayed: true, via: m.targetId, viaLabel: m.label, routes: [], hostKeys: [], runnerInstalled: true })));
+const relayedTargets = () => s.merges.flatMap(m => (m.children || []).map(c => ({ schemaVersion: 2, id: m.targetId + "/" + c.id, nodeId: c.nodeId, label: c.label, tenant: c.tenant, os: c.os, relayed: true, via: m.targetId, viaLabel: m.label, routes: [], hostKeys: [], runnerInstalled: true,
+  access: m.grant?.role === "view" ? "view" : "full" })));
 const healthRow = t => ({ targetId: t.id, online: true, checkedAt: now(), error: null, failures: 0, isMaster: isMasterHost(t.id), version: "test" });
 // After the helpers: the masters-page scenario uses `now` and `children`.
 /** The code the new host shows after Approve: `SSHCC1.fixture.<masterId>.<requestId>`. */
@@ -379,6 +385,7 @@ function rpc(method, p = {}) {
     case "targets.update": { const t = s.targets.find(row => row.id === p.target?.id); Object.assign(t, p.target); return t; }
     case "jobs.list": return s.jobs;
     case "jobs.start": {
+      if (flags.has("merge-refuses") && p.targetId === "branch-master/child-2") throw new Error("E_MERGE_ROLE: Branch Master gives this Master only hosts with Tag web");
       let job = s.jobs.find(row => row.id === p.jobId);
       if (!job) { job = { id: p.jobId, masterId: MASTER_ID, script: p.script, cwd: p.cwd, shell: p.shell, status: "running", createdAt: now(), startedAt: now(), exitCode: null }; s.jobs.unshift(job); }
       if (firstStart) { firstStart = false; const error = new Error("Simulated timeout AFTER acceptance. Retry same form."); error.status = 504; throw error; }
@@ -433,6 +440,13 @@ function rpc(method, p = {}) {
     case "merges.add": case "merges.sync": return mergeAdd(need(p.targetId, "targetId"));
     case "merges.remove": s.merges = s.merges.filter(row => row.targetId !== p.targetId); return { targetId: p.targetId, removed: true };
     case "relays.list": return s.relays;
+    case "relays.set": {
+      const relay = s.relays.find(row => row.masterId === p.masterId) || (() => { throw new Error("unknown merged Master"); })();
+      if ("role" in p) { if (!["full", "view"].includes(p.role)) throw new Error("E_ARGUMENT: role is full or view"); relay.role = p.role; }
+      if ("tags" in p) relay.tags = p.tags === null ? null : [...new Map(p.tags.map(tag => [tag.trim().toLowerCase(), tag.trim()])).values()];
+      if ("passThrough" in p) relay.passThrough = Boolean(p.passThrough);
+      return { ...relay };
+    }
     case "relays.revoke": case "relays.allow": { const relay = s.relays.find(row => row.masterId === p.masterId); relay.revoked = method === "relays.revoke"; return relay; }
     // Allowed Masters (Masters that may control this host directly).
     case "masters.list": return s.masters;

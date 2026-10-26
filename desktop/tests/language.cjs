@@ -169,6 +169,30 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator("#two-way-dialog h2", { hasText: "Branch Master" }).waitFor();
     await assertThai(th, "two-way dialog", mastersWords);
     await th.locator('[data-action="close-two-way-dialog"]').click();
+    // Team sharing (entry 6): the grant controls with a Tag limit, a View-only host, and a refusal.
+    await th.locator('tr[data-relay="peer-both"] [data-grant="scope"]').selectOption("tags");
+    await th.locator('tr[data-relay="peer-both"] [data-grant="tags"]').waitFor();
+    await assertThai(th, "Masters: grant controls", [...mastersWords, "web", "db"]);
+    await shots(th, "grant-controls");
+    await scenario(th, url, ["masters-page", "view-only-merge"]); await th.reload(); await ready(th);
+    const shareWords = [...words, ...await fixtureWords(th, url)];
+    for (let i = 0; i < 4; i++) { const closed = th.locator('#dc-tree .dc-toggle[aria-expanded="false"]'); if (!(await closed.count())) break; await closed.first().click(); }
+    await th.locator('#dc-tree .dc-item[data-node="node:branch-master/child-2"]').click();
+    await th.locator(".badge.view-only").first().waitFor();
+    await assertThai(th, "View-only host", shareWords);
+    await shots(th, "view-only-host");
+    await scenario(th, url, ["masters-page", "merge-refuses"]); await th.reload(); await ready(th);
+    for (let i = 0; i < 4; i++) { const closed = th.locator('#dc-tree .dc-toggle[aria-expanded="false"]'); if (!(await closed.count())) break; await closed.first().click(); }
+    await th.locator('#dc-tree .dc-item[data-node="node:branch-master/child-2"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator('[data-action="toggle-new-job"]').first().click();
+    await th.locator('#start-job [name="script"]').fill("uptime");
+    await th.locator('#start-job [type="submit"]').click();
+    await th.locator("#notice", { hasText: "Tag web" }).waitFor();
+    await assertThai(th, "Merge Role refusal", [...shareWords, "web"]);
+    await scenario(th, url, ["masters-page"]); await th.reload(); await ready(th);
+    await th.locator('.nav[data-page="masters"]').click();
+    await th.locator("h2", { hasText: "เครื่องนี้ถูกสั่งโดย" }).waitFor();
 
     // The add flow, step by step, from an empty Master.
     await scenario(th, url, ["empty"]);

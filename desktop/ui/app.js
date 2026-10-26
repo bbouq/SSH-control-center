@@ -337,6 +337,9 @@ function hostAddress(item) {
   return item.relayed ? '<span class="muted">' + esc(T.inv.via(item.viaLabel || item.via)) + "</span>"
     : route ? '<code title="' + esc(route.kind || "") + '">' + esc(route.address) + (route.port && route.port !== 22 ? ":" + esc(route.port) : "") + "</code>" : "—";
 }
+/** A merged host this Master may only view (its Merge Role, entry 6). */
+const viewOnly = item => item?.access === "view";
+const accessBadge = item => viewOnly(item) ? '<span class="badge view-only" title="' + esc(T.share.viewOnlyWhy(item.viaLabel)) + '">' + T.share.viewOnly + "</span>" : "";
 const terminalButton = item => item ? '<button class="small" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(item.label || item.id)) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : ' title="' + esc(T.inv.openTerminal) + '"') + ">" + icons.shell + '<span class="btn-label">' + T.inv.openTerminal + "</span></button>" : "";
 const hostHead = () => { const h = T.inv.head; return "<thead><tr><th>" + h.host + "</th><th>" + h.role + "</th><th>" + h.address + "</th><th>" + h.cpu + "</th><th>" + h.mem + "</th><th>" + h.status + "</th><th></th></tr></thead>"; };
 /** One row per host; only the name links to its page. */
@@ -345,7 +348,7 @@ function hostRow(item) {
     '<td><span class="muted">—</span></td><td>' + cpuCell({ id: "local" }) + "</td><td>" + memCell({ id: "local" }) + "</td><td>" + localStatus() + '</td><td class="actions">' + terminalButton(selfTarget()) + "</td></tr>";
   const check = state.diagnostics.get(item.id);
   const status = !item.runnerInstalled ? '<span class="badge pending">' + T.status.hosts.legacy + "</span>" : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? T.inv.connected : T.inv.problem) + "</span><small>" + esc(T.common.checkedAt(timestamp(check.checkedAt))) + "</small>" : statusBadge(item);
-  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small>" + tagChips(item.id) + "</td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
+  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small>" + accessBadge(item) + tagChips(item.id) + "</td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
 }
 const localStatus = () => '<span class="badge ' + (state.service ? "good" : "bad") + '">' + (state.service ? T.status.hosts.online : T.status.unavailable) + "</span>";
 /** Latest CPU % from the Monitoring tab's own samples, or null when the machine was never watched. */
@@ -387,7 +390,7 @@ function graphNode(item, options = {}) {
   const hint = status === "offline" || status === "unknown" ? row?.error || "" : status === "online" && row?.checkedAt ? T.common.checkedAt(timestamp(row.checkedAt)) : "";
   const sub = options.sub || [osName(item.os), !item.relayed && route?.address ? route.address : ""].filter(Boolean).join(" · ");
   const main = pcIcon(options.master) + '<span class="node-info"><span class="node-label">' + esc(name) +
-    (options.alsoDirect ? ' <span class="node-tag">' + T.inv.alsoDirect + "</span>" : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
+    (options.alsoDirect ? ' <span class="node-tag">' + T.inv.alsoDirect + "</span>" : "") + (viewOnly(item) ? ' <span class="node-tag">' + T.share.viewOnly + "</span>" : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
     '<span class="node-state"><span class="dot"></span>' + esc(stateLabel(status)) + "</span></span>";
   return '<div class="node is-' + status + (options.master ? " is-master" : "") + (options.root ? " is-root" : "") + (state.flipped.has(item.id) ? " just-changed" : "") + '">' +
     (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
@@ -893,7 +896,7 @@ function explain(error, pairing = false, hostName = "") {
   const rows = [...(pairing ? T.errors.pairing : []), ...T.errors.common];
   const found = rows.find(([code]) => text.includes(code))?.[1];
   if (!found) return { text, detail: "" };
-  return { text: typeof found === "function" ? found(name) : found, detail: lang === "en" ? "" : text.replace(/^(Error:\s*)?E_[A-Z_]+:\s*/, "") };
+  return { text: typeof found === "function" ? found(name, text) : found, detail: lang === "en" ? "" : text.replace(/^(Error:\s*)?E_[A-Z_]+:\s*/, "") };
 }
 /** An error from `explain` (or its text) as markup: the sentence, then the English detail line when there is one. */
 const errorHtml = shown => typeof shown === "string" ? esc(shown) : esc(shown.text) + (shown.detail ? '<small class="error-detail">' + esc(shown.detail) + "</small>" : "");
@@ -1179,6 +1182,48 @@ function renderMerges() {
       : '<div class="empty-inline">' + t.outEmpty + "</div>") +
     "<details><summary>" + t.howTitle + '</summary><p class="help">' + t.how + "</p></details></section>";
 }
+/** What this Master grants a Master that merged it (entry 6): role, Tag limit and pass-through, saved on change.
+ *  Only a Merge has a grant; a Master that controls this one directly always has full rights. */
+function grantControls(relay) {
+  if (!relay || relay.revoked) return '<span class="muted">—</span>';
+  // "Only these Tags" stays chosen while its Tags are being typed (nothing is saved until there is one).
+  const t = T.share, id = esc(relay.masterId), limited = Array.isArray(relay.tags) || Boolean(state.grantScope?.has(relay.masterId));
+  return '<div class="grant" data-master="' + id + '"><label>' + t.role + '<select data-grant="role">' +
+    ["full", "view"].map(role => '<option value="' + role + '"' + (relay.role === role ? " selected" : "") + ">" + t[role] + "</option>").join("") + "</select></label>" +
+    '<label>' + t.hosts + '<select data-grant="scope"><option value="all"' + (limited ? "" : " selected") + ">" + t.allHosts + '</option><option value="tags"' + (limited ? " selected" : "") + ">" + t.onlyTags + "</option></select></label>" +
+    (limited ? '<label>' + t.tags + '<input data-grant="tags" list="grant-tags" value="' + esc((relay.tags || []).join(", ")) + '" placeholder="web, db" title="' + esc(t.tagsHelp) + '"></label>' : "") +
+    '<label class="check-label"><input type="checkbox" data-grant="passThrough"' + (relay.passThrough !== false ? " checked" : "") + ">" + t.passThrough + "</label></div>";
+}
+async function saveGrant(control) {
+  const box = control.closest(".grant"), masterId = box.dataset.master, kind = control.dataset.grant, params = { masterId };
+  if (kind === "role") params.role = control.value;
+  if (kind === "passThrough") params.passThrough = control.checked;
+  if (kind === "scope") {
+    state.grantScope = state.grantScope || new Set();
+    if (control.value === "all") { state.grantScope.delete(masterId); params.tags = null; }
+    else { state.grantScope.add(masterId); render(); $('.grant[data-master="' + CSS.escape(masterId) + '"] [data-grant="tags"]')?.focus(); return; }
+  }
+  if (kind === "tags") {
+    const tags = control.value.split(",").map(tag => tag.trim()).filter(Boolean);
+    if (!tags.length) return;
+    params.tags = tags;
+  }
+  await rpc("relays.set", params);
+  await refreshMasters(); render();
+  notify(T.share.saved(state.relays.find(row => row.masterId === masterId)?.label || masterId));
+}
+/* Full-control actions on a host this Master may only view are disabled with the reason, wherever they are drawn. */
+const FULL_ACTIONS = ["open-shell", "toggle-new-job", "cancel-job", "ct-action", "mkdir", "upload-pick", "file-delete"];
+function applyAccess(root) {
+  if (!state.targets.some(viewOnly)) return;
+  const page = pageTarget() || target();
+  root.querySelectorAll(FULL_ACTIONS.map(action => '[data-action="' + action + '"]:not([data-access])').join(",") + ', #start-job [type="submit"]:not([data-access]), #save-file [type="submit"]:not([data-access])').forEach(button => {
+    const item = button.dataset.id && button.dataset.action === "open-shell" ? state.targets.find(row => row.id === button.dataset.id) : page;
+    if (!viewOnly(item)) return;
+    button.dataset.access = "view"; button.disabled = true; button.setAttribute("data-blocked", ""); button.title = T.share.viewOnlyWhy(item.viaLabel);
+  });
+}
+new MutationObserver(() => applyAccess(document)).observe(document.documentElement, { childList: true, subtree: true });
 /** Incoming: allowed Masters and relays joined on the Master ID, one row per Master. */
 function renderRelays() {
   const masters = Array.isArray(state.masters) ? state.masters : [], ids = [...new Set([...masters.map(row => row.id), ...state.relays.map(row => row.masterId)])];
@@ -1190,9 +1235,10 @@ function renderRelays() {
     (direct && !direct.revoked ? '<button class="danger small" data-action="revoke-master" data-id="' + esc(id) + '">' + t.revoke + "</button>" : "") +
     (relay ? (relay.revoked ? '<button class="small" data-action="allow-relay" data-id="' + esc(id) + '">' + t.allowAgain + "</button>" : '<button class="danger small" data-action="revoke-relay" data-id="' + esc(id) + '">' + t.disableMerging + "</button>") : "");
   return '<section class="surface"><div class="card-head"><div><h2>' + t.inTitle + "</h2><p>" + t.inLead + '</p></div><button data-action="accept-enrollment" title="' + t.allowTitle + '">' + icons.plus + t.allowAnother + "</button></div>" +
-    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>' + t.master + "</th><th>" + t.reaches + "</th><th></th></tr></thead><tbody>" +
-      rows.map(row => "<tr><td><strong>" + esc(row.direct?.label || row.relay?.label || row.id) + "</strong><small><code>" + esc(row.id) + '</code></small></td><td><div class="reach-badges">' + badges(row) + '</div></td><td class="actions"><div class="target-actions">' + actions(row) + "</div></td></tr>").join("") +
+    (rows.length ? '<div class="table-wrap"><table><thead><tr><th>' + t.master + "</th><th>" + t.reaches + "</th><th>" + T.share.access + "</th><th></th></tr></thead><tbody>" +
+      rows.map(row => '<tr data-relay="' + esc(row.id) + '"><td><strong>' + esc(row.direct?.label || row.relay?.label || row.id) + "</strong><small><code>" + esc(row.id) + '</code></small></td><td><div class="reach-badges">' + badges(row) + "</div></td><td>" + grantControls(row.relay) + '</td><td class="actions"><div class="target-actions">' + actions(row) + "</div></td></tr>").join("") +
       "</tbody></table></div>" : '<div class="empty-inline">' + t.inEmpty + "</div>") +
+    '<datalist id="grant-tags">' + (state.tags.tags || []).map(row => '<option value="' + esc(row.tag) + '">').join("") + "</datalist>" +
     '<p class="help mt">' + t.inHelp + "</p></section>";
 }
 function copyRow(command) {
@@ -1316,7 +1362,7 @@ function dcMachineRow(entry, depth) {
   const item = entry.item, isMaster = state.merges.some(merge => merge.targetId === item.id);
   const cpu = sampledCpu(item.id), hot = isHot(item);
   return dcRow("node:" + item.id, depth, '<span class="dot ' + (hot ? "hot" : stateStyles[nodeState(item)] || "") + '"></span><span class="dc-name">' + esc(item.label || item.id) + "</span>" +
-    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
+    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (viewOnly(item) ? '<span class="dc-tag" title="' + esc(T.share.viewOnlyWhy(item.viaLabel)) + '">' + T.share.viewOnly + "</span>" : "") + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
     (cpu == null ? '<span class="dc-os">' + esc(osName(item.os)) + "</span>" : '<span class="dc-os' + (hot ? " is-hot" : "") + '" title="' + esc(osName(item.os)) + '">' + Math.round(cpu) + "%</span>"), { drag: entry.alsoDirect ? "" : item.id });
 }
 function dcMasterRows(master, depth, rows, open) {
@@ -1436,6 +1482,7 @@ function renderDcPanel() {
   }
   const item = found.item;
   const head = '<div class="page-heading"><div class="target-title"><span class="live-label">● ' + esc(dcPath(item)) + "</span><h1>" + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) + (item.os ? chip(osName(item.os)) : "") + "</div></div>" +
+    (viewOnly(item) ? '<div class="meta-row">' + accessBadge(item) + '<small class="muted">' + esc(T.share.viewOnlyWhy(item.viaLabel)) + "</small></div>" : "") +
     '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
     (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
   const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs(hostPageTabs());
@@ -2365,6 +2412,7 @@ document.addEventListener("input", event => {
   }
 });
 document.addEventListener("change", event => {
+  if (event.target.dataset?.grant) void busy(null, () => saveGrant(event.target));
   if (event.target.id === "group-filter") { state.group = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
   if (event.target.id === "activity-status") { activityState().status = event.target.value; void loadActivity().catch(error => notifyError(error)); }
   if (["activity-from", "activity-to"].includes(event.target.id)) { activityState()[event.target.id.slice(9)] = event.target.value; void loadActivity().catch(error => notifyError(error)); }
@@ -2473,7 +2521,8 @@ document.addEventListener("submit", event => {
       const jobId = state.pendingJob.jobId;
       let job;
       try { job = await rpc("jobs.start", { ...params, jobId }); }
-      catch (error) { throw new Error(T.jobs.retry(String(error), jobId)); }
+      // A refusal by a Merge Role is final: retrying the same job can't help.
+      catch (error) { if (String(error).includes("E_MERGE_ROLE")) { state.pendingJob = null; throw error; } throw new Error(T.jobs.retry(String(error), jobId)); }
       state.pendingJob = null;
       if (params.targetId !== state.selected) return;
       state.job = job; state.log = ""; state.offset = 0; state.eof = true; state.stream = "stdout"; state.newJob = false;

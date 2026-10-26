@@ -279,6 +279,11 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .group-run .group-summary { margin: 0 0 12px; }
 .group-run + .callout { margin-top: 28px; }
 .group-run td small.error-line { display: block; color: var(--rose); white-space: normal; }
+/* Team sharing: the grant controls on "This Master is controlled by", and the View only badge. */
+.grant { display: grid; gap: 8px; min-width: 220px; }
+.grant label { display: grid; gap: 4px; font-size: 12px; color: var(--lilac); }
+.grant .check-label { display: flex; gap: 8px; align-items: center; color: var(--white); font-size: 13px; }
+.badge.view-only { color: var(--amber); }
 /* Activity: one filter bar over the Jobs and Audit views; failed audit rows in rose. */
 .activity-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-bottom: 18px; }
 .activity-bar input[type="search"] { flex: 1 1 220px; min-width: 0; }

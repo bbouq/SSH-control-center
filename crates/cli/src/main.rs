@@ -113,6 +113,21 @@ enum Action {
         #[arg(long)]
         csv: bool,
     },
+    /// List the Masters that merged this one with what each is granted, or change one Master's grant.
+    Relays {
+        master_id: Option<String>,
+        /// full (run, write, Shell) or view (look and download only).
+        #[arg(long, requires = "master_id", value_parser = ["full", "view"])]
+        role: Option<String>,
+        /// Only the hosts with one of these Tags (comma-separated).
+        #[arg(long, requires = "master_id", conflicts_with = "all_hosts")]
+        tags: Option<String>,
+        #[arg(long, requires = "master_id")]
+        all_hosts: bool,
+        /// Whether that Master may pass on the hosts this one reaches through its own Merges.
+        #[arg(long, requires = "master_id", value_parser = ["on", "off"])]
+        pass_through: Option<String>,
+    },
     Targets,
     Doctor {
         target_id: String,
@@ -289,6 +304,38 @@ fn default_cwd(target_id: &str) -> Result<String> {
     let hosts = call("targets.list", json!({}))?;
     let host = hosts.as_array().into_iter().flatten().find(|host| host["id"] == target_id || host["label"] == target_id);
     Ok(if host.is_some_and(|host| host["os"] == "windows") { "C:\\" } else { "/" }.into())
+}
+/// `relays.set` params from `sshcc relays <id> --role … --tags … | --all-hosts --pass-through on|off`.
+fn relay_grant(id: &str, role: Option<String>, tags: Option<String>, all_hosts: bool, pass_through: Option<String>) -> Result<Value> {
+    let mut params = json!({"masterId":id});
+    if let Some(role) = role {
+        params["role"] = json!(role);
+    }
+    if let Some(tags) = tags {
+        params["tags"] = json!(tags.split(',').map(str::trim).filter(|t| !t.is_empty()).collect::<Vec<_>>());
+    }
+    if all_hosts {
+        params["tags"] = Value::Null;
+    }
+    if let Some(on) = pass_through {
+        params["passThrough"] = json!(on == "on");
+    }
+    anyhow::ensure!(params.as_object().is_some_and(|p| p.len() > 1), "nothing to change: give --role, --tags, --all-hosts or --pass-through");
+    Ok(params)
+}
+#[cfg(test)]
+mod relay_grant_tests {
+    use super::*;
+    #[test]
+    fn flags_become_one_relays_set_request() {
+        let full = relay_grant("m", Some("view".into()), Some("web, db,".into()), false, Some("off".into())).unwrap();
+        assert_eq!(full, json!({"masterId":"m","role":"view","tags":["web","db"],"passThrough":false}));
+        assert_eq!(relay_grant("m", None, None, true, None).unwrap(), json!({"masterId":"m","tags":null}));
+        assert!(relay_grant("m", None, None, false, None).is_err());
+        let args = Args::try_parse_from(["sshcc", "relays", "m", "--role", "admin"]);
+        assert!(args.is_err(), "role is full or view");
+        assert!(Args::try_parse_from(["sshcc", "relays", "m", "--tags", "web", "--all-hosts"]).is_err());
+    }
 }
 fn call(method: &str, params: Value) -> Result<Value> {
     client::call(&Request {
@@ -607,6 +654,10 @@ fn run() -> Result<()> {
         Action::Activity { view, host, since, csv } => {
             print!("{}", activity::run(&view, host.as_deref(), since.as_deref(), csv, &call)?);
             Ok(())
+        }
+        Action::Relays { master_id: None, .. } => print(&call("relays.list", json!({}))?),
+        Action::Relays { master_id: Some(id), role, tags, all_hosts, pass_through } => {
+            print(&call("relays.set", relay_grant(&id, role, tags, all_hosts, pass_through)?)?)
         }
         Action::Targets => print(&call("targets.list", json!({}))?),
         Action::Doctor { target_id, session } => print(&call(

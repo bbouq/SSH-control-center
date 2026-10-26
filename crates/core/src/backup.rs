@@ -21,7 +21,7 @@ use std::{
 
 /// The payload format this Master writes. Older files are migrated on restore; newer ones are refused.
 /// 1: first format. 2: adds Tags (roadmap entry 4).
-pub const FORMAT_VERSION: u16 = 2;
+pub const FORMAT_VERSION: u16 = 3;
 pub const MIN_PASSPHRASE: usize = 12;
 const MAGIC: &[u8; 8] = b"SSHCCBAK";
 const HEADER: usize = 8 + 2 + 12 + 16 + 24;
@@ -34,7 +34,7 @@ const TABLES: &[(&str, &[&str])] = &[
     ("targets", &["id", "document"]),
     ("masters", &["id", "document", "revoked"]),
     ("tenant_keys", &["tenant", "public_key"]),
-    ("relays", &["master_id", "label", "joined_at", "last_used_at", "revoked"]),
+    ("relays", &["master_id", "label", "joined_at", "last_used_at", "revoked", "role", "tags", "pass_through"]),
     ("merges", &["target_id", "document"]),
     ("folders", &["id", "master", "name", "created_at"]),
     ("folder_members", &["target_id", "folder_id"]),
@@ -161,10 +161,16 @@ fn open(bytes: &[u8], passphrase: &str) -> Result<(u16, Contents)> {
     Ok((version, contents))
 }
 
-/// Brings an older payload up to the current format. Format 1 has no Tags table, which restores as no Tags, so it
-/// needs no change; a later format adds its step here.
-fn migrate(version: u16, payload: Value) -> Result<Contents> {
-    let _ = version;
+/// Brings an older payload up to the current format. Format 1 has no Tags table, which restores as no Tags. Before
+/// format 3 a merge had no Merge Role: it restores as Full control, all hosts, pass-through on, as on an update.
+fn migrate(version: u16, mut payload: Value) -> Result<Contents> {
+    if version < 3 {
+        let relays = payload.get_mut("tables").and_then(|t| t.get_mut("relays")).and_then(Value::as_array_mut);
+        for row in relays.into_iter().flatten() {
+            row["role"] = json!("full");
+            row["pass_through"] = json!(1);
+        }
+    }
     serde_json::from_value(payload).context("E_BACKUP_BAD_PASSPHRASE_OR_DAMAGED: the backup contents are damaged")
 }
 
@@ -491,6 +497,20 @@ mod tests {
         assert_eq!((result["formatVersion"].as_u64(), result["folders"].as_u64()), (Some(1), Some(1)));
         assert_eq!(config::load(dir.path()).unwrap().node_id, node);
         assert_eq!(crate::tags::list(dir.path()).unwrap()["tags"], serde_json::json!([]));
+    }
+    /// A format 2 file (from before Merge Roles) restores its merges as Full control, all hosts, pass-through on.
+    #[test]
+    fn a_format_two_file_restores_merges_as_full_control() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = config::init(dir.path(), "master", &security::current_principal().unwrap(), "New", &[]).unwrap();
+        let peer = uuid::Uuid::new_v4().to_string();
+        let tables = serde_json::from_value(serde_json::json!({"relays":[{"master_id":peer,"label":"Peer","joined_at":"2026-01-01T00:00:00Z","last_used_at":null,"revoked":0}]})).unwrap();
+        let old = Contents { created_at: "2026-01-01T00:00:00Z".into(), node_id: uuid::Uuid::new_v4().to_string(), label: "Old".into(), roles: vec!["master".into()],
+            os: "linux".into(), data_dir: "/var/lib/sshcc".into(), keys: Default::default(), tables };
+        let file = seal(&old, "a long passphrase", 2).unwrap();
+        restore(dir.path(), &cfg, &file, "a long passphrase").unwrap();
+        let state = crate::fleet::handle(dir.path(), &cfg, &crate::protocol::Request { method: "relays.list".into(), params: serde_json::json!({}) }).unwrap().unwrap();
+        assert_eq!((state[0]["role"].as_str(), state[0]["passThrough"].as_bool(), state[0]["tags"].is_null()), (Some("full"), Some(true), true));
     }
     #[test]
     fn jump_keys_move_across_windows_and_ubuntu() {

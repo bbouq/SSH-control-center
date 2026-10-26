@@ -32,6 +32,11 @@ Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scena
 - `group-slow`: group jobs keep running until they are cancelled; jobs started by "Try again" finish as usual.
 - `legacy-host`: adds `old-box`, a host registered without the SSH Control Center service (group runs skip it).
 - `group-offline`: a group run can't reach `hq-master` ("No route to host"). Each `groups.status` call moves the started hosts on: queued → running → succeeded.
+- `view-only-merge`: with `masters-page`, Branch Master gives this Master View only, so its hosts carry `access: "view"`.
+- `merge-refuses`: with `masters-page`, a job on `branch-master/child-2` is refused with `E_MERGE_ROLE` (a Tag limit changed since the last sync).
+
+Relays carry their grant (`role`, `tags`, `passThrough`, Full control by default), and `relays.set` changes it.
+
 - `activity-history`: the Activity tab has history: jobs today, yesterday and 3 days ago, a group run by Tag `web` (one host couldn't be reached), audit lines from every channel (one refused), a running job that finishes on the next refresh, and `lab-pc`, whose recorded job's host can't be reached.
 - `activity-warning`: the audit log can't be written, so Activity shows its yellow warning (and records nothing).
 
@@ -77,6 +82,15 @@ It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, whi
 `desktop/tests/tags.cjs` checks Tags, the filter and group runs (plain Chromium). It checks that the filter box matches folder names, for direct and merged hosts, as well as names and addresses; Tags on the host page (adding with suggestions, case-insensitive with the first spelling kept, a merged host, each rule's error in place, × to remove); filtering by a typed Tag or a chip click; chips in host tables and on topology cards but not in the tree; "Tag…" in the tree menu; Tags kept through a (fixture) backup and restore; the New job form's working folder pre-filled with `/` or `C:\` by the host's OS; the core task (tag 3 hosts `web`, run one command on all three) gated at 5 decisions or fewer, with the Owner session field hidden for a group, nothing run before the confirmation, and one result row per host; and a folder group (`legacy-host`, `group-offline`) whose confirmation lists the skipped host and whose results show "Couldn't reach" with the reason, Skipped, and Open log; a mixed Linux + Windows group (`group-slow`) with one script box per OS and Shell and Owner session hidden, admin and env sent, a per-row cancel and Cancel all, "Try again on the hosts that failed", and the run on the current Master's Activity tab after a reload. It writes screenshots at 1180px and 820px and `tags-results.json` under `artifacts/tags-ui/`.
 
 `desktop/tests/activity.cjs` checks Activity on the current Master (plain Chromium): the core task (find what ran on a host yesterday and export CSV) gated at 3 decisions or fewer, with the CSV's BOM, Thai times and filter checked; group runs as one row that expands, the status, 7-day and custom filters, a host filter that keeps its group run, a running job that finishes on its own, an offline host's recorded job, and Open on a reachable one; the audit view (translated actions, refused rows in rose, channels, a text search over actions, its CSV, and a change made in the page showing up); and "Recording since", the keep-days field (14 by default) and the warning. It writes screenshots at 1180, 820 and 390px and `activity-results.json` under `artifacts/activity-ui/`.
+
+`desktop/tests/team-sharing.cjs` checks team sharing (plain Chromium). It checks:
+- the core task (give a teammate's Master View only from "This Master is controlled by"), gated at 2 decisions or fewer;
+- that a direct-only Master has no grant;
+- the Tag limit with this Master's Tags suggested, the pass-through switch, and back to all hosts, each sent as one `relays.set`;
+- a View-only host on the merging side, with the badge in the tree and on the page, and Shell, New job, Upload and New folder disabled with the reason, while a fully controlled host is untouched;
+- a refusal shown as its sentence.
+
+It writes screenshots at 1180, 820 and 390px and `team-sharing-results.json` under `artifacts/team-sharing-ui/`.
 
 `node desktop/tests/strings-review.cjs` (no browser needed) writes `artifacts/language-ui/strings-review.html`: every string of `desktop/ui/strings.js` side by side in English and Thai, grouped by where it appears, with a box per row to write a fix and a button that copies all fixes as text. It is a translation review tool, not a check.
 

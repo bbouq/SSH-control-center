@@ -20,7 +20,7 @@ mod transport;
 mod merge;
 #[path = "fleet_rotation.rs"]
 pub mod rotation;
-pub(crate) use merge::relay_attach;
+pub(crate) use merge::{relay_attach, stream_allowed};
 pub use merge::{
     record_merge, relay_health, relay_join, relay_pair, relay_pair_complete, relay_request,
 };
@@ -96,6 +96,21 @@ pub(crate) fn database(state: &Path) -> Result<Connection> {
          CREATE TABLE IF NOT EXISTS merges (target_id TEXT PRIMARY KEY, document TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS health (target_id TEXT PRIMARY KEY, document TEXT NOT NULL);"
     )?;
+    // Merge Roles (entry 6): what this Master grants each Master that merged it. Older rows become Full control,
+    // all hosts, pass-through on.
+    let columns: Vec<String> = db
+        .prepare("SELECT name FROM pragma_table_info('relays')")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (column, definition) in [
+        ("role", "TEXT NOT NULL DEFAULT 'full'"),
+        ("tags", "TEXT"),
+        ("pass_through", "INTEGER NOT NULL DEFAULT 1"),
+    ] {
+        if !columns.iter().any(|c| c == column) {
+            db.execute_batch(&format!("ALTER TABLE relays ADD COLUMN {column} {definition}"))?;
+        }
+    }
     Ok(db)
 }
 fn slug(value: &str, field: &str) -> Result<()> {

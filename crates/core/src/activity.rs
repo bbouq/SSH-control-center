@@ -29,7 +29,7 @@ const AUDITED: &[&str] = &[
     "targets.import", "targets.update", "targets.import_legacy", "targets.remove",
     "enrollment.export", "enrollment.accept", "masters.revoke",
     "merges.add", "merges.sync", "merges.pair_request", "merges.pair_complete", "merges.remove",
-    "relays.revoke", "relays.allow", "pairing.create", "pairing.complete", "pairing.cancel",
+    "relays.revoke", "relays.allow", "relays.set", "pairing.create", "pairing.complete", "pairing.cancel",
     "tags.set", "folders.create", "folders.rename", "folders.delete", "folders.assign",
     "datacenters.create", "datacenters.rename", "datacenters.delete", "datacenters.assign",
     "files.write", "files.mkdir", "files.remove", "containers.action", "terminal.open",
@@ -71,6 +71,15 @@ pub fn object(method: &str, params: &Value) -> String {
             let selector = &params["selector"];
             parts.extend(selector["tag"].as_str().map(|tag| format!("tag {tag}")));
             parts.extend(selector["folder"].as_str().map(|folder| format!("folder {folder}")));
+        }
+        "relays.set" => {
+            parts.extend(params["role"].as_str().map(str::to_owned));
+            match &params["tags"] {
+                Value::Array(tags) => parts.push(format!("tags {}", tags.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))),
+                Value::Null if params.get("tags").is_some() => parts.push("all hosts".into()),
+                _ => {}
+            }
+            parts.extend(params["passThrough"].as_bool().map(|on| format!("pass-through {}", if on { "on" } else { "off" })));
         }
         "tags.set" => parts.push(params["tags"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")),
         "targets.import" | "targets.update" => {

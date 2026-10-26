@@ -83,17 +83,17 @@ impl Service {
                 &caller,
             )?;
             let remote = fleet::attach(&self.state, &self.config, &req.params)?;
-            return pipe_remote(remote, reader, writer);
+            return pipe_remote(remote, reader, writer, || true);
         }
         if req.params["request"]["method"] == "relay.attach" {
             let master = self.bridge_master(&req, &caller)?;
-            let remote = fleet::relay_attach(
-                &self.state,
-                &self.config,
-                master,
-                &req.params["request"]["params"],
-            )?;
-            return pipe_remote(remote, reader, writer);
+            let params = req.params["request"]["params"].clone();
+            let remote = fleet::relay_attach(&self.state, &self.config, master, &params)?;
+            // The Merge Role is checked again on every frame: a role lowered meanwhile ends the input.
+            let (state, config, master) = (self.state.clone(), self.config.clone(), master.to_owned());
+            return pipe_remote(remote, reader, writer, move || {
+                fleet::stream_allowed(&state, &config, &master, &params).is_ok()
+            });
         }
         anyhow::ensure!(
             req.params["request"]["method"] == "pty.attach",
@@ -441,18 +441,20 @@ impl Service {
         }
     }
 }
-/// Forward client frames to a remote terminal stream and its replies back until it ends.
+/// Forward client frames to a remote terminal stream and its replies back until it ends. A frame `allow` refuses
+/// detaches the stream instead of being forwarded.
 fn pipe_remote(
     mut remote: fleet::RemoteStream,
     mut reader: BufReader<ipc::Connection>,
     mut writer: ipc::Connection,
+    allow: impl Fn() -> bool + Send + 'static,
 ) -> Result<()> {
     ipc::reply(&mut writer, &remote.initial)?;
     let remote_input = remote.input.take().unwrap();
     std::thread::spawn(move || {
         let mut input = remote_input;
         while let Ok(frame) = protocol::read_frame::<Request>(&mut reader) {
-            if protocol::write_frame(&frame, &mut input).is_err() {
+            if !allow() || protocol::write_frame(&frame, &mut input).is_err() {
                 break;
             }
         }
