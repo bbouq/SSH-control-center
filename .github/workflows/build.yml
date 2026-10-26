@@ -74,6 +74,9 @@ jobs:
       - name: Team sharing
         run: node desktop/tests/team-sharing.cjs
         env: { NODE_PATH: /tmp/pw/node_modules }
+      - name: Health alarms
+        run: node desktop/tests/alarms.cjs
+        env: { NODE_PATH: /tmp/pw/node_modules }
       - name: Keep screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -86,4 +89,5 @@ jobs:
             artifacts/tags-ui/
             artifacts/activity-ui/
             artifacts/team-sharing-ui/
+            artifacts/alarms-ui/
           if-no-files-found: ignore

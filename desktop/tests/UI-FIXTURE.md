@@ -40,6 +40,11 @@ Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scena
 
 Relays carry their grant (`role`, `tags`, `passThrough`, Full control by default), and `relays.set` changes it.
 
+- `alarms-firing`: a red disk alarm (93.5%) and a yellow memory alarm on `ui-test`, which also has 3 OS updates pending; with `masters-page`, `hq-master` is unreachable (red).
+- `alarm-new-red`: a red "unreachable" alarm on `ui-test` appears after the window's first look, for the notice.
+
+Alarm rules start as the Master's three defaults; `alarms.rule_set` stores rules but the fixture doesn't evaluate them. `alarms.check_updates` finishes at once (`ui-test`: 1 update left).
+
 - `activity-history`: the Activity tab has history: jobs today, yesterday and 3 days ago, a group run by Tag `web` (one host couldn't be reached), audit lines from every channel (one refused), a running job that finishes on the next refresh, and `lab-pc`, whose recorded job's host can't be reached.
 - `activity-warning`: the audit log can't be written, so Activity shows its yellow warning (and records nothing).
 
@@ -96,6 +101,15 @@ It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, whi
 - an older merged Master marked "Outdated".
 
 It writes screenshots at 1180, 820 and 390px and `team-sharing-results.json` under `artifacts/team-sharing-ui/`.
+
+`desktop/tests/alarms.cjs` checks health alarms (plain Chromium). It checks:
+- the core task (alert when any `web` host's disk is over 90%), gated at 4 decisions or fewer, with three rules from the start and disk / 90 / red pre-filled;
+- the rule editor (chosen hosts, a container rule with names, edit, delete, a percentage outside 1–99 stopped in the field, the interval);
+- active alarms (the sidebar count red then yellow, red first, Acknowledge greying a row, tree dots);
+- the host page (alarms, OS updates with packages, Check now, "+ Add an alarm rule for this host" with the host chosen);
+- the notice for a red alarm that appears while the window is open.
+
+It writes screenshots at 1180, 820 and 390px and `alarms-results.json` under `artifacts/alarms-ui/`.
 
 `node desktop/tests/strings-review.cjs` (no browser needed) writes `artifacts/language-ui/strings-review.html`: every string of `desktop/ui/strings.js` side by side in English and Thai, grouped by where it appears, with a box per row to write a fix and a button that copies all fixes as text. It is a translation review tool, not a check.
 

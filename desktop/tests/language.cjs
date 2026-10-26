@@ -212,6 +212,25 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator('.nav[data-page="masters"]').click();
     await th.locator(".badge", { hasText: "รุ่นเก่า" }).waitFor();
     await assertThai(th, "outdated Master", [...words, ...await fixtureWords(th, url)]);
+    // Health alarms (entry 7): the Active tab, the rule editor, and the host page's alarms and OS updates.
+    await scenario(th, url, ["masters-page", "alarms-firing"]); await th.reload(); await ready(th);
+    const alarmWords = [...words, ...await fixtureWords(th, url), "web", "db", "openssl", "curl", "libssl"];
+    await th.locator('.nav[data-page="alarms"]').click();
+    await th.locator("#alarm-list tbody tr").first().waitFor();
+    await assertThai(th, "Alarms: active", alarmWords);
+    await shots(th, "alarms-active");
+    await th.locator('[data-action="alarm-tab"][data-tab="rules"]').click();
+    await th.locator('[data-action="alarm-rule-new"]').click();
+    await th.locator('#alarm-rule [name="scope"]').selectOption("hosts");
+    await th.locator('#alarm-rule [name="condition"]').selectOption("container");
+    await assertThai(th, "Alarms: rule editor", alarmWords);
+    await shots(th, "alarms-rules");
+    for (let i = 0; i < 4; i++) { const closed = th.locator('#dc-tree .dc-toggle[aria-expanded="false"]'); if (!(await closed.count())) break; await closed.first().click(); }
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator("#host-alarms #updates-badge").waitFor();
+    await th.locator("#host-alarms summary").click();
+    await assertThai(th, "host alarms and updates", alarmWords);
+    await shots(th, "host-alarms");
     await scenario(th, url, ["masters-page"]); await th.reload(); await ready(th);
     await th.locator('.nav[data-page="masters"]').click();
     await th.locator("h2", { hasText: "เครื่องนี้ถูกสั่งโดย" }).waitFor();

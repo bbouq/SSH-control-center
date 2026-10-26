@@ -286,6 +286,9 @@ impl Service {
                 return Ok(value);
             }
         }
+        if let Some(value) = crate::alarms::handle(&self.state, &self.config, req)? {
+            return Ok(value);
+        }
         if let Some(value) = activity::handle(&self.state, &self.config, req, owner)? {
             return Ok(value);
         }
@@ -515,6 +518,15 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<()> {
                     if let Err(error) = activity::daily(&service.state, chrono::Utc::now()) {
                         eprintln!("SSH Control Center: activity cleanup failed: {error:#}");
                     }
+                    // Health alarms: a pass when the interval is due (a memory check between passes), in its own
+                    // thread so a slow host never holds the timer.
+                    let (state, config) = (service.state.clone(), service.config.clone());
+                    if crate::alarms::due(&state, &config, chrono::Utc::now()) { std::thread::spawn(move || {
+                        let ask = |host: &serde_json::Value, what| crate::alarms::real_ask(&state, &config, host, what);
+                        if let Err(error) = crate::alarms::tick(&state, &config, chrono::Utc::now(), &ask) {
+                            eprintln!("SSH Control Center: alarm check failed: {error:#}");
+                        }
+                    }); }
                 }
             }
         });
