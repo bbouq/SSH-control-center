@@ -5,6 +5,7 @@
     python3 scripts/dev-master.py rebuild    # rebuild sshcc from this tree, back up the state, restart
     python3 scripts/dev-master.py bundle --id win-01 --address 192.0.2.20 --os windows
     python3 scripts/dev-master.py import registration.json
+    python3 scripts/dev-master.py templates v0.5.0   # installer templates from a Release (Add host, Update)
     python3 scripts/dev-master.py backup | logs | down
 
 Unlike scripts/ui-preview.py nothing here is a demo: the Master's state lives in the Docker volume
@@ -30,6 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 NAME, VOLUME, IMAGE, PORT = "sshcc-dev-master", "sshcc-dev-master-state", "sshcc-dev:latest", 8770
 OUT = ROOT / "artifacts/dev-master"
+TEMPLATES = OUT / "templates"
+TEMPLATE_FILES = ["sshcc-client-windows-template.exe", "sshcc-client-ubuntu-template.deb", "template-manifest.json"]
 BRIDGE = r"""
 window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
   const response = await fetch("/invoke", { method: "POST", headers: { "X-SSHCC": "1" }, body: JSON.stringify({ command, args }) });
@@ -89,7 +92,7 @@ class Handler(BaseHTTPRequestHandler):
         ui = pathlib.Path("/opt/ui")
         name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
         fonts = {"fonts/" + font.name for font in (ui / "fonts").glob("*.woff2")}
-        if not self.allowed() or name not in {"index.html", "app.js", "app.css", "bridge.js", "header-scene.svg"} | fonts:
+        if not self.allowed() or name not in {"index.html", "app.js", "strings.js", "app.css", "bridge.js", "header-scene.svg"} | fonts:
             self.send_error(404)
             return
         data = BRIDGE.encode() if name == "bridge.js" else (ui / name).read_bytes()
@@ -156,7 +159,10 @@ def up(label):
             "-v", f"{VOLUME}:/var/lib/sshcc",
             "-v", f"{ROOT / 'desktop/ui'}:/opt/ui:ro",
             "-v", f"{pathlib.Path(__file__).resolve()}:/opt/dev-master.py:ro",
-            "-v", f"{OUT}:/out", IMAGE, "python3", "/opt/dev-master.py", "serve", "--label", label)
+            "-v", f"{OUT}:/out",
+            # Installer templates from a Release (`templates`), so Add host and Update work from this Master.
+            *(["-v", f"{TEMPLATES}:/usr/lib/sshcc/templates:ro"] if (TEMPLATES / "template-manifest.json").is_file() else []),
+            IMAGE, "python3", "/opt/dev-master.py", "serve", "--label", label)
     for _ in range(100):
         if f"ready on" in run("docker", "logs", NAME, check=False).stdout:
             print(f"dev Master is up: http://127.0.0.1:{PORT}/")
@@ -194,6 +200,9 @@ def main():
     p.add_argument("--group", default="lab")
     p = sub.add_parser("import", help="import a Target's registration.json and check the connection")
     p.add_argument("file", type=pathlib.Path)
+    p = sub.add_parser("templates", help="download a Release's installer templates for this Master (then it restarts)")
+    p.add_argument("tag", help="the Release tag, e.g. v0.5.0")
+    p.add_argument("--repo", default="bbouq/SSH-control-center")
     p = sub.add_parser("serve")  # container entry point
     p.add_argument("--label", default="mac-dev")
     args = parser.parse_args()
@@ -208,6 +217,21 @@ def main():
             backup()
             run("docker", "rm", "-f", NAME)
         up("mac-dev")
+    elif args.command == "templates":
+        # From the Release, checked against its SHA256SUMS; the Master checks them again against the manifest.
+        TEMPLATES.mkdir(parents=True, exist_ok=True)
+        run("gh", "release", "download", args.tag, "--repo", args.repo, "--dir", str(TEMPLATES), "--clobber",
+            *sum((["--pattern", name] for name in TEMPLATE_FILES + ["SHA256SUMS"]), []))
+        import hashlib
+        sums = dict(line.split()[::-1] for line in (TEMPLATES / "SHA256SUMS").read_text().splitlines() if line.strip())
+        for name in TEMPLATE_FILES:
+            digest = hashlib.sha256((TEMPLATES / name).read_bytes()).hexdigest()
+            if sums.get(name) != digest:
+                raise SystemExit(f"{name} doesn't match the Release's SHA256SUMS")
+        print(f"templates from {args.tag} in {TEMPLATES}")
+        if exists():
+            run("docker", "rm", "-f", NAME)
+            up("mac-dev")
     elif args.command == "down":
         run("docker", "rm", "-f", NAME, check=False)
         print(f"stopped; the Master's state stays in volume {VOLUME}")
