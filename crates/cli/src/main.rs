@@ -128,6 +128,13 @@ enum Action {
         #[arg(long, requires = "master_id", value_parser = ["on", "off"])]
         pass_through: Option<String>,
     },
+    /// Active health alarms (red first), or `ack <id>` to acknowledge one.
+    Alarms {
+        #[arg(value_parser = ["ack"])]
+        action: Option<String>,
+        #[arg(requires = "action")]
+        id: Option<String>,
+    },
     Targets,
     Doctor {
         target_id: String,
@@ -326,6 +333,12 @@ fn relay_grant(id: &str, role: Option<String>, tags: Option<String>, all_hosts: 
 #[cfg(test)]
 mod relay_grant_tests {
     use super::*;
+    #[test]
+    fn alarms_lists_or_acknowledges() {
+        assert!(Args::try_parse_from(["sshcc", "alarms"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "alarms", "ack", "default-disk:web-1"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "alarms", "clear"]).is_err());
+    }
     #[test]
     fn flags_become_one_relays_set_request() {
         let full = relay_grant("m", Some("view".into()), Some("web, db,".into()), false, Some("off".into())).unwrap();
@@ -658,6 +671,22 @@ fn run() -> Result<()> {
         Action::Relays { master_id: None, .. } => print(&call("relays.list", json!({}))?),
         Action::Relays { master_id: Some(id), role, tags, all_hosts, pass_through } => {
             print(&call("relays.set", relay_grant(&id, role, tags, all_hosts, pass_through)?)?)
+        }
+        Action::Alarms { action: None, .. } => {
+            let list = call("alarms.list", json!({}))?;
+            for alarm in list["alarms"].as_array().into_iter().flatten() {
+                println!("{:<6} {:<20} {:<12} {:<8} since {}{}  [{}]", alarm["level"].as_str().unwrap_or(""), alarm["host"].as_str().unwrap_or(""),
+                    alarm["condition"].as_str().unwrap_or(""), alarm["value"].to_string().trim_matches('"'), alarm["since"].as_str().unwrap_or(""),
+                    if alarm["acknowledged"] == true { "  (acknowledged)" } else { "" }, alarm["id"].as_str().unwrap_or(""));
+            }
+            if list["alarms"].as_array().is_none_or(|a| a.is_empty()) {
+                println!("No alarms");
+            }
+            Ok(())
+        }
+        Action::Alarms { id, .. } => {
+            let id = id.ok_or_else(|| anyhow::anyhow!("give the alarm ID shown by sshcc alarms"))?;
+            print(&call("alarms.ack", json!({"id":id}))?)
         }
         Action::Targets => print(&call("targets.list", json!({}))?),
         Action::Doctor { target_id, session } => print(&call(

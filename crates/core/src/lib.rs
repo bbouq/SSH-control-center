@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod agent_tools;
+pub mod alarms;
 pub mod backup;
 pub mod client;
 pub mod client_links;

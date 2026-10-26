@@ -21,7 +21,7 @@ use std::{
 
 /// The payload format this Master writes. Older files are migrated on restore; newer ones are refused.
 /// 1: first format. 2: adds Tags (roadmap entry 4).
-pub const FORMAT_VERSION: u16 = 3;
+pub const FORMAT_VERSION: u16 = 4;
 pub const MIN_PASSPHRASE: usize = 12;
 const MAGIC: &[u8; 8] = b"SSHCCBAK";
 const HEADER: usize = 8 + 2 + 12 + 16 + 24;
@@ -41,6 +41,8 @@ const TABLES: &[(&str, &[&str])] = &[
     ("datacenters", &["id", "name", "created_at"]),
     ("datacenter_members", &["master", "datacenter_id"]),
     ("tags", &["target_id", "key", "tag"]),
+    ("alarm_rules", &["id", "document", "created_at"]),
+    ("alarm_settings", &["key", "value"]),
 ];
 
 #[derive(Serialize, Deserialize)]
@@ -162,7 +164,8 @@ fn open(bytes: &[u8], passphrase: &str) -> Result<(u16, Contents)> {
 }
 
 /// Brings an older payload up to the current format. Format 1 has no Tags table, which restores as no Tags. Before
-/// format 3 a merge had no Merge Role: it restores as Full control, all hosts, pass-through on, as on an update.
+/// format 3 a merge had no Merge Role: it restores as Full control, all hosts, pass-through on, as on an update. Before
+/// format 4 there were no alarm rules: the tables restore empty, and the next use seeds the three default rules.
 fn migrate(version: u16, mut payload: Value) -> Result<Contents> {
     if version < 3 {
         let relays = payload.get_mut("tables").and_then(|t| t.get_mut("relays")).and_then(Value::as_array_mut);
@@ -305,7 +308,7 @@ fn role(config: &Config) -> Result<()> {
 
 pub fn create(state: &Path, config: &Config, passphrase: &str) -> Result<Vec<u8>> {
     role(config)?;
-    let db = crate::tags::database(state)?;
+    let db = crate::alarms::database(state)?;
     let mut keys = BTreeMap::new();
     let folder = state.join("keys");
     if folder.is_dir() {
@@ -349,7 +352,7 @@ pub fn inspect(bytes: &[u8], passphrase: &str) -> Result<Value> {
 /// put back if anything later fails, and config.json is replaced last.
 pub fn restore(state: &Path, config: &Config, bytes: &[u8], passphrase: &str) -> Result<Value> {
     role(config)?;
-    let mut db = crate::tags::database(state)?;
+    let mut db = crate::alarms::database(state)?;
     ensure!(
         is_empty(&db)?,
         "E_RESTORE_NOT_EMPTY: this Master already has hosts; restore only works on a fresh install"
@@ -448,7 +451,7 @@ pub(crate) fn keys_changed(state: &Path, when: &str) -> Result<()> {
 
 pub fn status(state: &Path, owner: bool) -> Result<Value> {
     let record = read_record(state)?;
-    let db = crate::tags::database(state)?;
+    let db = crate::alarms::database(state)?;
     // RFC 3339 times in UTC compare as text.
     let stale = matches!((&record.keys_changed_at, &record.last_backup_at), (Some(changed), Some(backup)) if backup < changed)
         || (record.keys_changed_at.is_some() && record.last_backup_at.is_none());
@@ -511,6 +514,24 @@ mod tests {
         restore(dir.path(), &cfg, &file, "a long passphrase").unwrap();
         let state = crate::fleet::handle(dir.path(), &cfg, &crate::protocol::Request { method: "relays.list".into(), params: serde_json::json!({}) }).unwrap().unwrap();
         assert_eq!((state[0]["role"].as_str(), state[0]["passThrough"].as_bool(), state[0]["tags"].is_null()), (Some("full"), Some(true), true));
+    }
+    /// A format 3 file (from before alarms) restores with the three default rules; a format 4 one keeps its own.
+    #[test]
+    fn alarm_rules_travel_from_format_four_and_older_files_get_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = config::init(dir.path(), "master", &security::current_principal().unwrap(), "New", &[]).unwrap();
+        let rule = serde_json::json!({"id":"r1","scope":{"tag":"web"},"condition":"disk","threshold":80,"containers":[],"level":"yellow"});
+        let tables = serde_json::from_value(serde_json::json!({"alarm_rules":[{"id":"r1","document":rule.to_string(),"created_at":"2026-01-01T00:00:00Z"}],
+            "alarm_settings":[{"key":"seeded","value":"1"},{"key":"interval","value":"15"}]})).unwrap();
+        let contents = |tables| Contents { created_at: "2026-01-01T00:00:00Z".into(), node_id: uuid::Uuid::new_v4().to_string(), label: "Old".into(),
+            roles: vec!["master".into()], os: "linux".into(), data_dir: "/var/lib/sshcc".into(), keys: Default::default(), tables };
+        restore(dir.path(), &cfg, &seal(&contents(tables), "a long passphrase", 4).unwrap(), "a long passphrase").unwrap();
+        assert_eq!(crate::alarms::rules(dir.path()).unwrap(), vec![rule]);
+        assert_eq!(crate::alarms::interval(&crate::alarms::database(dir.path()).unwrap()).unwrap(), 15);
+        let older = tempfile::tempdir().unwrap();
+        let cfg = config::init(older.path(), "master", &security::current_principal().unwrap(), "New", &[]).unwrap();
+        restore(older.path(), &cfg, &seal(&contents(Default::default()), "a long passphrase", 3).unwrap(), "a long passphrase").unwrap();
+        assert_eq!(crate::alarms::rules(older.path()).unwrap().len(), 3);
     }
     #[test]
     fn jump_keys_move_across_windows_and_ubuntu() {
