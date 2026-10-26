@@ -868,6 +868,11 @@ pub(crate) fn attach(state: &Path, config: &Config, params: &Value) -> Result<tr
     );
     transport::attach(state, config, &target, "pty.attach", params)
 }
+/// One direct host's `system.status` over SSH (its version, roles…): what an update waits for.
+pub(crate) fn system_status(state: &Path, config: &Config, id: &str) -> Result<Value> {
+    let target = target(&database(state)?, id)?;
+    transport::request(state, config, &target, "system.status", json!({}))
+}
 /// None means the request belongs to the local runtime rather than the fleet.
 pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Value>> {
     let result = match req.method.as_str() {

@@ -40,6 +40,9 @@ Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scena
 
 Relays carry their grant (`role`, `tags`, `passThrough`, Full control by default), and `relays.set` changes it.
 
+- `outdated-hosts`: `ui-test` runs 0.4.0 while this Master runs 0.5.0; with `masters-page`, `hq-master` too, and `branch-master/child-1` (updated by Branch Master). An update finishes at once.
+- `upgrade-fails`: with `outdated-hosts` and `masters-page`, updating `hq-master` times out (`E_UPGRADE_TIMEOUT`).
+- `no-templates`: with `outdated-hosts`, this Master has no installer templates (a development build).
 - `alarms-firing`: a red disk alarm (93.5%) and a yellow memory alarm on `ui-test`, which also has 3 OS updates pending; with `masters-page`, `hq-master` is unreachable (red).
 - `alarm-new-red`: a red "unreachable" alarm on `ui-test` appears after the window's first look, for the notice.
 
@@ -110,6 +113,14 @@ It writes screenshots at 1180, 820 and 390px and `team-sharing-results.json` und
 - the notice for a red alarm that appears while the window is open.
 
 It writes screenshots at 1180, 820 and 390px and `alarms-results.json` under `artifacts/alarms-ui/`.
+
+`desktop/tests/target-update.cjs` checks updating Targets (plain Chromium). It checks:
+- "Needs update" badges in the tree and on the host page, with "by Branch Master" and no Update button for a merged host;
+- Update on a host page: a timeout offers "Save the installer…", and a success clears the badge;
+- "Update every outdated host" in the Inventory, one host at a time, with a failed row and the summary;
+- a Master without templates showing the button disabled with the reason.
+
+It writes screenshots under `artifacts/target-update-ui/`.
 
 `node desktop/tests/strings-review.cjs` (no browser needed) writes `artifacts/language-ui/strings-review.html`: every string of `desktop/ui/strings.js` side by side in English and Thai, grouped by where it appears, with a box per row to write a fix and a button that copies all fixes as text. It is a translation review tool, not a check.
 

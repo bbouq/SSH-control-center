@@ -44,6 +44,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build CLI and desktop
         run: cargo build --locked -p sshcc -p sshcc-desktop
+      - name: Installer scripts parse (Setup, PairingBootstrap with /UPDATE)
+        shell: pwsh
+        run: |
+          foreach ($f in 'installers/windows/Setup.ps1','installers/windows/PairingBootstrap.ps1','installers/windows/Uninstall.ps1') {
+            $t = $null; $e = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$t, [ref]$e) | Out-Null
+            if ($e.Count) { $e | ForEach-Object { Write-Error "$f: $($_.Message)" }; exit 1 }
+          }
+          $boot = Get-Content installers/windows/PairingBootstrap.ps1 -Raw
+          if ($boot -notmatch '\[switch\]\$Update' -or $boot -notmatch '-Unattended') { Write-Error 'PairingBootstrap.ps1 lost its -Update path'; exit 1 }
 
   ui:
     name: UI fixture checks (Playwright)
@@ -77,6 +87,9 @@ jobs:
       - name: Health alarms
         run: node desktop/tests/alarms.cjs
         env: { NODE_PATH: /tmp/pw/node_modules }
+      - name: Target updates
+        run: node desktop/tests/target-update.cjs
+        env: { NODE_PATH: /tmp/pw/node_modules }
       - name: Keep screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,4 +103,5 @@ jobs:
             artifacts/activity-ui/
             artifacts/team-sharing-ui/
             artifacts/alarms-ui/
+            artifacts/target-update-ui/
           if-no-files-found: ignore

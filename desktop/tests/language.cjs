@@ -212,6 +212,20 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator('.nav[data-page="masters"]').click();
     await th.locator(".badge", { hasText: "รุ่นเก่า" }).waitFor();
     await assertThai(th, "outdated Master", [...words, ...await fixtureWords(th, url)]);
+    // Target updates (entry 8): badges, host-page controls, the Inventory panel with a failed host.
+    await scenario(th, url, ["masters-page", "outdated-hosts", "upgrade-fails"]); await th.reload(); await ready(th);
+    const upWords = [...words, ...await fixtureWords(th, url)];
+    await th.locator("#upgrade-panel").waitFor();
+    await assertThai(th, "update panel", upWords);
+    await th.locator('[data-action="upgrade-all"]').click();
+    await th.locator('#upgrade-panel tr[data-upgrade="hq-master"] .badge', { hasText: "ไม่สำเร็จ" }).waitFor({ timeout: 30000 });
+    await th.locator("#upgrade-panel", { hasText: "อัปเดตแล้ว" }).waitFor({ timeout: 30000 });
+    await assertThai(th, "update progress", upWords);
+    await shots(th, "update-all");
+    for (let i = 0; i < 4; i++) { const closed = th.locator('#dc-tree .dc-toggle[aria-expanded="false"]'); if (!(await closed.count())) break; await closed.first().click(); }
+    await th.locator('#dc-tree .dc-item[data-node="node:branch-master/child-1"]').click();
+    await th.locator(".upgrade-badge").waitFor();
+    await assertThai(th, "merged host needs update", upWords);
     // Health alarms (entry 7): the Active tab, the rule editor, and the host page's alarms and OS updates.
     await scenario(th, url, ["masters-page", "alarms-firing"]); await th.reload(); await ready(th);
     const alarmWords = [...words, ...await fixtureWords(th, url), "web", "db", "openssl", "curl", "libssl"];

@@ -25,5 +25,6 @@ pub mod ssh_banner;
 pub mod stream;
 pub mod tags;
 pub mod terminal;
+pub mod upgrade;
 pub mod windows_service;
 pub mod worker;

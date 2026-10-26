@@ -242,6 +242,9 @@ const en = {
       ["E_TAG_CHARS", "A Tag can’t contain a comma"],
       ["E_TAG_LIMIT", "A host can have at most 20 Tags"],
       ["E_ACTIVITY_DAYS", "Keep activity for 1 to 3650 days"],
+      ["E_UPGRADE_TEMPLATES", "This Master has no installer to send (a development build) · install a released Master"],
+      ["E_UPGRADE_TIMEOUT", "The host didn’t come back with the new version in time · save the installer and run it on the host"],
+      ["E_UPGRADE_NOT_HERE", "Its own Master updates this host"],
       ["E_ALARM_RULE", "Check the rule: choose hosts, a condition, a percentage from 1 to 99 and a level"],
       ["E_ALARM_INTERVAL", "Rules can be checked every 5, 15 or 30 minutes"],
       ["E_RELAY_TIMEOUT", (name, text) => { const m = /E_RELAY_TIMEOUT:\s*(.+?) didn't answer in time/.exec(text || ""); return (m ? m[1] : "A Master on the way") + " didn’t answer in time · check that it is on and reachable, then try again"; }],
@@ -309,6 +312,18 @@ const en = {
   tags: {
     title: "Tags", add: "+ Tag", addLabel: "Add a Tag to this host", none: "No Tags yet",
     filterBy: tag => "Show the hosts with Tag " + tag, remove: tag => "Remove Tag " + tag,
+  },
+  /* Target update pack (entry 8): updating hosts from this Master. */
+  upgrade: {
+    needs: (from, to) => "Needs update (" + from + " → " + to + ")", needsShort: "Update", by: name => "by " + name,
+    update: "Update", updating: "Updating…", saveFile: "Save the installer…", saveTitle: "Save the update installer",
+    done: (host, version) => host + " now runs " + version, failed: host => "Couldn’t update " + host + " · save the installer and run it on the host instead",
+    saved: path => "Saved " + path + " · run it on the host as an administrator",
+    noTemplates: "This Master has no installer to send (a development build)", byOther: name => "Updated by " + name + ", the Master that looks after it",
+    panelTitle: "Updates", panelLead: (n, version) => plural(n, "host runs", "hosts run") + " an older version than this Master (" + version + ")",
+    all: "Update every outdated host", allLead: "One host at a time; a host that fails is skipped and reported",
+    state: { waiting: "Waiting", uploading: "Sending the installer", installing: "Installing", checking: "Waiting for the new version", done: "Done", failed: "Failed" },
+    summary: (ok, n) => ok + " of " + n + " updated",
   },
   /* Health alarms (entry 7): rules, active alarms, and the OS-update check. */
   alarms: {
@@ -674,6 +689,9 @@ const th = {
       ["E_TAG_CHARS", "Tag ห้ามมีเครื่องหมายจุลภาค (,)"],
       ["E_TAG_LIMIT", "เครื่องหนึ่งมี Tag ได้ไม่เกิน 20 อัน"],
       ["E_ACTIVITY_DAYS", "เก็บกิจกรรมได้ 1 ถึง 3650 วัน"],
+      ["E_UPGRADE_TEMPLATES", "Master นี้ไม่มีตัวติดตั้งให้ส่ง (เป็นรุ่นที่ build เอง) · ติดตั้ง Master รุ่นที่ออก Release แล้ว"],
+      ["E_UPGRADE_TIMEOUT", "เครื่องไม่กลับมาพร้อมรุ่นใหม่ในเวลาที่กำหนด · บันทึกตัวติดตั้งแล้วไปรันที่เครื่องนั้น"],
+      ["E_UPGRADE_NOT_HERE", "เครื่องนี้อัปเดตโดย Master ที่ดูแลมัน"],
       ["E_ALARM_RULE", "ตรวจกฎอีกครั้ง: เลือกเครื่อง เงื่อนไข เปอร์เซ็นต์ 1 ถึง 99 และระดับ"],
       ["E_ALARM_INTERVAL", "ตั้งให้ตรวจได้ทุก 5, 15 หรือ 30 นาที"],
       ["E_RELAY_TIMEOUT", (name, text) => { const m = /E_RELAY_TIMEOUT:\s*(.+?) didn't answer in time/.exec(text || ""); return (m ? m[1] : "Master ระหว่างทาง") + " ไม่ตอบในเวลาที่กำหนด · ตรวจว่าเปิดอยู่และติดต่อได้ แล้วลองอีกครั้ง"; }],
@@ -738,6 +756,17 @@ const th = {
   tags: {
     title: "Tag", add: "+ Tag", addLabel: "เพิ่ม Tag ให้เครื่องนี้", none: "ยังไม่มี Tag",
     filterBy: tag => "แสดงเครื่องที่มี Tag " + tag, remove: tag => "เอา Tag " + tag + " ออก",
+  },
+  upgrade: {
+    needs: (from, to) => "ต้องอัปเดต (" + from + " → " + to + ")", needsShort: "อัปเดต", by: name => "โดย " + name,
+    update: "อัปเดต", updating: "กำลังอัปเดต…", saveFile: "บันทึกตัวติดตั้ง…", saveTitle: "บันทึกตัวติดตั้งสำหรับอัปเดต",
+    done: (host, version) => host + " ใช้รุ่น " + version + " แล้ว", failed: host => "อัปเดต " + host + " ไม่สำเร็จ · บันทึกตัวติดตั้งแล้วไปรันที่เครื่องนั้นแทน",
+    saved: path => "บันทึกแล้วที่ " + path + " · รันบนเครื่องนั้นด้วยสิทธิ์ผู้ดูแล",
+    noTemplates: "Master นี้ไม่มีตัวติดตั้งให้ส่ง (เป็นรุ่นที่ build เอง)", byOther: name => "อัปเดตโดย " + name + " ซึ่งเป็น Master ที่ดูแลเครื่องนี้",
+    panelTitle: "อัปเดต", panelLead: (n, version) => "มี " + n + " เครื่องที่ใช้รุ่นเก่ากว่า Master นี้ (" + version + ")",
+    all: "อัปเดตทุกเครื่องที่ล้าสมัย", allLead: "ทำทีละเครื่อง เครื่องที่ไม่สำเร็จจะข้ามไปและสรุปให้ตอนจบ",
+    state: { waiting: "รอคิว", uploading: "กำลังส่งตัวติดตั้ง", installing: "กำลังติดตั้ง", checking: "รอรุ่นใหม่ตอบ", done: "เสร็จ", failed: "ไม่สำเร็จ" },
+    summary: (ok, n) => "อัปเดตแล้ว " + ok + " จาก " + n + " เครื่อง",
   },
   alarms: {
     title: "แจ้งเตือน", lead: "กฎที่ Master นี้ตรวจอยู่เบื้องหลัง และสิ่งที่เจอ",

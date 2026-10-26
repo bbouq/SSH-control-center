@@ -19,6 +19,10 @@
 //   multi-hop        with masters-page: Branch Master also passes on Lab Master (a Master it merged) and Lab's two hosts,
 //                    one of which Lab Master gives View only; 3 more hosts are more than 4 hops away
 //   outdated-merge   with masters-page: Branch Master runs an older version (no relayVersion)
+//   outdated-hosts   ui-test runs 0.4.0 (this Master 0.5.0); with masters-page, hq-master too and branch-master/child-1
+//                    (updated by Branch Master); targets.upgrade succeeds (hq-master fails with upgrade-fails)
+//   upgrade-fails    with outdated-hosts and masters-page: updating hq-master times out
+//   no-templates     with outdated-hosts: this Master has no installer templates (a development build)
 //   alarms-firing    a red disk alarm on ui-test, a yellow memory alarm (acknowledged later in tests), ui-test has 3
 //                    OS updates pending; with masters-page, hq-master is unreachable (red)
 //   alarm-new-red    a red alarm appears after the window's first look (for the notice)
@@ -256,6 +260,36 @@ function groupStatus(id) {
   run.done = run.hosts.every(h => h.state !== "started" || ["succeeded", "failed", "cancelled", "interrupted"].includes(h.status));
   return structuredClone(run);
 }
+/* Target updates (entry 8): versions from the scenario; an update "finishes" at once (one status step per call). */
+const LATEST = "0.5.0";
+function updateCheck() {
+  const old = new Set(flags.has("outdated-hosts") ? ["ui-test", "hq-master", "branch-master/child-1"] : []);
+  for (const id of s.upgraded || []) old.delete(id);
+  return { latest: LATEST, hosts: [...s.targets, ...relayedTargets()].map(t => {
+    const outdated = old.has(t.id), by = t.relayed ? "by:" + t.viaLabel : null;
+    const reason = !outdated ? "current" : by || (flags.has("no-templates") ? "E_UPGRADE_TEMPLATES" : null);
+    return { targetId: t.id, label: t.label, os: t.os, version: outdated ? "0.4.0" : LATEST, latest: LATEST, outdated, canUpdate: reason === null, reason };
+  }) };
+}
+function upgradeOne(id) {
+  const row = updateCheck().hosts.find(r => r.targetId === id);
+  if (!row?.canUpdate) throw new Error(row?.reason === "E_UPGRADE_TEMPLATES" ? "E_UPGRADE_TEMPLATES: this Master has no installer to send" : "E_UPGRADE_CURRENT: nothing to update");
+  if (flags.has("upgrade-fails") && id === "hq-master") throw new Error("E_UPGRADE_TIMEOUT: hq-master didn't come back with 0.5.0 within 3 minutes");
+  (s.upgraded = s.upgraded || []).push(id);
+  return { targetId: id, version: LATEST, from: "0.4.0" };
+}
+function upgradeStatus() {
+  const run = s.upgradeRun;
+  if (!run) return { hosts: [], done: true };
+  const next = run.hosts.find(r => !["done", "failed"].includes(r.state));
+  if (next) {
+    const steps = ["waiting", "uploading", "installing", "checking"], at = steps.indexOf(next.state);
+    if (at < steps.length - 1) next.state = steps[at + 1];
+    else try { upgradeOne(next.targetId); next.state = "done"; } catch (error) { next.state = "failed"; next.error = error.message; }
+  }
+  run.done = run.hosts.every(r => ["done", "failed"].includes(r.state));
+  return structuredClone(run);
+}
 /* Health alarms (entry 7): the three default rules; alarms come from the scenario flags, not from evaluating rules. */
 function alarmDefaults() {
   return [["default-unreachable", "unreachable", null], ["default-disk", "disk", 90], ["default-memory", "memory", 90]]
@@ -390,6 +424,10 @@ function activityCsv(p) {
 const activityStatus = () => ({ keepDays: s.activity.keepDays, since: s.activity.since, warning: flags.has("activity-warning") });
 function rpc(method, p = {}) {
   switch (method) {
+    case "targets.update_check": return updateCheck();
+    case "targets.upgrade": return upgradeOne(p.targetId);
+    case "targets.upgrade_all": s.upgradeRun = { done: false, hosts: updateCheck().hosts.filter(r => r.canUpdate).map(r => ({ targetId: r.targetId, state: "waiting", error: null })) }; return { started: true };
+    case "targets.upgrade_status": return upgradeStatus();
     case "alarms.list": return alarmList();
     case "alarms.rules": return { rules: structuredClone(s.alarm.rules), interval: s.alarm.interval };
     case "alarms.rule_set": return alarmRule(p);
@@ -567,6 +605,7 @@ function command(name, args) {
     if (kind) { const base = JSON.parse(Buffer.from(makeBackup("fixture passphrase"), "base64").toString("utf8")); if (kind === "newer") base.formatVersion = 2; if (kind === "damaged") base.damaged = true; return { name: kind + ".sshccbak", file: Buffer.from(JSON.stringify(base)).toString("base64") }; }
     return savedBackup ? { ...savedBackup } : null;
   }
+  if (name === "save_upgrade") return "/fixture/Downloads/" + (args.os === "windows" ? "sshcc-update.exe" : "sshcc_0.5.0.deb");
   if (name === "save_csv") { lastCsv = { name: args.name, csv: rpc("activity.csv", args.params || {}).csv }; return "/fixture/Downloads/" + args.name; }
   if (name === "rpc") return recorded(args.method, args.params || {});
   throw new Error("Unsupported fixture command: " + name);

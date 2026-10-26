@@ -35,6 +35,7 @@ const AUDITED: &[&str] = &[
     "files.write", "files.mkdir", "files.remove", "containers.action", "terminal.open",
     "backup.create", "backup.restore", "keys.rotate", "activity.settings",
     "alarms.rule_set", "alarms.rule_delete", "alarms.settings", "alarms.ack", "alarms.check_updates",
+    "targets.upgrade", "targets.upgrade_all",
 ];
 /// Params copied into an audit line's object, in this order. Nothing else is: no script, content, env or passphrase.
 const OBJECT_KEYS: &[&str] = &["targetId", "master", "jobId", "runId", "path", "container", "action", "id", "name", "folderId", "datacenterId", "masterId", "keepDays"];
