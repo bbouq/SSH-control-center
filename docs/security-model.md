@@ -233,7 +233,7 @@ The "group" (tenant) selects which key a Master uses and organizes the list. It 
 
 ### 4.9 Merging Masters extends reach
 
-When one Master is merged into another, requests travel one hop to the merged Master, which sends them with its own keys. Whoever controls the merging Master can then also act on the merged Master's Targets. The merged Master can stop it with `relays.revoke`, and the merging Master can remove the merge with `merges.remove`. In a two-way merge each side can revoke its own direction. Revoking the Master itself (`masters.revoke`) also stops its relays.
+When one Master is merged into another, requests travel one hop to the merged Master, which sends them with its own keys. Whoever controls the merging Master can then also act on the merged Master's Targets, within the **Merge Role** the merged Master grants it. A Merge starts as Full control. View only lets it list, read and download, but not run jobs, change files, open a Shell or act on containers. Either role can be limited to hosts with chosen Tags, and hosts outside the limit are not listed at all. The merged Master enforces the role on every relayed request and Shell frame, so the merging Master's own window can't get around it. A Master that is paired directly with a Target always has full rights there. The merged Master can stop it with `relays.revoke`, and the merging Master can remove the merge with `merges.remove`. In a two-way merge each side can revoke its own direction. Revoking the Master itself (`masters.revoke`) also stops its relays.
 
 *For developers:* [AGENT.md](AGENT.md), section "Merged Masters"; `crates/core/src/service.rs` (`handle`).
 

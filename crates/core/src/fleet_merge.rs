@@ -58,13 +58,62 @@ const RELAY_METHODS: &[&str] = &[
     "monitor.stats",
 ];
 
+/// Relayable methods that only read. Every other method in `RELAY_METHODS` needs Full control; a View-only Merge is
+/// refused it. A new relayable method is placed in one class or the other here.
+pub(crate) const READ_METHODS: &[&str] = &[
+    "targets.doctor",
+    "jobs.list",
+    "jobs.status",
+    "jobs.logs",
+    "files.list",
+    "files.read",
+    "files.search",
+    "files.grep",
+    "containers.list",
+    "containers.logs",
+    "monitor.stats",
+];
+/// The relay protocol a Master speaks; 2 adds Merge Roles. A join reply without it comes from an older Master.
+pub const RELAY_VERSION: u32 = 2;
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// What this Master grants one Master that merged it: Full control or View only, optionally only the hosts with one
+/// of `tags` (this Master's own Tags), and whether it may pass on the hosts this Master reaches through its Merges.
+pub(crate) struct Grant {
+    pub role: String,
+    pub tags: Option<Vec<String>>,
+    pub pass_through: bool,
+}
+impl Grant {
+    fn json(&self) -> Value {
+        json!({"role":self.role,"tags":self.tags,"passThrough":self.pass_through})
+    }
+    /// Whether the Tag limit lets the merging Master see and use `host` (an ID this Master uses).
+    fn reaches(&self, state: &Path, host: &str) -> Result<bool> {
+        let Some(wanted) = &self.tags else { return Ok(true) };
+        let tags = crate::tags::list(state)?;
+        Ok(tags["hosts"][host].as_array().into_iter().flatten().filter_map(Value::as_str)
+            .any(|tag| wanted.iter().any(|w| w.to_lowercase() == tag.to_lowercase())))
+    }
+    /// The role and Tag checks for one relayed call; `E_MERGE_ROLE` names this Master and the limit.
+    fn allow(&self, state: &Path, config: &Config, method: &str, host: &str) -> Result<()> {
+        if self.role != "full" && !READ_METHODS.contains(&method) {
+            bail!("E_MERGE_ROLE: {} gives this Master View only", config.label);
+        }
+        if !self.reaches(state, host)? {
+            let tags = self.tags.as_deref().unwrap_or_default().join(", ");
+            bail!("E_MERGE_ROLE: {} gives this Master only hosts with Tag {tags}", config.label);
+        }
+        Ok(())
+    }
+}
+
 /// Joining creates the grant; relaying requires one. A disabled grant stays disabled
 /// until this Master allows it again, so the merging Master cannot simply rejoin.
-fn grant(db: &Connection, master_id: &str, join: bool) -> Result<()> {
+fn grant(db: &Connection, master_id: &str, join: bool) -> Result<Grant> {
     let revoked: Option<bool> = db
         .query_row(
             "SELECT revoked FROM relays WHERE master_id=?1",
@@ -90,21 +139,26 @@ fn grant(db: &Connection, master_id: &str, join: bool) -> Result<()> {
          ON CONFLICT(master_id) DO UPDATE SET label=excluded.label,last_used_at=excluded.last_used_at",
         params![master_id, label, now()],
     )?;
-    Ok(())
+    let (role, tags, pass_through) = db.query_row(
+        "SELECT role,tags,pass_through FROM relays WHERE master_id=?1",
+        [master_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, bool>(2)?)),
+    )?;
+    let tags = tags.map(|text| serde_json::from_str(&text)).transpose().context("invalid stored Merge Tags")?;
+    Ok(Grant { role, tags, pass_through })
 }
 
 pub fn relay_join(state: &Path, config: &Config, master_id: &str) -> Result<Value> {
     role(config, "master")?;
     let db = database(state)?;
-    grant(&db, master_id, true)?;
-    let targets: Vec<Value> = list_targets(&db)?
-        .into_iter()
-        .filter(|t| t.runner_installed && t.node_id != master_id)
-        .map(|t| {
-            json!({"id":t.id,"label":t.label,"os":t.os,"tenant":t.tenant,"nodeId":t.node_id,"runnerInstalled":true})
-        })
-        .collect();
-    Ok(json!({"nodeId":config.node_id,"label":config.label,"targets":targets}))
+    let grant = grant(&db, master_id, true)?;
+    let mut targets = Vec::new();
+    for t in list_targets(&db)? {
+        if t.runner_installed && t.node_id != master_id && grant.reaches(state, &t.id)? {
+            targets.push(json!({"id":t.id,"label":t.label,"os":t.os,"tenant":t.tenant,"nodeId":t.node_id,"runnerInstalled":true}));
+        }
+    }
+    Ok(json!({"nodeId":config.node_id,"label":config.label,"targets":targets,"grant":grant.json(),"relayVersion":RELAY_VERSION}))
 }
 
 pub fn relay_request(state: &Path, config: &Config, master_id: &str, p: &Value) -> Result<Value> {
@@ -116,7 +170,7 @@ pub fn relay_request(state: &Path, config: &Config, master_id: &str, p: &Value) 
         RELAY_METHODS.contains(&method),
         "E_PERMISSION: method is not available over relay"
     );
-    grant(&database(state)?, master_id, false)?;
+    grant(&database(state)?, master_id, false)?.allow(state, config, method, child)?;
     let mut inner = p.get("params").cloned().unwrap_or_else(|| json!({}));
     inner
         .as_object_mut()
@@ -140,15 +194,22 @@ pub(crate) fn relay_attach(
     p: &Value,
 ) -> Result<transport::Stream> {
     role(config, "master")?;
-    slug(str_arg(p, "targetId")?, "relayed targetId")?;
-    grant(&database(state)?, master_id, false)?;
+    stream_allowed(state, config, master_id, p)?;
     attach(state, config, p)
+}
+
+/// A relayed Shell stream needs Full control on its host; checked when it opens and again on every frame, so a role
+/// lowered meanwhile stops the input.
+pub(crate) fn stream_allowed(state: &Path, config: &Config, master_id: &str, p: &Value) -> Result<()> {
+    let child = str_arg(p, "targetId")?;
+    slug(child, "relayed targetId")?;
+    grant(&database(state)?, master_id, false)?.allow(state, config, "terminal.open", child)
 }
 
 fn relays(state: &Path) -> Result<Value> {
     let db = database(state)?;
     let mut stmt = db.prepare(
-        "SELECT master_id,label,joined_at,last_used_at,revoked FROM relays ORDER BY label",
+        "SELECT master_id,label,joined_at,last_used_at,revoked,role,tags,pass_through FROM relays ORDER BY label",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(json!({
@@ -157,6 +218,9 @@ fn relays(state: &Path) -> Result<Value> {
             "joinedAt": row.get::<_, String>(2)?,
             "lastUsedAt": row.get::<_, Option<String>>(3)?,
             "revoked": row.get::<_, bool>(4)?,
+            "role": row.get::<_, String>(5)?,
+            "tags": row.get::<_, Option<String>>(6)?.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+            "passThrough": row.get::<_, bool>(7)?,
         }))
     })?;
     Ok(json!(rows.collect::<rusqlite::Result<Vec<_>>>()?))
@@ -170,6 +234,50 @@ fn set_relay(state: &Path, master_id: &str, revoked: bool) -> Result<Value> {
     )?;
     ensure!(changed > 0, "unknown merged Master");
     Ok(json!({"masterId":master_id,"revoked":revoked}))
+}
+
+/// `relays.set`: the role (`full` | `view`), the Tag limit (`tags`: a list, or null for all hosts) and the
+/// pass-through switch for one Master that merged this one. Fields left out keep their value.
+fn set_grant(state: &Path, p: &Value) -> Result<Value> {
+    let master_id = str_arg(p, "masterId")?;
+    Uuid::parse_str(master_id).context("invalid Master id")?;
+    let db = database(state)?;
+    ensure!(
+        db.query_row("SELECT 1 FROM relays WHERE master_id=?1", [master_id], |_| Ok(())).optional()?.is_some(),
+        "unknown merged Master"
+    );
+    if let Some(role) = p.get("role") {
+        let role = role.as_str().filter(|r| matches!(*r, "full" | "view")).context("E_ARGUMENT: role is full or view")?;
+        db.execute("UPDATE relays SET role=?2 WHERE master_id=?1", params![master_id, role])?;
+    }
+    if let Some(tags) = p.get("tags") {
+        let stored = match tags {
+            Value::Null => None,
+            Value::Array(list) => {
+                let mut kept: Vec<String> = Vec::new();
+                for tag in list {
+                    let tag = tag.as_str().context("E_ARGUMENT: tags must be text")?.trim();
+                    ensure!((1..=crate::tags::MAX_LENGTH).contains(&tag.chars().count()), "E_TAG_LENGTH: a Tag has 1-{} characters", crate::tags::MAX_LENGTH);
+                    if !kept.iter().any(|k| k.to_lowercase() == tag.to_lowercase()) {
+                        kept.push(tag.to_owned());
+                    }
+                }
+                ensure!(!kept.is_empty(), "E_ARGUMENT: choose at least one Tag, or all hosts");
+                Some(serde_json::to_string(&kept)?)
+            }
+            _ => bail!("E_ARGUMENT: tags must be a list of text or null"),
+        };
+        db.execute("UPDATE relays SET tags=?2 WHERE master_id=?1", params![master_id, stored])?;
+    }
+    if let Some(on) = p.get("passThrough") {
+        let on = on.as_bool().context("E_ARGUMENT: passThrough is true or false")?;
+        db.execute("UPDATE relays SET pass_through=?2 WHERE master_id=?1", params![master_id, on])?;
+    }
+    drop(db);
+    relays(state)?
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["masterId"] == master_id).cloned())
+        .context("unknown merged Master")
 }
 
 pub(super) enum Via {
@@ -321,8 +429,14 @@ pub fn record_merge(state: &Path, target_id: &str, join: &Value) -> Result<Value
         );
     }
     let reverse = merge_document(&db, target_id)?.map_or(Value::Null, |d| d["reverse"].clone());
+    // What the merged Master grants this one (none from an older Master: Full control, as before).
+    let grant = match &join["grant"] {
+        Value::Object(_) => json!({"role":if join["grant"]["role"] == "view" { "view" } else { "full" },
+            "tags":join["grant"]["tags"].as_array().cloned(),"passThrough":join["grant"]["passThrough"] != false}),
+        _ => Value::Null,
+    };
     let document = json!({"targetId":target_id,"label":label,"status":"merged","error":null,
-        "syncedAt":now(),"children":children,"reverse":reverse});
+        "syncedAt":now(),"children":children,"reverse":reverse,"grant":grant,"relayVersion":join["relayVersion"]});
     save_merge(&db, &document)?;
     Ok(document)
 }
@@ -718,17 +832,20 @@ fn local_health(state: &Path, config: &Config, refresh: bool) -> Result<Vec<Valu
 pub fn relay_health(state: &Path, config: &Config, master_id: &str) -> Result<Value> {
     role(config, "master")?;
     let db = database(state)?;
-    grant(&db, master_id, false)?;
+    let grant = grant(&db, master_id, false)?;
     let skipped: BTreeSet<String> = list_targets(&db)?
         .into_iter()
         .filter(|t| t.node_id == master_id)
         .map(|t| t.id)
         .collect();
     drop(db);
-    let rows: Vec<Value> = local_health(state, config, false)?
-        .into_iter()
-        .filter(|row| !skipped.contains(row["targetId"].as_str().unwrap_or_default()))
-        .collect();
+    let mut rows = Vec::new();
+    for row in local_health(state, config, false)? {
+        let id = row["targetId"].as_str().unwrap_or_default();
+        if !skipped.contains(id) && grant.reaches(state, id)? {
+            rows.push(row);
+        }
+    }
     Ok(json!(rows))
 }
 
@@ -838,6 +955,7 @@ pub(super) fn merged_targets(db: &Connection, direct: &[Target]) -> Result<Vec<V
             .iter()
             .find(|t| t.id == peer)
             .map_or_else(|| merge["label"].clone(), |t| json!(t.label));
+        let access = if merge["grant"]["role"] == "view" { "view" } else { "full" };
         for child in merge["children"].as_array().into_iter().flatten() {
             if known.contains(child["nodeId"].as_str().unwrap_or_default()) {
                 continue;
@@ -857,6 +975,7 @@ pub(super) fn merged_targets(db: &Connection, direct: &[Target]) -> Result<Vec<V
                 "relayed": true,
                 "via": peer,
                 "viaLabel": via_label,
+                "access": access,
             }));
         }
     }
@@ -911,6 +1030,7 @@ pub(super) fn handle_local(state: &Path, config: &Config, req: &Request) -> Resu
             json!({"targetId":id,"removed":true})
         }
         "relays.list" => relays(state)?,
+        "relays.set" => set_grant(state, &req.params)?,
         "relays.revoke" => set_relay(state, str_arg(&req.params, "masterId")?, true)?,
         "relays.allow" => set_relay(state, str_arg(&req.params, "masterId")?, false)?,
         _ => return Ok(None),

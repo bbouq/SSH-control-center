@@ -242,6 +242,7 @@ const en = {
       ["E_TAG_CHARS", "A Tag can’t contain a comma"],
       ["E_TAG_LIMIT", "A host can have at most 20 Tags"],
       ["E_ACTIVITY_DAYS", "Keep activity for 1 to 3650 days"],
+      ["E_MERGE_ROLE", (name, text) => { const m = /E_MERGE_ROLE:\s*(.+?) gives this Master (View only|only hosts with Tag (.+?)(?=[.;)\n]|$))/.exec(text || ""); return !m ? "The Master in between doesn’t allow this" : m[3] ? m[1] + " lets this Master reach only hosts with Tag " + m[3] : m[1] + " gives this Master View only: it can look, not run or change anything"; }],
       ["E_GROUP_EMPTY", "No host in this group can run a job"],
       ["E_GROUP_SCRIPT", "This group has hosts of another OS. Write a script for them too"],
     ],
@@ -303,6 +304,12 @@ const en = {
   tags: {
     title: "Tags", add: "+ Tag", addLabel: "Add a Tag to this host", none: "No Tags yet",
     filterBy: tag => "Show the hosts with Tag " + tag, remove: tag => "Remove Tag " + tag,
+  },
+  /* Team sharing (entry 6): what this Master grants each Master that merged it, and what a merged Master grants this one. */
+  share: {
+    access: "Access", role: "Role", full: "Full control", view: "View only", hosts: "Hosts", allHosts: "All hosts", onlyTags: "Only hosts with Tags…",
+    tags: "Tags", tagsHelp: "Comma-separated, from this Master’s Tags", passThrough: "May relay to Masters behind it",
+    saved: name => "Saved · " + name, viewOnly: "View only", viewOnlyWhy: via => (via || "The merged Master") + " gives this Master View only",
   },
   /* Activity (current Master page): Recent Jobs and the audit log, this Master's own record. */
   activity: {
@@ -638,6 +645,7 @@ const th = {
       ["E_TAG_CHARS", "Tag ห้ามมีเครื่องหมายจุลภาค (,)"],
       ["E_TAG_LIMIT", "เครื่องหนึ่งมี Tag ได้ไม่เกิน 20 อัน"],
       ["E_ACTIVITY_DAYS", "เก็บกิจกรรมได้ 1 ถึง 3650 วัน"],
+      ["E_MERGE_ROLE", (name, text) => { const m = /E_MERGE_ROLE:\s*(.+?) gives this Master (View only|only hosts with Tag (.+?)(?=[.;)\n]|$))/.exec(text || ""); return !m ? "Master ที่อยู่ระหว่างทางไม่อนุญาตให้ทำสิ่งนี้" : m[3] ? m[1] + " ให้ Master นี้เข้าถึงเฉพาะเครื่องที่มี Tag " + m[3] : m[1] + " ให้สิทธิ์ Master นี้แค่ดูอย่างเดียว: ดูได้ แต่สั่งงานหรือแก้ไขไม่ได้"; }],
       ["E_GROUP_EMPTY", "ไม่มีเครื่องในกลุ่มนี้ที่รันงานได้"],
       ["E_GROUP_SCRIPT", "กลุ่มนี้มีเครื่องที่ใช้ระบบปฏิบัติการอื่นด้วย เขียนสคริปต์ให้เครื่องเหล่านั้นด้วย"],
     ],
@@ -696,6 +704,11 @@ const th = {
   tags: {
     title: "Tag", add: "+ Tag", addLabel: "เพิ่ม Tag ให้เครื่องนี้", none: "ยังไม่มี Tag",
     filterBy: tag => "แสดงเครื่องที่มี Tag " + tag, remove: tag => "เอา Tag " + tag + " ออก",
+  },
+  share: {
+    access: "สิทธิ์", role: "ระดับสิทธิ์", full: "ควบคุมเต็ม", view: "ดูอย่างเดียว", hosts: "เครื่อง", allHosts: "ทุกเครื่อง", onlyTags: "เฉพาะเครื่องที่มี Tag…",
+    tags: "Tag", tagsHelp: "คั่นด้วยจุลภาค ใช้ Tag ของ Master นี้", passThrough: "ส่งต่อให้ Master ที่อยู่ถัดไปได้",
+    saved: name => "บันทึกแล้ว · " + name, viewOnly: "ดูอย่างเดียว", viewOnlyWhy: via => (via || "Master ที่ Merge ไว้") + " ให้สิทธิ์ Master นี้แค่ดูอย่างเดียว",
   },
   activity: {
     jobsView: "งาน", auditView: "Audit log", views: "แสดงอะไร", loading: "กำลังโหลด…",
