@@ -279,6 +279,10 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .group-run .group-summary { margin: 0 0 12px; }
 .group-run + .callout { margin-top: 28px; }
 .group-run td small.error-line { display: block; color: var(--rose); white-space: normal; }
+/* Partitions on the Monitoring tab. */
+.partition-table .meter-cell { width: 30%; min-width: 120px; }
+.partition-table .meter { display: block; width: 100%; height: 8px; }
+.partition-table td { vertical-align: middle; }
 /* Target updates: the badge, host-page controls, the Inventory panel. */
 .dc-tag.is-update { border-color: var(--amber); color: var(--amber); }
 .upgrade-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

@@ -184,6 +184,28 @@ fn disk_fires_at_the_line_and_clears_two_points_under_it() {
 }
 
 #[test]
+fn a_disk_rule_watches_the_fullest_partition_or_a_named_one() {
+    let w = World::new();
+    w.only(&[rule(json!({"hosts":["web-1"]}), "disk", json!(90), "red"), json!({"scope":{"hosts":["web-1","db-1"]},"condition":"disk","threshold":80,"level":"yellow","partition":"/var/"})]);
+    // Hosts updated in entry 8 report every partition; db-1 doesn't have /var.
+    let stats = |root: f64, var: f64| json!({"disks":[{"path":"/","total":100,"free":100.0 - root},{"path":"/var","total":100,"free":100.0 - var}],"memory":{"total":1,"available":1}});
+    let fleet = Mutex::new(stats(40.0, 95.0));
+    let pass = |now| alarms::pass(w.state(), &w.cfg, now, &|h, _| Ok(if h["id"] == "web-1" { fleet.lock().unwrap().clone() } else { json!({"disk":{"path":"/","total":100,"free":5},"memory":{"total":1,"available":1}}) }), None).unwrap();
+    pass(Utc::now());
+    let list = w.call("alarms.list", json!({})).unwrap();
+    let mut seen: Vec<(String, String, String)> = list["alarms"].as_array().unwrap().iter()
+        .map(|a| (a["host"].as_str().unwrap().into(), a["level"].as_str().unwrap().into(), a["partition"].as_str().unwrap_or("").into())).collect();
+    seen.sort();
+    assert_eq!(seen, [("web-1".into(), "red".into(), "/var".into()), ("web-1".into(), "yellow".into(), "/var".into())],
+        "the fullest (/var 95%) fires the any-partition rule; db-1 has no /var, so the named rule stays quiet there");
+    *fleet.lock().unwrap() = stats(40.0, 50.0);
+    pass(Utc::now() + Duration::minutes(5));
+    assert!(w.active().is_empty());
+    // An older host reports only `disk`: the any-partition rule still reads it.
+    assert!(format!("{:#}", w.call("alarms.rule_set", json!({"scope":{"all":true},"condition":"disk","threshold":90,"level":"red","partition":"/x\u{1}"})).unwrap_err()).contains("E_ALARM_RULE"));
+}
+
+#[test]
 fn memory_and_unreachable_need_two_checks_in_a_row() {
     let w = World::new();
     w.only(&[rule(json!({"all":true}), "memory", json!(90), "red"), rule(json!({"all":true}), "unreachable", Value::Null, "red")]);

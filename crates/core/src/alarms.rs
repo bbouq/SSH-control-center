@@ -150,8 +150,15 @@ fn clean_rule(p: &Value) -> Result<Value> {
         Vec::new()
     };
     let level = p["level"].as_str().filter(|l| matches!(*l, "yellow" | "red")).context("E_ALARM_RULE: the level is yellow or red")?;
+    // A disk rule may watch one partition (entry 8); without it the fullest one decides.
+    let partition = if condition == "disk" { p["partition"].as_str().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned) } else { None };
+    ensure!(partition.as_ref().is_none_or(|v| v.chars().count() <= 256 && !v.chars().any(char::is_control)), "E_ALARM_RULE: a partition is a path such as /var or D:\\");
     let id = p["id"].as_str().map(str::to_owned).unwrap_or_else(|| Uuid::new_v4().to_string());
-    Ok(json!({"id":id,"scope":scope,"condition":condition,"threshold":threshold,"containers":containers,"level":level}))
+    let mut rule = json!({"id":id,"scope":scope,"condition":condition,"threshold":threshold,"containers":containers,"level":level});
+    if let Some(partition) = partition {
+        rule["partition"] = json!(partition);
+    }
+    Ok(rule)
 }
 pub fn set_rule(state: &Path, p: &Value) -> Result<Value> {
     let rule = clean_rule(p)?;
@@ -220,9 +227,25 @@ fn save(db: &Connection, key: &str, doc: &Value) -> Result<()> {
 fn percent(used: f64, total: f64) -> Option<f64> {
     (total > 0.0).then(|| (used / total * 100.0 * 10.0).round() / 10.0)
 }
-fn disk_percent(stats: &Value) -> Option<f64> {
-    let (total, free) = (stats["disk"]["total"].as_f64()?, stats["disk"]["free"].as_f64()?);
-    percent(total - free, total)
+/// The disk reading a rule looks at: the named partition (None if the host has no such path), or the fullest one.
+/// Hosts from before entry 8 report only `disk` (`/` or `C:\`).
+fn disk_reading(stats: &Value, partition: Option<&str>) -> Option<(f64, String)> {
+    let mut disks: Vec<&Value> = stats["disks"].as_array().map(|d| d.iter().collect()).unwrap_or_default();
+    if disks.is_empty() && stats["disk"].is_object() {
+        disks.push(&stats["disk"]);
+    }
+    let same = |a: &str, b: &str| {
+        let norm = |p: &str| { let p = p.trim().to_lowercase(); if p.len() > 1 { p.trim_end_matches(['/', '\\']).to_owned() } else { p } };
+        norm(a) == norm(b)
+    };
+    let readings = disks.into_iter().filter_map(|d| {
+        let path = d["path"].as_str().unwrap_or("/").to_owned();
+        Some((percent(d["total"].as_f64()? - d["free"].as_f64()?, d["total"].as_f64()?)?, path))
+    });
+    match partition {
+        Some(name) => readings.into_iter().find(|(_, path)| same(path, name)),
+        None => readings.into_iter().max_by(|a, b| a.0.total_cmp(&b.0)),
+    }
 }
 fn memory_percent(stats: &Value) -> Option<f64> {
     let (total, available) = (stats["memory"]["total"].as_f64()?, stats["memory"]["available"].as_f64()?);
@@ -348,8 +371,13 @@ pub fn pass(state: &Path, config: &Config, now: DateTime<Utc>, ask: &Asker, only
             let stats = seen.and_then(|s| s.stats.as_ref());
             let (firing, value) = match rule["condition"].as_str().unwrap_or_default() {
                 "disk" => match stats {
-                    Some(Ok(stats)) => match disk_percent(stats) {
-                        Some(pct) => (line(&alarm, pct, threshold), json!(pct)),
+                    Some(Ok(stats)) => match disk_reading(stats, rule["partition"].as_str()) {
+                        Some((pct, path)) => {
+                            alarm["partition"] = json!(path);
+                            (line(&alarm, pct, threshold), json!(pct))
+                        }
+                        // A named partition this host doesn't have: nothing to watch there.
+                        None if rule["partition"].is_string() => (Some(false), Value::Null),
                         None => (None, alarm["value"].clone()),
                     },
                     _ => (None, alarm["value"].clone()),

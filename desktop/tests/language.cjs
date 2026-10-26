@@ -139,7 +139,8 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
       await th.locator('[data-action="dc-tab"][data-tab="' + tab + '"]').click();
       await th.waitForTimeout(400);
       if (tab === "jobs") { await th.locator('[data-action="toggle-new-job"]').first().click(); await th.locator("#start-job").waitFor(); }
-      await assertThai(th, "host " + tab, words);
+      // The fixture's partitions (/var, /boot/efi, ext4…) are host data, shown as is.
+      await assertThai(th, "host " + tab, [...words, "var", "boot", "efi", "ext", "xfs", "vfat"]);
     }
     await th.locator('[data-action="dc-tab"][data-tab="files"]').click();
     await th.locator(".row-more").first().click();
@@ -226,6 +227,26 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator('#dc-tree .dc-item[data-node="node:branch-master/child-1"]').click();
     await th.locator(".upgrade-badge").waitFor();
     await assertThai(th, "merged host needs update", upWords);
+    // Partitions (entry 8): the Monitoring table, an older host's hint, and the alarm rule's partition field.
+    await scenario(th, url, []); await th.reload(); await ready(th);
+    const partWords = [...words, ...await fixtureWords(th, url), "var", "boot", "efi", "ext", "xfs", "vfat"];
+    for (let i = 0; i < 4; i++) { const closed = th.locator('#dc-tree .dc-toggle[aria-expanded="false"]'); if (!(await closed.count())) break; await closed.first().click(); }
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="monitoring"]').click();
+    await th.locator("#partitions").waitFor();
+    await assertThai(th, "partitions", partWords);
+    await shots(th, "partitions");
+    await th.locator('.nav[data-page="alarms"]').click();
+    await th.locator('[data-action="alarm-tab"][data-tab="rules"]').click();
+    await th.locator('[data-action="alarm-rule-new"]').click();
+    await th.locator('#alarm-rule [name="partition"]').waitFor();
+    await assertThai(th, "disk rule with a partition", partWords);
+    await scenario(th, url, ["old-disk"]); await th.reload(); await ready(th);
+    for (let i = 0; i < 4; i++) { const closed = th.locator('#dc-tree .dc-toggle[aria-expanded="false"]'); if (!(await closed.count())) break; await closed.first().click(); }
+    await th.locator('#dc-tree .dc-item[data-node="node:ui-test"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="monitoring"]').click();
+    await th.locator("#partitions-hint").waitFor();
+    await assertThai(th, "older host: update for partitions", partWords);
     // Health alarms (entry 7): the Active tab, the rule editor, and the host page's alarms and OS updates.
     await scenario(th, url, ["masters-page", "alarms-firing"]); await th.reload(); await ready(th);
     const alarmWords = [...words, ...await fixtureWords(th, url), "web", "db", "openssl", "curl", "libssl"];

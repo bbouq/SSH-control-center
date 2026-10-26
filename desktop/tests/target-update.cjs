@@ -83,9 +83,38 @@ const checks = {
     assert.match(await button.getAttribute("title"), /no installer to send/);
     assert.equal(await page.locator("#upgrade-panel").count(), 0);
   },
+  /** Partitions: the Monitoring tab lists them, the disk tile shows the fullest; an older host says to update. */
+  async "partitions"(page, url, d) {
+    await page.goto(url);
+    await openHost(page, "ui-test");
+    await d.choose(page.locator('[data-action="dc-tab"][data-tab="monitoring"]'), "Monitoring tab");
+    const table = page.locator("#partitions");
+    await table.waitFor();
+    assert.equal(await table.locator("tbody tr").count(), 3);
+    assert.match(await page.locator('[data-partition="/var"]').textContent(), /\/var\s*xfs\s*88%/);
+    assert.match(await page.locator(".mon-tile", { hasText: "Disk /var" }).textContent(), /88%/, "the fullest on the tile");
+    await shots(page, "partitions");
+    // A disk rule can name a partition.
+    await page.locator('.nav[data-page="alarms"]').click();
+    await page.locator('[data-action="alarm-tab"][data-tab="rules"]').click();
+    await page.locator('[data-action="alarm-rule-new"]').click();
+    await page.locator('#alarm-rule [name="partition"]').fill("/var");
+    await page.locator('#alarm-rule [type="submit"]').click();
+    await page.locator("tbody tr[data-rule]", { hasText: "Disk over 90% · /var" }).waitFor();
+    const sent = (await rpcCalls(page, url)).filter(c => c.method === "alarms.rule_set").pop().params;
+    assert.equal(sent.partition, "/var");
+  },
+  async "old-disk"(page, url) {
+    await page.goto(url);
+    await openHost(page, "ui-test");
+    await page.locator('[data-action="dc-tab"][data-tab="monitoring"]').click();
+    await page.locator("#partitions-hint", { hasText: "update this host to see every partition" }).waitFor();
+    assert.equal(await page.locator("#partitions").count(), 0);
+  },
 };
 const scenarios = { "badges": ["masters-page", "outdated-hosts"], "update-one": ["masters-page", "outdated-hosts", "upgrade-fails"],
-  "update-all": ["masters-page", "outdated-hosts", "upgrade-fails"], "no-templates": ["outdated-hosts", "no-templates"] };
+  "update-all": ["masters-page", "outdated-hosts", "upgrade-fails"], "no-templates": ["outdated-hosts", "no-templates"],
+  "partitions": [], "old-disk": ["old-disk"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

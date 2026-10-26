@@ -19,6 +19,7 @@
 //   multi-hop        with masters-page: Branch Master also passes on Lab Master (a Master it merged) and Lab's two hosts,
 //                    one of which Lab Master gives View only; 3 more hosts are more than 4 hops away
 //   outdated-merge   with masters-page: Branch Master runs an older version (no relayVersion)
+//   old-disk         monitor.stats reports only / (a host from before entry 8); otherwise three partitions, /var fullest
 //   outdated-hosts   ui-test runs 0.4.0 (this Master 0.5.0); with masters-page, hq-master too and branch-master/child-1
 //                    (updated by Branch Master); targets.upgrade succeeds (hq-master fails with upgrade-fails)
 //   upgrade-fails    with outdated-hosts and masters-page: updating hq-master times out
@@ -312,7 +313,8 @@ function alarmRule(p) {
   if (["disk", "memory"].includes(p.condition) && !(p.threshold >= 1 && p.threshold <= 99)) throw new Error("E_ALARM_RULE: a percentage from 1 to 99");
   if (!["red", "yellow"].includes(p.level)) throw new Error("E_ALARM_RULE: the level is yellow or red");
   const rule = { id: p.id || crypto.randomUUID(), scope: scope.all ? { all: true } : scope.folder ? { folder: scope.folder } : scope.tag ? { tag: String(scope.tag).trim() } : { hosts: scope.hosts },
-    condition: p.condition, threshold: ["disk", "memory"].includes(p.condition) ? p.threshold : null, containers: p.condition === "container" ? p.containers || [] : [], level: p.level };
+    condition: p.condition, threshold: ["disk", "memory"].includes(p.condition) ? p.threshold : null, containers: p.condition === "container" ? p.containers || [] : [], level: p.level,
+    ...(p.condition === "disk" && p.partition ? { partition: p.partition } : {}) };
   s.alarm.rules = s.alarm.rules.filter(r => r.id !== rule.id).concat(rule);
   return rule;
 }
@@ -424,6 +426,14 @@ function activityCsv(p) {
 const activityStatus = () => ({ keepDays: s.activity.keepDays, since: s.activity.since, warning: flags.has("activity-warning") });
 function rpc(method, p = {}) {
   switch (method) {
+    case "monitor.stats": {
+      // Counters advance each call so the window can draw rates.
+      s.ticks = (s.ticks || 0) + 1;
+      const G = 1024 ** 3, t = s.ticks, part = (path, fs, total, used) => ({ path, fs, total: total * G, free: (total - used) * G });
+      const disks = [part("/", "ext4", 100, 41), part("/var", "xfs", 200, 176), part("/boot/efi", "vfat", 1, 0.1)];
+      return { os: "linux", at: Date.now(), uptimeSeconds: 86400 + t * 5, cpu: { total: 1000 * t, idle: 700 * t, count: 4 }, memory: { total: 16 * G, available: 9 * G },
+        swap: { total: 2 * G, free: 2 * G }, load: [0.4, 0.3, 0.2], disk: disks[0], ...(flags.has("old-disk") ? {} : { disks }), net: { rx: 1e6 * t, tx: 4e5 * t } };
+    }
     case "targets.update_check": return updateCheck();
     case "targets.upgrade": return upgradeOne(p.targetId);
     case "targets.upgrade_all": s.upgradeRun = { done: false, hosts: updateCheck().hosts.filter(r => r.canUpdate).map(r => ({ targetId: r.targetId, state: "waiting", error: null })) }; return { started: true };

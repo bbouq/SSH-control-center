@@ -40,6 +40,7 @@ Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scena
 
 Relays carry their grant (`role`, `tags`, `passThrough`, Full control by default), and `relays.set` changes it.
 
+- `old-disk`: `monitor.stats` reports only `/` (a host from before entry 8). Otherwise it reports three partitions (`/` ext4 41%, `/var` xfs 88%, `/boot/efi` vfat), with counters that advance each call.
 - `outdated-hosts`: `ui-test` runs 0.4.0 while this Master runs 0.5.0; with `masters-page`, `hq-master` too, and `branch-master/child-1` (updated by Branch Master). An update finishes at once.
 - `upgrade-fails`: with `outdated-hosts` and `masters-page`, updating `hq-master` times out (`E_UPGRADE_TIMEOUT`).
 - `no-templates`: with `outdated-hosts`, this Master has no installer templates (a development build).
@@ -118,7 +119,8 @@ It writes screenshots at 1180, 820 and 390px and `alarms-results.json` under `ar
 - "Needs update" badges in the tree and on the host page, with "by Branch Master" and no Update button for a merged host;
 - Update on a host page: a timeout offers "Save the installer…", and a success clears the badge;
 - "Update every outdated host" in the Inventory, one host at a time, with a failed row and the summary;
-- a Master without templates showing the button disabled with the reason.
+- a Master without templates showing the button disabled with the reason;
+- partitions on the Monitoring tab (the fullest on the disk tile), a disk rule naming `/var`, and an older host's hint.
 
 It writes screenshots under `artifacts/target-update-ui/`.
 

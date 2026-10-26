@@ -44,6 +44,33 @@ fn parse_netdev(text: &str) -> (u64, u64) {
     })
 }
 
+/// Filesystems on real disks; everything else in /proc/self/mounts (tmpfs, overlay, squashfs snaps, proc, sysfs,
+/// cgroup…) is not a disk a person can fill.
+const REAL_FS: &[&str] = &["ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "jfs", "reiserfs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "bcachefs"];
+
+/// The `df`-style partitions in /proc/self/mounts: real filesystems mounted on a directory (containers bind single
+/// files such as /etc/hostname from the host's disk), one mount per device (the first, so a bind mount of the same
+/// disk isn't counted twice). Each is (mount point, filesystem).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn partitions(mounts: &str, is_dir: impl Fn(&str) -> bool) -> Vec<(String, String)> {
+    let unescape = |text: &str| text.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\");
+    let mut devices = std::collections::BTreeSet::new();
+    mounts.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        let (device, mount, fs) = (fields.next()?, fields.next()?, fields.next()?);
+        let mount = unescape(mount);
+        (REAL_FS.contains(&fs) && is_dir(&mount) && devices.insert(device.to_owned())).then(|| (mount, fs.to_owned()))
+    }).collect()
+}
+
+/// Fixed drives from a `GetLogicalDrives` mask: `kind(letter)` is the drive type, 3 = fixed (removable, network,
+/// CD-ROM and RAM disks are left out).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn fixed_drives(mask: u32, kind: impl Fn(char) -> u32) -> Vec<String> {
+    (0..26u8).filter(|bit| mask & (1 << bit) != 0).map(|bit| (b'A' + bit) as char).filter(|letter| kind(*letter) == 3)
+        .map(|letter| format!("{letter}:\\")).collect()
+}
+
 #[cfg(target_os = "linux")]
 fn snapshot() -> Result<Value> {
     use anyhow::Context;
@@ -53,17 +80,29 @@ fn snapshot() -> Result<Value> {
     let load: Vec<f64> = read_to_string("/proc/loadavg")?.split_whitespace().take(3).filter_map(|v| v.parse().ok()).collect();
     let uptime = read_to_string("/proc/uptime")?.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
     let net = read_to_string("/proc/net/dev").ok().map(|text| parse_netdev(&text));
-    let mut disk: libc::statvfs = unsafe { std::mem::zeroed() };
-    let disk = (unsafe { libc::statvfs(c"/".as_ptr(), &mut disk) } == 0).then(|| {
-        let unit = disk.f_frsize as u64;
-        json!({"path": "/", "total": disk.f_blocks as u64 * unit, "free": disk.f_bavail as u64 * unit})
-    });
+    let usage = |path: &str| -> Option<(u64, u64)> {
+        let c = std::ffi::CString::new(path).ok()?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then(|| {
+            let unit = st.f_frsize as u64;
+            (st.f_blocks as u64 * unit, st.f_bavail as u64 * unit)
+        })
+    };
+    let disk = usage("/").map(|(total, free)| json!({"path": "/", "total": total, "free": free}));
+    // Every real partition (entry 8). A container whose root is an overlay has none: report / alone.
+    let is_dir = |path: &str| std::fs::metadata(path).is_ok_and(|m| m.is_dir());
+    let mut disks: Vec<Value> = partitions(&read_to_string("/proc/self/mounts").unwrap_or_default(), is_dir).into_iter()
+        .filter_map(|(path, fs)| usage(&path).filter(|(total, _)| *total > 0).map(|(total, free)| json!({"path": path, "fs": fs, "total": total, "free": free})))
+        .collect();
+    if disks.is_empty() {
+        disks.extend(disk.clone().map(|mut d| { d["fs"] = Value::Null; d }));
+    }
     Ok(json!({
         "os": "linux", "at": now_ms(), "uptimeSeconds": uptime as u64,
         "cpu": {"total": total, "idle": idle, "count": count},
         "memory": {"total": meminfo(&memory, "MemTotal"), "available": meminfo(&memory, "MemAvailable")},
         "swap": {"total": meminfo(&memory, "SwapTotal"), "free": meminfo(&memory, "SwapFree")},
-        "load": load, "disk": disk,
+        "load": load, "disk": disk, "disks": disks,
         "net": net.map(|(rx, tx)| json!({"rx": rx, "tx": tx})),
     }))
 }
@@ -72,7 +111,7 @@ fn snapshot() -> Result<Value> {
 fn snapshot() -> Result<Value> {
     use windows_sys::Win32::{
         Foundation::FILETIME,
-        Storage::FileSystem::GetDiskFreeSpaceExW,
+        Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives},
         System::{
             SystemInformation::{GetSystemInfo, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO},
             Threading::GetSystemTimes,
@@ -88,17 +127,24 @@ fn snapshot() -> Result<Value> {
     unsafe { GlobalMemoryStatusEx(&mut memory) };
     let mut info: SYSTEM_INFO = unsafe { std::mem::zeroed() };
     unsafe { GetSystemInfo(&mut info) };
-    let drive: Vec<u16> = "C:\\\0".encode_utf16().collect();
-    let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
-    let disk = (unsafe { GetDiskFreeSpaceExW(drive.as_ptr(), &mut available, &mut total, &mut free) } != 0)
-        .then(|| json!({"path": "C:\\", "total": total, "free": available}));
+    let wide = |path: &str| path.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let usage = |path: &str| {
+        let drive = wide(path);
+        let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
+        (unsafe { GetDiskFreeSpaceExW(drive.as_ptr(), &mut available, &mut total, &mut free) } != 0).then_some((total, available))
+    };
+    let disk = usage("C:\\").map(|(total, free)| json!({"path": "C:\\", "total": total, "free": free}));
+    // Every fixed drive (entry 8).
+    let disks: Vec<Value> = fixed_drives(unsafe { GetLogicalDrives() }, |letter| unsafe { GetDriveTypeW(wide(&format!("{letter}:\\")).as_ptr()) })
+        .into_iter().filter_map(|path| usage(&path).filter(|(total, _)| *total > 0).map(|(total, free)| json!({"path": path, "fs": "ntfs", "total": total, "free": free})))
+        .collect();
     // Kernel time already includes idle time.
     Ok(json!({
         "os": "windows", "at": now_ms(), "uptimeSeconds": unsafe { GetTickCount64() } / 1000,
         "cpu": {"total": ticks(kernel) + ticks(user), "idle": ticks(idle), "count": info.dwNumberOfProcessors},
         "memory": {"total": memory.ullTotalPhys, "available": memory.ullAvailPhys},
         "swap": {"total": memory.ullTotalPageFile.saturating_sub(memory.ullTotalPhys), "free": memory.ullAvailPageFile.saturating_sub(memory.ullAvailPhys)},
-        "load": null, "disk": disk, "net": null,
+        "load": null, "disk": disk, "disks": disks, "net": null,
     }))
 }
 
@@ -110,6 +156,22 @@ fn snapshot() -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn partitions_are_real_disks_once_each() {
+        let mounts = "sysfs /sys sysfs rw 0 0\nproc /proc proc rw 0 0\n/dev/nvme0n1p2 / ext4 rw 0 0\ntmpfs /run tmpfs rw 0 0\n\
+            /dev/nvme0n1p1 /boot/efi vfat rw 0 0\n/dev/loop3 /snap/core22/1380 squashfs ro 0 0\n/dev/sdb1 /var/lib/my\\040data xfs rw 0 0\n\
+            /dev/nvme0n1p2 /home/me/bind ext4 rw 0 0\noverlay /var/lib/docker/overlay2/x/merged overlay rw 0 0\ncgroup2 /sys/fs/cgroup cgroup2 rw 0 0\n";
+        assert_eq!(partitions(mounts, |_| true), vec![("/".to_owned(), "ext4".to_owned()), ("/boot/efi".into(), "vfat".into()), ("/var/lib/my data".into(), "xfs".into())]);
+        // A container: an overlay root and single files bound from the host's disk; the caller falls back to /.
+        let container = "overlay / overlay rw 0 0\nproc /proc proc rw 0 0\n/dev/vda1 /etc/hostname ext4 rw 0 0\n/dev/vda1 /etc/hosts ext4 rw 0 0\n";
+        assert!(partitions(container, |path| !path.starts_with("/etc/")).is_empty());
+    }
+    #[test]
+    fn only_fixed_drives_count() {
+        // C: fixed, D: fixed, E: CD-ROM (5), Z: network (4).
+        let kinds = |letter| match letter { 'C' | 'D' => 3, 'E' => 5, 'Z' => 4, _ => 0 };
+        assert_eq!(fixed_drives((1 << 2) | (1 << 3) | (1 << 4) | (1 << 25), kinds), vec!["C:\\", "D:\\"]);
+    }
 
     #[test]
     fn proc_stat_counters() {
