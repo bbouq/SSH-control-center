@@ -481,7 +481,7 @@ fn disabled_merge_blocks_join_and_relay_until_allowed_again() {
     fleet::relay_join(&fx.state, &fx.config, &merging).unwrap();
 }
 #[test]
-fn relay_requests_are_one_hop_and_limited_to_fleet_work() {
+fn relay_requests_are_limited_to_fleet_work_and_known_hosts() {
     let fx = Fixture::new();
     let merging = Uuid::new_v4().to_string();
     fleet::relay_join(&fx.state, &fx.config, &merging).unwrap();
@@ -495,7 +495,9 @@ fn relay_requests_are_one_hop_and_limited_to_fleet_work() {
         .unwrap_err()
         .to_string()
     };
-    assert!(relay("peer/child", "jobs.list").contains("relayed targetId"));
+    // Multi-hop IDs are accepted (entry 6) but must be hosts this Master reaches through a merge.
+    assert!(relay("peer/child", "jobs.list").contains("unknown target"));
+    assert!(relay("bad id", "jobs.list").contains("relayed targetId"));
     for method in ["merges.add", "targets.remove", "relays.allow", "masters.revoke"] {
         assert!(relay("child", method).contains("not available over relay"));
     }
@@ -569,7 +571,10 @@ fn composite_dispatch_requires_a_merge_and_a_known_child() {
     )
     .unwrap();
     assert!(start("peer/unknown").contains("sync the merge"));
-    assert!(start("peer/a/b").contains("merged target id"));
+    // A host further away is addressed with more segments (entry 6), but must still be one the merge listed.
+    assert!(start("peer/a/b").contains("sync the merge"));
+    assert!(start("peer/a/b/c/d/e").contains("E_RELAY_TOO_FAR"));
+    assert!(start("peer/a b").contains("relayed targetId"));
     assert!(start("nobody/child-a").contains("unknown target"));
     // Missing managed key stops before networking, proving the relay route was chosen.
     fs::remove_file(fx.state.join("keys/company.ed25519")).unwrap();

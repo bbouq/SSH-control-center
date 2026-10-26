@@ -67,7 +67,8 @@ const checks = {
     await page.locator("#notice", { hasText: "Saved" }).waitFor();
     await page.waitForFunction(() => document.querySelector('tr[data-relay="peer-both"] [data-grant="tags"]')?.value === "web, db");
     await row().locator('[data-grant="passThrough"]').uncheck();
-    await page.waitForFunction(() => document.querySelector('tr[data-relay="peer-both"] [data-grant="passThrough"]')?.checked === false);
+    const saves = async () => (await rpcCalls(page, url)).filter(c => c.method === "relays.set").length;
+    for (let i = 0; i < 100 && (await saves()) < 2; i++) await page.waitForTimeout(50);
     await row().locator('[data-grant="scope"]').selectOption("all");
     await page.waitForFunction(() => !document.querySelector('tr[data-relay="peer-both"] [data-grant="tags"]'));
     const sent = (await rpcCalls(page, url)).filter(c => c.method === "relays.set").map(c => c.params);
@@ -107,8 +108,50 @@ const checks = {
     await page.locator('#start-job [type="submit"]').click();
     await page.locator("#notice", { hasText: "Branch Master lets this Master reach only hosts with Tag web" }).waitFor();
   },
+  /** Stage B: a host two Masters away appears on its own, nested under each Master, with its path and right. */
+  async "far-hosts"(page, url, d) {
+    await page.goto(url);
+    await page.locator("#dc-tree .dc-row").first().waitFor();
+    for (let i = 0; i < 8; i++) {
+      const closed = page.locator('#dc-tree .dc-toggle[aria-expanded="false"]');
+      if (!(await closed.count())) break;
+      await closed.first().click();
+    }
+    // Nested: Branch Master's branch holds Lab Master's branch, which holds Lab's hosts.
+    const lab = page.locator('#dc-tree .dc-item[data-node="master:branch-master/lab-master"]');
+    await lab.waitFor();
+    const depth = async node => Number(/depth-(\d)/.exec(await page.locator(`#dc-tree li:has(> .dc-item[data-node="${node}"])`).getAttribute("class"))[1]);
+    assert.equal(await depth("master:branch-master/lab-master"), (await depth("master:branch-master")) + 1);
+    assert.equal(await depth("node:branch-master/lab-master/lab-web"), (await depth("master:branch-master/lab-master")) + 1);
+    assert.equal(d.count, 0, "nothing to do to see a host two hops away");
+    await page.locator('#dc-tree .dc-item[data-node="node:branch-master/lab-master/lab-db"]').click();
+    await page.locator(".live-label", { hasText: "Path: UI fixture (no real service) → Branch Master → Lab Master" }).waitFor();
+    await page.locator(".meta-row small", { hasText: "View only (from Lab Master)" }).waitFor();
+    assert.ok(await page.locator('.target-actions [data-action="open-shell"]').isDisabled());
+    await shots(page, "far-host");
+    // A Master on the way that doesn't answer is named.
+    await page.locator('#dc-tree .dc-item[data-node="node:branch-master/lab-master/lab-web"]').click();
+    await page.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await page.locator('[data-action="toggle-new-job"]').first().click();
+    await page.locator('#start-job [name="script"]').fill("uptime");
+    await page.locator('#start-job [type="submit"]').click();
+    await page.locator("#notice", { hasText: "Lab Master didn’t answer in time" }).waitFor();
+    // Masters page: hosts left out for distance are counted.
+    await page.locator('.nav[data-page="masters"]').click();
+    await page.locator("#beyond-note", { hasText: "3 more hosts are more than 4 hops away" }).waitFor();
+  },
+  /** An older merged Master is marked, with what updating it would give. */
+  async "outdated-master"(page, url) {
+    await page.goto(url);
+    await page.locator('.nav[data-page="masters"]').click();
+    const branch = page.locator("tr", { hasText: "Branch Master" }).first();
+    await branch.locator(".badge", { hasText: /^Outdated$/ }).waitFor();
+    assert.match(await branch.textContent(), /update it to see the hosts it reaches through its own Merges/);
+    await shots(page, "outdated-master");
+  },
 };
-const scenarios = { "core-task": ["masters-page"], "tags-and-pass-through": ["masters-page"], "view-only-host": ["masters-page", "view-only-merge"], "refusal-sentence": ["masters-page", "merge-refuses"] };
+const scenarios = { "core-task": ["masters-page"], "tags-and-pass-through": ["masters-page"], "view-only-host": ["masters-page", "view-only-merge"], "refusal-sentence": ["masters-page", "merge-refuses"],
+  "far-hosts": ["masters-page", "multi-hop"], "outdated-master": ["masters-page", "outdated-merge"] };
 
 (async () => {
   const browser = await chromium.launch({ headless: true }); const results = [];

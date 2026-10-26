@@ -339,7 +339,8 @@ function hostAddress(item) {
 }
 /** A merged host this Master may only view (its Merge Role, entry 6). */
 const viewOnly = item => item?.access === "view";
-const accessBadge = item => viewOnly(item) ? '<span class="badge view-only" title="' + esc(T.share.viewOnlyWhy(item.viaLabel)) + '">' + T.share.viewOnly + "</span>" : "";
+const accessFrom = item => item?.accessFrom || item?.viaLabel;
+const accessBadge = item => viewOnly(item) ? '<span class="badge view-only" title="' + esc(T.share.viewOnlyWhy(accessFrom(item))) + '">' + T.share.viewOnly + "</span>" : "";
 const terminalButton = item => item ? '<button class="small" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(item.label || item.id)) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : ' title="' + esc(T.inv.openTerminal) + '"') + ">" + icons.shell + '<span class="btn-label">' + T.inv.openTerminal + "</span></button>" : "";
 const hostHead = () => { const h = T.inv.head; return "<thead><tr><th>" + h.host + "</th><th>" + h.role + "</th><th>" + h.address + "</th><th>" + h.cpu + "</th><th>" + h.mem + "</th><th>" + h.status + "</th><th></th></tr></thead>"; };
 /** One row per host; only the name links to its page. */
@@ -1144,7 +1145,10 @@ function mergeStatus(targetId) {
   const count = (merge.children || []).length, label = t.mergeStates[merge.status];
   const style = merge.status === "merged" ? "good" : "bad", text = typeof label === "function" ? label(count) : label || merge.status;
   const detail = merge.status === "merged" ? t.lastSync(timestamp(merge.syncedAt)) : (merge.error || "") + (count ? t.previousList(count) : "");
-  return '<span class="badge ' + style + '">' + esc(text) + '</span><small class="wrap">' + esc(detail) + "</small>";
+  // A merged Master from before entry 6 relays one hop only: say so, and how to see further.
+  const outdated = merge.status === "merged" && merge.relayVersion == null
+    ? '<span class="badge pending" title="' + esc(T.share.outdatedHelp) + '">' + T.share.outdated + '</span><small class="wrap">' + esc(T.share.outdatedHelp) + "</small>" : "";
+  return '<span class="badge ' + style + '">' + esc(text) + '</span><small class="wrap">' + esc(detail) + "</small>" + outdated;
 }
 function reverseStatus(merge) {
   const running = state.twoWay.get(merge.targetId);
@@ -1166,6 +1170,8 @@ function twoWayButton(merge, text, style = "primary small") {
   const busyRow = state.merging.has(id) || state.twoWay.has(id);
   return '<button class="' + style + '" data-action="open-two-way" data-id="' + esc(id) + '"' + (busyRow ? " disabled" : !/Windows/.test(navigator.userAgent) ? ' disabled title="' + mastersText.windowsOnly + '"' : "") + ">" + text + "</button>";
 }
+/** Hosts the merged Masters reach but left out for being more than 4 hops away. */
+const beyondCount = () => state.merges.reduce((sum, merge) => sum + (merge.beyond || 0), 0);
 /** Outgoing: every Merge, plus every host whose health (or the add flow's check) says it is a Master and that is not merged yet. */
 function renderMerges() {
   const unmerged = state.targets.filter(item => !item.relayed && (state.health.get(item.id)?.isMaster || state.masterCheck.get(item.id)) && !state.merges.some(merge => merge.targetId === item.id));
@@ -1180,6 +1186,7 @@ function renderMerges() {
         return "<tr><td><strong>" + esc(name(id)) + "</strong><small><code>" + esc(id) + "</code></small></td><td>" + mergeStatus(id) + "</td><td>" + (merge ? reverseStatus(merge) : '<span class="muted">' + t.none + "</span>") + '</td><td class="actions"><div class="target-actions">' + actions + "</div></td></tr>";
       }).join("") + "</tbody></table></div>"
       : '<div class="empty-inline">' + t.outEmpty + "</div>") +
+    (beyondCount() ? '<p class="help mt" id="beyond-note">' + esc(T.share.beyond(beyondCount())) + "</p>" : "") +
     "<details><summary>" + t.howTitle + '</summary><p class="help">' + t.how + "</p></details></section>";
 }
 /** What this Master grants a Master that merged it (entry 6): role, Tag limit and pass-through, saved on change.
@@ -1194,23 +1201,28 @@ function grantControls(relay) {
     (limited ? '<label>' + t.tags + '<input data-grant="tags" list="grant-tags" value="' + esc((relay.tags || []).join(", ")) + '" placeholder="web, db" title="' + esc(t.tagsHelp) + '"></label>' : "") +
     '<label class="check-label"><input type="checkbox" data-grant="passThrough"' + (relay.passThrough !== false ? " checked" : "") + ">" + t.passThrough + "</label></div>";
 }
+let grantQueue = Promise.resolve();
+/** Saves one grant control. Only that row's controls are redrawn (and only when the Tags field must appear or go),
+ *  so a change made meanwhile on the same row is never drawn over or lost. */
 async function saveGrant(control) {
   const box = control.closest(".grant"), masterId = box.dataset.master, kind = control.dataset.grant, params = { masterId };
+  const redraw = () => { const cell = $('.grant[data-master="' + CSS.escape(masterId) + '"]')?.parentElement, relay = state.relays.find(row => row.masterId === masterId); if (cell && relay) cell.innerHTML = grantControls(relay); };
   if (kind === "role") params.role = control.value;
   if (kind === "passThrough") params.passThrough = control.checked;
   if (kind === "scope") {
     state.grantScope = state.grantScope || new Set();
     if (control.value === "all") { state.grantScope.delete(masterId); params.tags = null; }
-    else { state.grantScope.add(masterId); render(); $('.grant[data-master="' + CSS.escape(masterId) + '"] [data-grant="tags"]')?.focus(); return; }
+    else { state.grantScope.add(masterId); redraw(); $('.grant[data-master="' + CSS.escape(masterId) + '"] [data-grant="tags"]')?.focus(); return; }
   }
   if (kind === "tags") {
     const tags = control.value.split(",").map(tag => tag.trim()).filter(Boolean);
     if (!tags.length) return;
     params.tags = tags;
   }
-  await rpc("relays.set", params);
-  await refreshMasters(); render();
-  notify(T.share.saved(state.relays.find(row => row.masterId === masterId)?.label || masterId));
+  const saved = await rpc("relays.set", params);
+  state.relays = state.relays.map(row => row.masterId === masterId ? { ...row, ...saved } : row);
+  if (kind === "scope" || kind === "tags") redraw();
+  notify(T.share.saved(saved.label || masterId));
 }
 /* Full-control actions on a host this Master may only view are disabled with the reason, wherever they are drawn. */
 const FULL_ACTIONS = ["open-shell", "toggle-new-job", "cancel-job", "ct-action", "mkdir", "upload-pick", "file-delete"];
@@ -1220,7 +1232,7 @@ function applyAccess(root) {
   root.querySelectorAll(FULL_ACTIONS.map(action => '[data-action="' + action + '"]:not([data-access])').join(",") + ', #start-job [type="submit"]:not([data-access]), #save-file [type="submit"]:not([data-access])').forEach(button => {
     const item = button.dataset.id && button.dataset.action === "open-shell" ? state.targets.find(row => row.id === button.dataset.id) : page;
     if (!viewOnly(item)) return;
-    button.dataset.access = "view"; button.disabled = true; button.setAttribute("data-blocked", ""); button.title = T.share.viewOnlyWhy(item.viaLabel);
+    button.dataset.access = "view"; button.disabled = true; button.setAttribute("data-blocked", ""); button.title = T.share.viewOnlyWhy(accessFrom(item));
   });
 }
 new MutationObserver(() => applyAccess(document)).observe(document.documentElement, { childList: true, subtree: true });
@@ -1309,6 +1321,7 @@ function dcModel() {
       : { item: state.targets.find(item => item.id === peer.id + "/" + child.id) }).filter(entry => entry.item);
     masters.push({ id: peer.id, label: peer.label || peer.id, current: false, item: peer, merge, twoWay: isTwoWay(merge), machines });
   }
+  for (const master of masters.slice(1)) nestMasters(master);
   const members = state.folders.members || {};
   for (const master of masters) {
     master.folders = (state.folders.folders || []).filter(folder => folder.master === master.id)
@@ -1318,9 +1331,23 @@ function dcModel() {
   }
   return masters;
 }
+/** Hosts behind a Master that is itself reached through a Merge nest under it (entry 6), so the tree reads Office →
+ *  Branch Master → Lab Master → Lab's hosts. `all` keeps every host below, for counts and the filter. */
+function nestMasters(master) {
+  const entries = master.machines, below = (entry, other) => other.item.id.startsWith(entry.item.id + "/");
+  const top = entries.filter(entry => !entries.some(other => other !== entry && below(other, entry)));
+  const parents = top.filter(entry => entries.some(other => below(entry, other)));
+  master.all = entries;
+  master.subs = parents.map(entry => nestMasters({ id: entry.item.id, label: entry.item.label || entry.item.id, current: false, item: entry.item, nested: true,
+    machines: entries.filter(other => below(entry, other)), folders: [] }));
+  for (const sub of master.subs) sub.loose = sub.machines;
+  master.machines = top.filter(entry => !parents.includes(entry));
+  return master;
+}
+const flatMasters = masters => masters.flatMap(master => [master, ...flatMasters(master.subs || [])]);
 function dcLookup(node) {
   const [kind, ...rest] = node.split(":"), masters = dcModel();
-  if (kind === "master") { const master = masters.find(row => row.id === rest.join(":")); return master && { kind, master, label: master.label }; }
+  if (kind === "master") { const master = flatMasters(masters).find(row => row.id === rest.join(":")); return master && { kind, master, label: master.label }; }
   if (kind === "site") { const site = (state.datacenters.datacenters || []).find(row => row.id === rest.join(":")); return site && { kind, site, label: site.name, masters: masters.filter(master => siteOf(master.id)?.id === site.id) }; }
   if (kind === "folder") {
     for (const master of masters) {
@@ -1340,6 +1367,8 @@ const dcFolderOf = id => (state.folders.folders || []).find(folder => folder.id 
 const dcOnline = entries => entries.filter(entry => nodeState(entry.item) === "online").length;
 function dcPath(item, master) {
   if (!item.relayed) return T.inv.sshFrom(state.service?.label || T.inv.thisMasterLower);
+  // A host behind several Masters: the whole way, from this Master (entry 6).
+  if ((item.path || []).length > 1) return T.share.path([state.service?.label || T.inv.thisMasterLower, ...item.path]);
   return T.inv.through(item.viaLabel || master?.label || item.via);
 }
 function dcMatches(item) { return hostMatches(item, state.dc.query); }
@@ -1362,18 +1391,19 @@ function dcMachineRow(entry, depth) {
   const item = entry.item, isMaster = state.merges.some(merge => merge.targetId === item.id);
   const cpu = sampledCpu(item.id), hot = isHot(item);
   return dcRow("node:" + item.id, depth, '<span class="dot ' + (hot ? "hot" : stateStyles[nodeState(item)] || "") + '"></span><span class="dc-name">' + esc(item.label || item.id) + "</span>" +
-    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (viewOnly(item) ? '<span class="dc-tag" title="' + esc(T.share.viewOnlyWhy(item.viaLabel)) + '">' + T.share.viewOnly + "</span>" : "") + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
+    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (viewOnly(item) ? '<span class="dc-tag" title="' + esc(T.share.viewOnlyWhy(accessFrom(item))) + '">' + T.share.viewOnly + "</span>" : "") + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
     (cpu == null ? '<span class="dc-os">' + esc(osName(item.os)) + "</span>" : '<span class="dc-os' + (hot ? " is-hot" : "") + '" title="' + esc(osName(item.os)) + '">' + Math.round(cpu) + "%</span>"), { drag: entry.alsoDirect ? "" : item.id });
 }
 function dcMasterRows(master, depth, rows, open) {
   const node = "master:" + master.id, editing = state.dc.editing;
   // Masters start folded so the sidebar opens short; after that the person's choice sticks.
   if (!state.dc.seen.has(node)) { state.dc.seen.add(node); state.dc.collapsed.add(node); }
-  if (state.dc.query && !master.machines.some(entry => dcMatches(entry.item))) return;
+  const all = master.all || master.machines;
+  if (state.dc.query && !all.some(entry => dcMatches(entry.item))) return;
   const tag = master.current ? '<span class="dc-tag is-current">' + T.inv.current + "</span>" : "";
   const status = master.current ? (state.service ? "good" : "bad") : stateStyles[nodeState(master.item)] || "";
-  rows.push(dcRow(node, depth, '<span class="dot ' + status + '"></span><span class="dc-name">' + esc(master.label) + "</span>" + tag + '<span class="dc-count">' + dcOnline(master.machines) + "/" + master.machines.length + "</span>",
-    { branch: true, open: open(node) || editing?.master === master.id, drop: master.id }));
+  rows.push(dcRow(node, depth, '<span class="dot ' + status + '"></span><span class="dc-name">' + esc(master.label) + "</span>" + tag + (viewOnly(master.item) ? '<span class="dc-tag">' + T.share.viewOnly + "</span>" : "") + '<span class="dc-count">' + dcOnline(all) + "/" + all.length + "</span>",
+    { branch: true, open: open(node) || editing?.master === master.id, drop: master.nested ? "" : master.id }));
   if (!open(node) && editing?.master !== master.id) return;
   if (editing?.mode === "new" && editing.master === master.id) rows.push(dcEditRow(depth + 1, "", T.inv.newFolderName));
   for (const folder of master.folders) {
@@ -1385,6 +1415,7 @@ function dcMasterRows(master, depth, rows, open) {
     if (open(folderNode)) for (const entry of machines) rows.push(dcMachineRow(entry, depth + 2));
   }
   for (const entry of master.loose.filter(entry => dcMatches(entry.item))) rows.push(dcMachineRow(entry, depth + 1));
+  for (const sub of master.subs || []) dcMasterRows(sub, depth + 1, rows, open);
 }
 function renderDcTree() {
   const rows = [], open = node => !state.dc.collapsed.has(node) || Boolean(state.dc.query);
@@ -1482,7 +1513,7 @@ function renderDcPanel() {
   }
   const item = found.item;
   const head = '<div class="page-heading"><div class="target-title"><span class="live-label">● ' + esc(dcPath(item)) + "</span><h1>" + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) + (item.os ? chip(osName(item.os)) : "") + "</div></div>" +
-    (viewOnly(item) ? '<div class="meta-row">' + accessBadge(item) + '<small class="muted">' + esc(T.share.viewOnlyWhy(item.viaLabel)) + "</small></div>" : "") +
+    (viewOnly(item) ? '<div class="meta-row">' + accessBadge(item) + '<small class="muted">' + esc(T.share.rightView(accessFrom(item))) + "</small></div>" : "") +
     '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
     (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
   const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs(hostPageTabs());
@@ -2412,7 +2443,8 @@ document.addEventListener("input", event => {
   }
 });
 document.addEventListener("change", event => {
-  if (event.target.dataset?.grant) void busy(null, () => saveGrant(event.target));
+  // One grant change at a time, in order: a quick second change must not be drawn over by the first one's reply.
+  if (event.target.dataset?.grant) { const control = event.target; grantQueue = grantQueue.then(() => busy(null, () => saveGrant(control))); }
   if (event.target.id === "group-filter") { state.group = event.target.value; $("#fleet-table").innerHTML = renderFleetView(); }
   if (event.target.id === "activity-status") { activityState().status = event.target.value; void loadActivity().catch(error => notifyError(error)); }
   if (["activity-from", "activity-to"].includes(event.target.id)) { activityState()[event.target.id.slice(9)] = event.target.value; void loadActivity().catch(error => notifyError(error)); }

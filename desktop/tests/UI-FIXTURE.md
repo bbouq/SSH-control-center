@@ -35,6 +35,9 @@ Scenarios are comma-separated flags in `SSHCC_FIXTURE_SCENARIO` (or `POST /scena
 - `view-only-merge`: with `masters-page`, Branch Master gives this Master View only, so its hosts carry `access: "view"`.
 - `merge-refuses`: with `masters-page`, a job on `branch-master/child-2` is refused with `E_MERGE_ROLE` (a Tag limit changed since the last sync).
 
+- `multi-hop`: with `masters-page`, Branch Master also passes on Lab Master (a Master it merged) and Lab's two hosts, one of them View only (from Lab Master), and 3 hosts more than 4 hops away; a job on `branch-master/lab-master/lab-web` answers that Lab Master didn't answer in time.
+- `outdated-merge`: with `masters-page`, Branch Master runs an older version (no `relayVersion`).
+
 Relays carry their grant (`role`, `tags`, `passThrough`, Full control by default), and `relays.set` changes it.
 
 - `activity-history`: the Activity tab has history: jobs today, yesterday and 3 days ago, a group run by Tag `web` (one host couldn't be reached), audit lines from every channel (one refused), a running job that finishes on the next refresh, and `lab-pc`, whose recorded job's host can't be reached.
@@ -88,7 +91,9 @@ It writes screenshots and a results JSON under `artifacts/shell-button-ui/`, whi
 - that a direct-only Master has no grant;
 - the Tag limit with this Master's Tags suggested, the pass-through switch, and back to all hosts, each sent as one `relays.set`;
 - a View-only host on the merging side, with the badge in the tree and on the page, and Shell, New job, Upload and New folder disabled with the reason, while a fully controlled host is untouched;
-- a refusal shown as its sentence.
+- a refusal shown as its sentence;
+- multi-hop: Lab Master's branch nested in Branch Master's with nothing to do, a far host's "Path: … → Branch Master → Lab Master" and "View only (from Lab Master)", a Master on the way that didn't answer named in the notice, and the too-far count on the Masters page;
+- an older merged Master marked "Outdated".
 
 It writes screenshots at 1180, 820 and 390px and `team-sharing-results.json` under `artifacts/team-sharing-ui/`.
 

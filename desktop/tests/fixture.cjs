@@ -16,6 +16,9 @@
 //   view-only-merge  with masters-page: Branch Master gives this Master View only (its hosts carry access "view")
 //   merge-refuses    with masters-page: a job on branch-master/child-2 is refused as if Branch Master's Tag limit had
 //                    changed since the last sync (E_MERGE_ROLE)
+//   multi-hop        with masters-page: Branch Master also passes on Lab Master (a Master it merged) and Lab's two hosts,
+//                    one of which Lab Master gives View only; 3 more hosts are more than 4 hops away
+//   outdated-merge   with masters-page: Branch Master runs an older version (no relayVersion)
 //   activity-history Activity has history: jobs today, yesterday and 3 days ago (one group run), audit lines, a running
 //                    job that finishes on the next refresh, and lab-pc, whose recorded job's host can't be reached
 //   activity-warning the audit log can't be written (Activity shows its yellow warning)
@@ -51,7 +54,14 @@ function reset(list) {
     s.targets.push(host("hq-master", "HQ Master", "192.0.2.41"), host("branch-master", "Branch Master", "192.0.2.42"));
     s.masterHosts = new Set(["hq-master", "branch-master"]);
     s.merges.push({ targetId: "branch-master", label: "Branch Master", status: "merged", error: null, syncedAt: now(), children: children("branch-master"), reverse: null,
-      grant: flags.has("view-only-merge") ? { role: "view", tags: null, passThrough: true } : { role: "full", tags: null, passThrough: true }, relayVersion: 2 });
+      grant: flags.has("view-only-merge") ? { role: "view", tags: null, passThrough: true } : { role: "full", tags: null, passThrough: true }, relayVersion: flags.has("outdated-merge") ? null : 2 });
+    if (flags.has("multi-hop")) {
+      const lab = { id: "11111111-1111-4111-8111-111111111111", label: "Lab Master" };
+      s.merges[0].children.push({ id: "lab-master", label: "Lab Master", tenant: "lab", os: "linux", nodeId: lab.id },
+        { id: "lab-master/lab-web", label: "Lab web", tenant: "lab", os: "linux", nodeId: crypto.randomUUID(), hops: 2, masters: [lab] },
+        { id: "lab-master/lab-db", label: "Lab db", tenant: "lab", os: "linux", nodeId: crypto.randomUUID(), hops: 2, masters: [lab], access: "view", accessFrom: "Lab Master" });
+      s.merges[0].beyond = 3;
+    }
     s.masters.push({ id: "peer-both", label: "Peer Master", publicKey: "TEST", revoked: false });
     const grant = { role: "full", tags: null, passThrough: true };
     s.relays.push({ masterId: "peer-both", label: "Peer Master", lastUsedAt: now(), revoked: false, ...grant }, { masterId: "peer-relay", label: "Relay-only Master", lastUsedAt: now(), revoked: true, ...grant });
@@ -80,7 +90,8 @@ const isMasterHost = id => s.masterHosts.has(id);
 const children = id => [1, 2, 3].map(n => ({ id: "child-" + n, label: "Child " + n + " of " + id, tenant: "lab", os: n === 1 ? "windows" : "linux", nodeId: crypto.randomUUID() }));
 /** A Merge's hosts, listed by targets.list as `<master>/<child>` (as the real Master does). */
 const relayedTargets = () => s.merges.flatMap(m => (m.children || []).map(c => ({ schemaVersion: 2, id: m.targetId + "/" + c.id, nodeId: c.nodeId, label: c.label, tenant: c.tenant, os: c.os, relayed: true, via: m.targetId, viaLabel: m.label, routes: [], hostKeys: [], runnerInstalled: true,
-  access: m.grant?.role === "view" ? "view" : "full" })));
+  path: [m.label, ...(c.masters || []).map(x => x.label)], hops: c.hops || 1,
+  access: m.grant?.role === "view" || c.access === "view" ? "view" : "full", accessFrom: m.grant?.role === "view" ? m.label : c.accessFrom || null })));
 const healthRow = t => ({ targetId: t.id, online: true, checkedAt: now(), error: null, failures: 0, isMaster: isMasterHost(t.id), version: "test" });
 // After the helpers: the masters-page scenario uses `now` and `children`.
 /** The code the new host shows after Approve: `SSHCC1.fixture.<masterId>.<requestId>`. */
@@ -385,6 +396,7 @@ function rpc(method, p = {}) {
     case "targets.update": { const t = s.targets.find(row => row.id === p.target?.id); Object.assign(t, p.target); return t; }
     case "jobs.list": return s.jobs;
     case "jobs.start": {
+      if (flags.has("multi-hop") && p.targetId === "branch-master/lab-master/lab-web") throw new Error("E_RELAY_TIMEOUT: Lab Master didn't answer in time");
       if (flags.has("merge-refuses") && p.targetId === "branch-master/child-2") throw new Error("E_MERGE_ROLE: Branch Master gives this Master only hosts with Tag web");
       let job = s.jobs.find(row => row.id === p.jobId);
       if (!job) { job = { id: p.jobId, masterId: MASTER_ID, script: p.script, cwd: p.cwd, shell: p.shell, status: "running", createdAt: now(), startedAt: now(), exitCode: null }; s.jobs.unshift(job); }
