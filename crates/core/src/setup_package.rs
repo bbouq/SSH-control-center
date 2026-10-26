@@ -58,6 +58,50 @@ fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// The release template for `os` ("windows" / "linux"), checked against the manifest.
+pub fn template(templates: &Path, os: &str) -> Result<Vec<u8>> {
+    let expected = match os {
+        "windows" => "sshcc-client-windows-template.exe",
+        "linux" => "sshcc-client-ubuntu-template.deb",
+        _ => bail!("unsupported target OS"),
+    };
+    let manifest: Manifest = serde_json::from_slice(
+        &bounded(&templates.join("template-manifest.json"), 65536)
+            .context("SETUP_TEMPLATES_MISSING: reinstall the complete Master package")?,
+    )?;
+    ensure!(manifest.schema_version == 1, "unsupported release template manifest");
+    let entry = manifest.templates.iter().find(|t| t.os == os)
+        .context("SETUP_TEMPLATES_MISSING: no release template for this OS")?;
+    ensure!(entry.file_name == expected, "invalid release template filename");
+    let template = bounded(&templates.join(expected), LIMIT)?;
+    ensure!(
+        digest(&template) == entry.sha256.to_ascii_lowercase(),
+        "SETUP_TEMPLATE_MISMATCH: release template checksum differs"
+    );
+    Ok(template)
+}
+/// What updates an installed Ubuntu Target: the service package the thin template carries
+/// (`usr/lib/sshcc-setup/assets/sshcc-service.deb`). Installing it keeps the host's state and
+/// restarts the service (its postinst), with no pairing.
+pub fn service_package(template: &[u8]) -> Result<Vec<u8>> {
+    let data = ar_members(template)?
+        .into_iter()
+        .find(|(name, _)| name.starts_with("data.tar"))
+        .context("SETUP_TEMPLATE_MISMATCH: the Ubuntu template has no data")?;
+    ensure!(data.0 == "data.tar.gz", "SETUP_TEMPLATE_MISMATCH: unexpected Ubuntu template compression");
+    let mut archive = tar::Archive::new(GzDecoder::new(Cursor::new(data.1)));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_string_lossy().trim_start_matches("./").to_owned();
+        if path == "usr/lib/sshcc-setup/assets/sshcc-service.deb" {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            return Ok(bytes);
+        }
+    }
+    bail!("SETUP_TEMPLATE_MISMATCH: the Ubuntu template carries no service package")
+}
+
 pub fn build(envelope: &Value, templates: &Path, output: &Path) -> Result<Value> {
     let checked = crate::pairing::inspect(envelope)?;
     let envelope = &checked["envelope"];

@@ -286,6 +286,9 @@ impl Service {
                 return Ok(value);
             }
         }
+        if let Some(value) = crate::upgrade::handle(&self.state, &self.config, req)? {
+            return Ok(value);
+        }
         if let Some(value) = crate::alarms::handle(&self.state, &self.config, req)? {
             return Ok(value);
         }

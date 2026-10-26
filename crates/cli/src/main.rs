@@ -135,7 +135,11 @@ enum Action {
         #[arg(requires = "action")]
         id: Option<String>,
     },
-    Targets,
+    /// List hosts, or update older ones from this Master (`upgrade <host>` or `upgrade --all`, one at a time).
+    Targets {
+        #[command(subcommand)]
+        command: Option<TargetsCommand>,
+    },
     Doctor {
         target_id: String,
         #[arg(long)]
@@ -179,6 +183,18 @@ enum ServiceCommand {
     Windows,
     Stop,
     Status,
+}
+#[derive(Subcommand)]
+enum TargetsCommand {
+    /// Update a host (or every outdated host this Master can update) with this Master's installer.
+    Upgrade {
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        host: Option<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Which hosts are older than this Master, and whether this Master can update them.
+    Check,
 }
 #[derive(Subcommand)]
 enum PairingCommand {
@@ -333,6 +349,15 @@ fn relay_grant(id: &str, role: Option<String>, tags: Option<String>, all_hosts: 
 #[cfg(test)]
 mod relay_grant_tests {
     use super::*;
+    #[test]
+    fn targets_lists_checks_or_upgrades() {
+        assert!(Args::try_parse_from(["sshcc", "targets"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "check"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "web-1"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "--all"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade"]).is_err(), "a host or --all");
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "web-1", "--all"]).is_err());
+    }
     #[test]
     fn alarms_lists_or_acknowledges() {
         assert!(Args::try_parse_from(["sshcc", "alarms"]).is_ok());
@@ -688,7 +713,30 @@ fn run() -> Result<()> {
             let id = id.ok_or_else(|| anyhow::anyhow!("give the alarm ID shown by sshcc alarms"))?;
             print(&call("alarms.ack", json!({"id":id}))?)
         }
-        Action::Targets => print(&call("targets.list", json!({}))?),
+        Action::Targets { command: None } => print(&call("targets.list", json!({}))?),
+        Action::Targets { command: Some(TargetsCommand::Check) } => print(&call("targets.update_check", json!({}))?),
+        Action::Targets { command: Some(TargetsCommand::Upgrade { host: Some(host), .. }) } => {
+            eprintln!("Updating {host}…");
+            print(&call("targets.upgrade", json!({"targetId":host}))?)
+        }
+        Action::Targets { command: Some(TargetsCommand::Upgrade { host: None, .. }) } => {
+            call("targets.upgrade_all", json!({}))?;
+            let mut shown = std::collections::BTreeMap::new();
+            loop {
+                let status = call("targets.upgrade_status", json!({}))?;
+                for row in status["hosts"].as_array().into_iter().flatten() {
+                    let line = format!("{} {}{}", row["targetId"].as_str().unwrap_or(""), row["state"].as_str().unwrap_or(""),
+                        row["error"].as_str().map(|e| format!(": {e}")).unwrap_or_default());
+                    if shown.insert(row["targetId"].to_string(), line.clone()).as_ref() != Some(&line) {
+                        eprintln!("{line}");
+                    }
+                }
+                if status["done"] == true {
+                    break print(&status);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
         Action::Doctor { target_id, session } => print(&call(
             "targets.doctor",
             json!({"targetId":target_id,"ownerSessionId":session}),

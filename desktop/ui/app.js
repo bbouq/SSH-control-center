@@ -217,6 +217,13 @@ async function refreshFleet() {
   ]);
   state.backupStatus = backup; state.rotation = rotation;
   void refreshActivityStatus().then(() => { if ($("#activity-warning")) $("#activity-warning").outerHTML = renderActivityWarning(); });
+  // Redraw for new update info only when it changed, and never under someone typing or adding a host.
+  const before = JSON.stringify(state.upgrades || null);
+  void refreshUpgrades().then(() => {
+    if (state.page !== "datacenter" || JSON.stringify(state.upgrades || null) === before) return;
+    $("#dc-tree").innerHTML = renderDcTree();
+    if ($("#dc-panel") && !state.dc.adding && !document.activeElement?.matches?.("input, textarea, select")) $("#dc-panel").innerHTML = renderDcPanel();
+  });
   void refreshAlarms().then(() => { if ($("#dc-tree")) $("#dc-tree").innerHTML = renderDcTree(); if ($("#host-alarms") && pageTarget()) $("#host-alarms").outerHTML = renderHostAlarms(pageTarget()); });
   if (tags) state.tags = tags;
   if (folders) state.folders = folders;
@@ -356,7 +363,7 @@ function hostRow(item) {
     '<td><span class="muted">—</span></td><td>' + cpuCell({ id: "local" }) + "</td><td>" + memCell({ id: "local" }) + "</td><td>" + localStatus() + '</td><td class="actions">' + terminalButton(selfTarget()) + "</td></tr>";
   const check = state.diagnostics.get(item.id);
   const status = !item.runnerInstalled ? '<span class="badge pending">' + T.status.hosts.legacy + "</span>" : check ? '<span class="badge ' + (check.ok ? "good" : "bad") + '">' + (check.ok ? T.inv.connected : T.inv.problem) + "</span><small>" + esc(T.common.checkedAt(timestamp(check.checkedAt))) + "</small>" : statusBadge(item);
-  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small>" + accessBadge(item) + tagChips(item.id) + "</td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
+  return '<tr data-host="' + esc(item.id) + '"><td><button class="row-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button><small>" + esc(osName(item.os)) + "</small>" + accessBadge(item) + upgradeBadge(item) + tagChips(item.id) + "</td><td>" + esc(hostRole(item)) + "</td><td>" + hostAddress(item) + "</td><td>" + cpuCell(item) + "</td><td>" + memCell(item) + "</td><td>" + status + '</td><td class="actions">' + terminalButton(item) + "</td></tr>";
 }
 const localStatus = () => '<span class="badge ' + (state.service ? "good" : "bad") + '">' + (state.service ? T.status.hosts.online : T.status.unavailable) + "</span>";
 /** Latest CPU % from the Monitoring tab's own samples, or null when the machine was never watched. */
@@ -643,6 +650,59 @@ function renderGroupRun(run) {
     '<div class="page-actions">' + actions + "</div></div>" +
     '<p class="group-summary"><strong>' + esc(run.done ? t.groupSummary(ok, counted.length) : t.groupRunning(finished, counted.length)) + "</strong></p>" +
     '<div class="table-wrap"><table><thead><tr><th>' + T.inv.head.host + "</th><th>" + T.inv.head.status + "</th><th>" + t.exitCode + "</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section>";
+}
+/* Target update pack (roadmap entry 8): which hosts run an older version than this Master, updating one, and
+   updating every outdated host one at a time with a progress panel. */
+async function refreshUpgrades() {
+  const reply = await rpc("targets.update_check").catch(() => null);
+  if (reply) state.upgrades = { latest: reply.latest, hosts: Object.fromEntries(reply.hosts.map(row => [row.targetId, row])) };
+}
+const upgradeRow = id => state.upgrades?.hosts?.[id];
+function upgradeBadge(item, short = false) {
+  const row = upgradeRow(item.id), t = T.upgrade;
+  if (!row?.outdated) return "";
+  const by = String(row.reason || "").startsWith("by:") ? row.reason.slice(3) : "";
+  const text = short ? t.needsShort : t.needs(row.version, state.upgrades.latest) + (by ? " · " + t.by(by) : "");
+  return short ? '<span class="dc-tag is-update" title="' + esc(t.needs(row.version, state.upgrades.latest)) + '">' + esc(text) + "</span>" : '<span class="badge warn upgrade-badge">' + esc(text) + "</span>";
+}
+/** The host page's update controls: Update and Save the installer, or why not. */
+function upgradeControls(item) {
+  const row = upgradeRow(item.id), t = T.upgrade;
+  if (!row?.outdated) return "";
+  if (String(row.reason || "").startsWith("by:")) return '<small class="muted">' + esc(t.byOther(row.reason.slice(3))) + "</small>";
+  const busy = state.upgrading === item.id, blocked = row.reason === "E_UPGRADE_TEMPLATES";
+  return '<button class="small" data-action="host-upgrade" data-id="' + esc(item.id) + '"' + (busy || blocked ? " disabled" : "") + (blocked ? ' title="' + esc(t.noTemplates) + '"' : "") + ">" + (busy ? t.updating : t.update) + "</button>" +
+    (blocked ? "" : '<button class="small" data-action="host-upgrade-file" data-id="' + esc(item.id) + '" data-os="' + esc(row.os) + '">' + t.saveFile + "</button>");
+}
+async function upgradeHost(id) {
+  const item = state.targets.find(row => row.id === id), name = item?.label || id;
+  state.upgrading = id; render();
+  try {
+    const done = await rpc("targets.upgrade", { targetId: id });
+    notify(T.upgrade.done(name, done.version));
+  } catch (error) {
+    const shown = explain(error); notify(T.upgrade.failed(name), true, shown.text);
+  } finally {
+    state.upgrading = null; await refreshHealth(true).catch(() => {}); await refreshUpgrades(); render();
+  }
+}
+/** Inventory: hosts this Master can update, and the run in progress. */
+function renderUpgradePanel() {
+  const t = T.upgrade, rows = Object.values(state.upgrades?.hosts || {}), can = rows.filter(row => row.canUpdate), run = state.upgradeRun;
+  if (!can.length && !run) return "";
+  const progress = run ? '<div class="table-wrap"><table class="upgrade-table"><tbody>' + run.hosts.map(row => '<tr data-upgrade="' + esc(row.targetId) + '"><td>' + esc(state.targets.find(h => h.id === row.targetId)?.label || row.targetId) + '</td><td><span class="badge ' + (row.state === "done" ? "good" : row.state === "failed" ? "bad" : "pending") + '">' + esc(t.state[row.state] || row.state) + "</span>" +
+    (row.error ? '<small class="error-detail">' + esc(row.error) + "</small>" : "") + "</td></tr>").join("") + "</tbody></table></div>" +
+    (run.done ? '<p class="help">' + esc(t.summary(run.hosts.filter(r => r.state === "done").length, run.hosts.length)) + "</p>" : "") : "";
+  return '<section class="section upgrade-panel" id="upgrade-panel"><div class="section-heading"><div><h2>' + t.panelTitle + "</h2><p>" + esc(t.panelLead(can.length || run.hosts.length, state.upgrades?.latest || "")) + "</p></div>" +
+    (run && !run.done ? "" : can.length ? '<button class="primary" data-action="upgrade-all">' + t.all + "</button>" : "") + '</div><p class="help">' + t.allLead + "</p>" + progress + "</section>";
+}
+let upgradeTimer = 0;
+async function watchUpgrades() {
+  clearTimeout(upgradeTimer);
+  state.upgradeRun = await rpc("targets.upgrade_status").catch(() => state.upgradeRun);
+  if ($("#upgrade-panel")) $("#upgrade-panel").outerHTML = renderUpgradePanel();
+  if (state.upgradeRun && !state.upgradeRun.done) upgradeTimer = setTimeout(() => void watchUpgrades(), 2000);
+  else { await refreshHealth(true).catch(() => {}); await refreshUpgrades(); if ($("#upgrade-panel")) $("#upgrade-panel").outerHTML = renderUpgradePanel(); }
 }
 /* Health alarms (roadmap entry 7). The service checks rules in the background; this page shows what it found, edits
    rules, and polls every 60 s while the window is open (a new red alarm shows the notice bar). */
@@ -1501,7 +1561,7 @@ function dcMachineRow(entry, depth) {
   const cpu = sampledCpu(item.id), hot = isHot(item);
   const alarm = alarmLevel(item.id);
   return dcRow("node:" + item.id, depth, '<span class="dot ' + (alarm ? "alarm-" + alarm : hot ? "hot" : stateStyles[nodeState(item)] || "") + '"' + (alarm ? ' title="' + esc(T.alarms.level[alarm]) + '"' : "") + '></span><span class="dc-name">' + esc(item.label || item.id) + "</span>" +
-    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (viewOnly(item) ? '<span class="dc-tag" title="' + esc(T.share.viewOnlyWhy(accessFrom(item))) + '">' + T.share.viewOnly + "</span>" : "") + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
+    (isMaster ? '<span class="dc-tag">Master</span>' : "") + (viewOnly(item) ? '<span class="dc-tag" title="' + esc(T.share.viewOnlyWhy(accessFrom(item))) + '">' + T.share.viewOnly + "</span>" : "") + upgradeBadge(item, true) + (entry.alsoDirect ? '<span class="dc-tag" title="' + esc(T.inv.alsoDirectTitle) + '">' + T.inv.alsoDirectLower + "</span>" : "") +
     (cpu == null ? '<span class="dc-os">' + esc(osName(item.os)) + "</span>" : '<span class="dc-os' + (hot ? " is-hot" : "") + '" title="' + esc(osName(item.os)) + '">' + Math.round(cpu) + "%</span>"), { drag: entry.alsoDirect ? "" : item.id });
 }
 function dcMasterRows(master, depth, rows, open) {
@@ -1585,7 +1645,7 @@ function renderDcPanel() {
   if (node !== "dc" && !found) { state.dc.node = "dc"; return renderDcPanel(); }
   if (!found) {
     state.view = "graph";
-    return renderBanner() + renderSummaryLine() + renderRestoreOffer() + renderFleetTools();
+    return renderBanner() + renderSummaryLine() + renderRestoreOffer() + renderUpgradePanel() + renderFleetTools();
   }
   if (found.kind === "master") {
     const master = found.master, target = pageTarget();
@@ -1623,6 +1683,7 @@ function renderDcPanel() {
   }
   const item = found.item;
   const head = '<div class="page-heading"><div class="target-title"><span class="live-label">● ' + esc(dcPath(item)) + "</span><h1>" + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) + (item.os ? chip(osName(item.os)) : "") + "</div></div>" +
+    (upgradeRow(item.id)?.outdated ? '<div class="meta-row upgrade-row">' + upgradeBadge(item) + upgradeControls(item) + "</div>" : "") +
     (viewOnly(item) ? '<div class="meta-row">' + accessBadge(item) + '<small class="muted">' + esc(T.share.rightView(accessFrom(item))) + "</small></div>" : "") +
     '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
     (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
@@ -2299,6 +2360,12 @@ document.addEventListener("click", event => {
       await refreshAlarmRules(); render(); return;
     }
     if (action === "check-updates") return checkUpdates(button.dataset.id);
+    if (action === "host-upgrade") return upgradeHost(button.dataset.id);
+    if (action === "host-upgrade-file") {
+      const path = await native("save_upgrade", { targetId: button.dataset.id, os: button.dataset.os, title: T.upgrade.saveTitle });
+      if (path) notify(T.upgrade.saved(path)); return;
+    }
+    if (action === "upgrade-all") { await rpc("targets.upgrade_all"); return watchUpgrades(); }
     if (action === "activity-view") { const a = activityState(); a.view = button.dataset.view; a.detail = null; $("#dc-panel").innerHTML = renderDcPanel(); return loadActivity(); }
     if (action === "activity-range") { const a = activityState(); a.range = button.dataset.range; if (a.range === "custom" && !a.from) a.from = thaiDay(); $("#dc-panel").innerHTML = renderDcPanel(); return loadActivity(); }
     if (action === "activity-toggle") { const open = activityState().open, id = button.dataset.group; if (open.has(id)) open.delete(id); else open.add(id); redrawActivity(); return; }

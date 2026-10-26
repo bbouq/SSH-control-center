@@ -279,6 +279,11 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .group-run .group-summary { margin: 0 0 12px; }
 .group-run + .callout { margin-top: 28px; }
 .group-run td small.error-line { display: block; color: var(--rose); white-space: normal; }
+/* Target updates: the badge, host-page controls, the Inventory panel. */
+.dc-tag.is-update { border-color: var(--amber); color: var(--amber); }
+.upgrade-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.upgrade-badge { white-space: normal; overflow-wrap: anywhere; }
+.upgrade-panel { border-left: 2px solid var(--amber); padding-left: 16px; }
 /* Health alarms: amber for yellow, rose for red, grey once acknowledged. */
 .badge.warn { color: var(--amber); }
 .dot.alarm-yellow { background: var(--amber); border: 0; }

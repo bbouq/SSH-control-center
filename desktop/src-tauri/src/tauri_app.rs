@@ -302,6 +302,25 @@ async fn save_backup(
     .map_err(|error| error.to_string())?
 }
 
+// Update fallback (entry 8): the installer that updates one host, saved where the person
+// chooses, to run on that host by hand. The Ubuntu file is the service package itself.
+#[tauri::command]
+async fn save_upgrade(app: AppHandle, target_id: String, os: String, title: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let templates = sshcc_core::setup_package::default_templates();
+        let (bytes, _) = sshcc_core::upgrade::package(&templates, &os, &target_id).map_err(|error| format!("{error:#}"))?;
+        let name = if os == "windows" { "sshcc-update.exe".to_owned() } else { format!("sshcc_{}.deb", sshcc_core::upgrade::ours()) };
+        let Some(path) = app.dialog().file().set_title(title.unwrap_or_else(|| "Save the update installer".into())).set_file_name(name).blocking_save_file() else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(|error| error.to_string())?;
+        std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 // Activity CSV: the native save dialog first, then the service builds the CSV for the
 // filter on screen. The webview names no path and sends no file content.
 #[tauri::command]
@@ -675,6 +694,7 @@ pub fn run_tauri(isolated_window: bool) {
             save_backup,
             open_backup,
             save_csv,
+            save_upgrade,
             merge_two_way,
             client_links,
             client_connect,
