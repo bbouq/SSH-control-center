@@ -190,6 +190,28 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator('#start-job [type="submit"]').click();
     await th.locator("#notice", { hasText: "Tag web" }).waitFor();
     await assertThai(th, "Merge Role refusal", [...shareWords, "web"]);
+    // Multi-hop: a far host's path and right, the too-far note, a silent Master, and an outdated one.
+    await scenario(th, url, ["masters-page", "multi-hop"]); await th.reload(); await ready(th);
+    const hopWords = [...words, ...await fixtureWords(th, url), "Lab", "web", "db"];
+    for (let i = 0; i < 8; i++) { const closed = th.locator('#dc-tree .dc-toggle[aria-expanded="false"]'); if (!(await closed.count())) break; await closed.first().click(); }
+    await th.locator('#dc-tree .dc-item[data-node="node:branch-master/lab-master/lab-db"]').click();
+    await th.locator(".live-label", { hasText: "เส้นทาง:" }).waitFor();
+    await assertThai(th, "far host", hopWords);
+    await shots(th, "far-host");
+    await th.locator('#dc-tree .dc-item[data-node="node:branch-master/lab-master/lab-web"]').click();
+    await th.locator('[data-action="dc-tab"][data-tab="jobs"]').click();
+    await th.locator('[data-action="toggle-new-job"]').first().click();
+    await th.locator('#start-job [name="script"]').fill("uptime");
+    await th.locator('#start-job [type="submit"]').click();
+    await th.locator("#notice", { hasText: "ไม่ตอบในเวลาที่กำหนด" }).waitFor();
+    await assertThai(th, "a Master on the way didn't answer", hopWords);
+    await th.locator('.nav[data-page="masters"]').click();
+    await th.locator("#beyond-note").waitFor();
+    await assertThai(th, "hosts beyond 4 hops", hopWords);
+    await scenario(th, url, ["masters-page", "outdated-merge"]); await th.reload(); await ready(th);
+    await th.locator('.nav[data-page="masters"]').click();
+    await th.locator(".badge", { hasText: "รุ่นเก่า" }).waitFor();
+    await assertThai(th, "outdated Master", [...words, ...await fixtureWords(th, url)]);
     await scenario(th, url, ["masters-page"]); await th.reload(); await ready(th);
     await th.locator('.nav[data-page="masters"]').click();
     await th.locator("h2", { hasText: "เครื่องนี้ถูกสั่งโดย" }).waitFor();
