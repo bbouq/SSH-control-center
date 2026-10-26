@@ -725,7 +725,7 @@ async function refreshAlarmRules() {
   const reply = await rpc("alarms.rules").catch(() => null);
   if (reply) { state.alarmRules = reply.rules; state.alarmInterval = reply.interval; }
 }
-const alarmWhat = alarm => T.alarms.shown[alarm.condition]?.(alarm.value) || alarm.condition;
+const alarmWhat = alarm => T.alarms.shown[alarm.condition]?.(alarm.value, alarm.partition) || alarm.condition;
 function scopeLine(scope) {
   const t = T.alarms.scopeLine;
   if (scope.all) return t.all();
@@ -750,7 +750,7 @@ function renderActiveAlarms() {
 function renderAlarmRules() {
   const t = T.alarms, rules = state.alarmRules || [];
   const list = rules.length ? '<div class="table-wrap"><table class="alarm-table"><thead><tr><th>' + t.head.rule + "</th><th>" + t.head.hosts + "</th><th>" + t.head.level + "</th><th></th></tr></thead><tbody>" +
-    rules.map(r => '<tr data-rule="' + esc(r.id) + '"><td>' + esc(t.condition[r.condition] + (r.threshold != null ? " " + r.threshold + "%" : "") + ((r.containers || []).length ? " · " + r.containers.join(", ") : "")) + "</td><td>" + esc(scopeLine(r.scope)) + "</td><td>" + levelBadge(r.level) +
+    rules.map(r => '<tr data-rule="' + esc(r.id) + '"><td>' + esc(t.condition[r.condition] + (r.threshold != null ? " " + r.threshold + "%" : "") + (r.partition ? " · " + r.partition : "") + ((r.containers || []).length ? " · " + r.containers.join(", ") : "")) + "</td><td>" + esc(scopeLine(r.scope)) + "</td><td>" + levelBadge(r.level) +
       '</td><td class="actions"><button class="small" data-action="alarm-rule-edit" data-id="' + esc(r.id) + '">' + t.edit + '</button><button class="small danger" data-action="alarm-rule-delete" data-id="' + esc(r.id) + '">' + t.remove + "</button></td></tr>").join("") + "</tbody></table></div>"
     : '<div class="empty-inline">' + t.noRules + "</div>";
   const interval = '<form id="alarm-interval" class="inline-form mt"><label>' + t.interval + '<select name="interval">' + [5, 15, 30].map(n => '<option value="' + n + '"' + (state.alarmInterval === n ? " selected" : "") + ">" + t.minutes(n) + "</option>").join("") + '</select></label></form><p class="help">' + t.intervalHelp + "</p>";
@@ -769,6 +769,7 @@ function renderRuleEditor(rule) {
     (kind === "hosts" ? '<fieldset class="full host-pick"><legend>' + t.chooseHosts + "</legend>" + hosts + "</fieldset>" : "") +
     '<label>' + t.conditionLabel + '<select name="condition">' + ["disk", "memory", "unreachable", "container", "updates"].map(c => '<option value="' + c + '"' + (c === rule.condition ? " selected" : "") + ">" + t.condition[c] + "</option>").join("") + "</select></label>" +
     (pct ? '<label>' + t.threshold + '<input name="threshold" type="number" min="1" max="99" value="' + esc(rule.threshold ?? 90) + '"></label>' : "") +
+    (rule.condition === "disk" ? '<label>' + t.partition + '<input name="partition" class="mono" value="' + esc(rule.partition || "") + '" placeholder="/var"><small class="help">' + t.partitionHelp + "</small></label>" : "") +
     (rule.condition === "container" ? '<label class="full">' + t.containers + '<input name="containers" value="' + esc((rule.containers || []).join(", ")) + '" placeholder="web, db"><small class="help">' + t.containersHelp + "</small></label>" : "") +
     '<label>' + t.levelLabel + '<select name="level">' + ["red", "yellow"].map(l => '<option value="' + l + '"' + (l === rule.level ? " selected" : "") + ">" + t.level[l] + "</option>").join("") + "</select></label></div>" +
     '<div class="form-actions"><button type="submit" class="primary">' + t.save + '</button><button type="button" data-action="alarm-rule-cancel">' + t.cancel + "</button></div></form>";
@@ -781,6 +782,7 @@ function ruleFromForm(form) {
     scope: scope === "all" ? { all: true } : scope === "folder" ? { folder: v("folder") || (state.folders.folders || [])[0]?.id || "" } : scope === "tag" ? { tag: v("tag") ?? "" } : { hosts: [...form.querySelectorAll('[name="host"]:checked')].map(el => el.value) },
     condition: v("condition"), threshold: v("threshold") != null ? Number(v("threshold")) : 90, level: v("level"),
     containers: (v("containers") || "").split(",").map(n => n.trim()).filter(Boolean),
+    ...(v("partition")?.trim() ? { partition: v("partition").trim() } : {}),
   };
 }
 /** The host page's Alarms row: its alarms, its OS-update result with Check now, and a rule for just this host. */
@@ -2010,7 +2012,9 @@ function renderMonitorBody(key) {
   const latest = entry.samples[entry.samples.length - 1], rows = monitorSeries(entry.samples), now = rows[rows.length - 1] || {};
   const pct = value => value == null ? "—" : value.toFixed(value < 10 ? 1 : 0) + "%";
   const memUsed = latest.memory.total - latest.memory.available;
-  const disk = latest.disk, diskUsed = disk ? disk.total - disk.free : 0;
+  // Every partition (hosts from entry 8 on); the tile shows the fullest. Older hosts report only / or C:\.
+  const parts = (latest.disks || []).filter(d => d.total > 0), used = d => d.total - d.free;
+  const disk = parts.length ? parts.reduce((a, b) => used(b) / b.total > used(a) / a.total ? b : a) : latest.disk, diskUsed = disk ? used(disk) : 0;
   // Six tiles of one shape (label · big value · one line · chart of one height), three by two, so the page reads evenly.
   const tile = (title, value, sub, chart, hint = "") => '<section class="mon-tile"' + (hint ? ' title="' + esc(hint) + '"' : "") + '><span class="stat-label">' + title + (hint ? ' <span class="mon-hint" aria-hidden="true">?</span>' : "") + "</span>" +
     '<span class="mon-value">' + value + '</span><small class="mon-sub">' + (sub || "&nbsp;") + '</small><div class="mon-chart">' + (chart || "") + "</div></section>";
@@ -2027,7 +2031,10 @@ function renderMonitorBody(key) {
       load?.length ? sparkline(rows, [{ key: "load", label: t.loadLabel, format: v => v == null ? "—" : v.toFixed(2) }], Math.max(cores, ...rows.map(row => row.load ?? 0))) : "",
       t.loadHint(cores))
   ];
-  return (entry.error ? '<div class="callout bad">' + icons.alert + "<div><strong>" + t.lastFailed + "</strong><p data-raw>" + esc(entry.error) + "</p></div></div>" : "") + '<div class="mon-grid">' + tiles.join("") + "</div>";
+  const partitions = parts.length ? '<section class="section partitions" id="partitions"><div class="section-heading"><h2>' + t.partitions + "</h2>" + (parts.length > 1 ? "<small class=\"muted\">" + t.fullest + "</small>" : "") + '</div><div class="table-wrap"><table class="partition-table"><thead><tr><th>' + t.partHead.path + "</th><th>" + t.partHead.fs + "</th><th>" + t.partHead.used + "</th><th>" + t.partHead.size + "</th><th></th></tr></thead><tbody>" +
+    parts.map(d => '<tr data-partition="' + esc(d.path) + '"><td class="mono">' + esc(d.path) + '</td><td class="mono">' + esc(d.fs || "—") + "</td><td>" + pct(100 * used(d) / d.total) + "</td><td>" + esc(formatSize(d.total)) + '</td><td class="meter-cell">' + meter(100 * used(d) / d.total) + "</td></tr>").join("") + "</tbody></table></div></section>"
+    : latest.disk ? '<p class="help mt" id="partitions-hint">' + t.updateForPartitions + "</p>" : "";
+  return (entry.error ? '<div class="callout bad">' + icons.alert + "<div><strong>" + t.lastFailed + "</strong><p data-raw>" + esc(entry.error) + "</p></div></div>" : "") + '<div class="mon-grid">' + tiles.join("") + "</div>" + partitions;
 }
 /** The status line beside Pause: interval or Paused, then when the last sample came and the host's uptime. */
 function monitorMeta(at, uptimeSeconds, history = "") {
