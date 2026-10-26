@@ -198,6 +198,18 @@ impl Service {
         {
             bail!("E_PERMISSION: this local principal is not authorized");
         }
+        if req.method == "bridge.request" && req.params["request"]["method"] == "pairing.receipt" {
+            // Entry 8: the Master that this machine just approved asks for its pairing code. It doesn't know this
+            // machine's node ID yet, so only the Master's key is checked (it was authorized at Approve); the code
+            // is public registration data, and only that Master's own code is returned.
+            self.target()?;
+            let master = protocol::string(&req.params, "masterId")?;
+            if !fleet::authorized_master_key(&self.state, master, protocol::string(&req.params, "masterKey")?)? {
+                bail!("E_PERMISSION: master is not enrolled or has been revoked");
+            }
+            let id = req.params["request"]["params"]["requestId"].as_str().unwrap_or_default();
+            return pairing::stored_receipt(&self.state, master, id);
+        }
         if req.method == "bridge.request" {
             let master = self.bridge_master(req, caller)?;
             let mut inner: Request = serde_json::from_value(req.params["request"].clone())?;

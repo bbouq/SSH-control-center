@@ -868,6 +868,29 @@ pub(crate) fn attach(state: &Path, config: &Config, params: &Value) -> Result<tr
     );
     transport::attach(state, config, &target, "pty.attach", params)
 }
+/// Entry 8: the new machine's pairing code, fetched before it is registered. Its host key isn't known yet, so it is
+/// read first (ssh-keyscan) and used for this one connection; the pairing code must carry that same key, and the
+/// person compares the 6 digits derived from it with the new machine's screen, which catches a machine in the middle.
+/// `None` while Approve isn't finished. Only a direct route can be used (no jump host yet).
+pub(crate) fn fetch_receipt(state: &Path, config: &Config, bundle: &Value, request_id: &str) -> Result<Option<(String, String)>> {
+    let bundle: Bundle = serde_json::from_value(bundle.clone())?;
+    let route = bundle.routes.iter().find(|r| r.proxy_jump.is_none()).context("E_PAIRING_ROUTE: no direct route to fetch the code")?;
+    let scan = quiet_command("ssh-keyscan")
+        .args(["-T", "5", "-t", "ed25519", "-p", &route.port.to_string(), &route.address])
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let key = String::from_utf8_lossy(&scan.stdout).lines().filter(|l| !l.starts_with('#'))
+        .find_map(|l| { let mut f = l.split_whitespace(); f.next()?; Some(format!("{} {}", f.next()?, f.next()?)) })
+        .context("E_ROUTE: the new machine didn't answer on SSH yet")?;
+    let windows = bundle.os == "windows";
+    let target = Target {
+        schema_version: 2, id: bundle.target_id.clone(), node_id: "00000000-0000-0000-0000-000000000000".into(), label: bundle.target_id.clone(),
+        tenant: bundle.tenant.clone(), os: bundle.os.clone(), user: bundle.user.clone(), host_keys: vec![key.clone()], routes: vec![route.clone()],
+        bridge_path: if windows { "C:\\Program Files\\SSH Control Center\\sshcc.exe".into() } else { "/usr/bin/sshcc".into() }, runner_installed: true,
+    };
+    let reply = transport::request(state, config, &target, "pairing.receipt", json!({"requestId":request_id}))?;
+    Ok(reply["code"].as_str().filter(|_| reply["ready"] == true).map(|code| (code.to_owned(), key)))
+}
 /// One direct host's `system.status` over SSH (its version, roles…): what an update waits for.
 pub(crate) fn system_status(state: &Path, config: &Config, id: &str) -> Result<Value> {
     let target = target(&database(state)?, id)?;

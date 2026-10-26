@@ -227,6 +227,17 @@ const open = async (page, url, options = {}) => { await page.goto(url); await re
     await th.locator('#dc-tree .dc-item[data-node="node:branch-master/child-1"]').click();
     await th.locator(".upgrade-badge").waitFor();
     await assertThai(th, "merged host needs update", upWords);
+    // 6-digit compare (entry 8): waiting for Approve, then the digits.
+    await scenario(th, url, ["empty", "six-digit"]); await th.reload(); await ready(th);
+    await th.locator('[data-action="add-host"]').click();
+    await th.locator("#add-address").fill("192.0.2.77");
+    await th.locator('#create-pairing button[type="submit"]').click();
+    await th.locator("#add-waiting").waitFor({ timeout: 15000 });
+    await assertThai(th, "waiting for Approve", [...words, "exe", "deb", "Downloads", "fixture", "client", "linux", "windows", "pc", ...await fixtureWords(th, url)]);
+    await th.request.get(url + "/pairing-code");
+    await th.locator("#add-compare").waitFor({ timeout: 15000 });
+    await assertThai(th, "compare the digits", [...words, "exe", "deb", "Downloads", "fixture", "client", "linux", "windows", "pc", ...await fixtureWords(th, url)]);
+    await shots(th, "six-digit");
     // Partitions (entry 8): the Monitoring table, an older host's hint, and the alarm rule's partition field.
     await scenario(th, url, []); await th.reload(); await ready(th);
     const partWords = [...words, ...await fixtureWords(th, url), "var", "boot", "efi", "ext", "xfs", "vfat"];

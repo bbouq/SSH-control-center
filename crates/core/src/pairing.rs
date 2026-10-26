@@ -52,6 +52,10 @@ struct Pending {
     /// single requests after a downgrade.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sibling: Option<String>,
+    /// The pairing code the Master fetched from the new machine itself (entry 8), waiting for the person to compare
+    /// the 6 digits. Not written when absent, like `sibling`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fetched: Option<String>,
 }
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -203,6 +207,46 @@ pub fn decode_receipt(code: &str) -> Result<Receipt> {
     fleet::validate_target(&mut receipt.registration, false)?;
     Ok(receipt)
 }
+/// The 6 digits both screens show (entry 8): from the request, this Master, the approved bundle and the new
+/// machine's host key, so a machine in the middle (with its own host key) shows different digits. "123 456".
+pub fn short_code(receipt: &Receipt) -> Result<String> {
+    let key = receipt.registration.host_keys.first().context("E_PAIRING_CODE: pairing code has no host key")?;
+    let bound = canonical(&json!({"requestId":receipt.request_id,"masterId":receipt.master_id,
+        "bundleDigest":receipt.bundle_digest,"hostKey":fleet::public_key_fingerprint(key)?}))?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"sshcc-pairing-compare-v1\n");
+    hasher.update(&bound);
+    let hash = hasher.finalize();
+    let n = u64::from_be_bytes(hash[..8].try_into().unwrap()) % 1_000_000;
+    Ok(format!("{:03} {:03}", n / 1000, n % 1000))
+}
+pub fn short_code_of(code: &str) -> Result<String> {
+    short_code(&decode_receipt(code)?)
+}
+fn receipts_dir(state: &Path) -> std::path::PathBuf {
+    state.join("pairing-receipts")
+}
+/// On the new machine: keep the pairing code where its Master can fetch it (`pairing.receipt`).
+pub fn store_receipt(state: &Path, code: &str) -> Result<()> {
+    let receipt = decode_receipt(code)?;
+    let dir = receipts_dir(state);
+    fs::create_dir_all(&dir)?;
+    crate::security::protect(&dir, true)?;
+    let path = dir.join(format!("{}.code", receipt.request_id));
+    fs::write(&path, code)?;
+    crate::security::protect(&path, false)
+}
+/// On the new machine, for the Master `master_id` only: its pairing code for `request_id`, once Approve finished.
+pub fn stored_receipt(state: &Path, master_id: &str, request_id: &str) -> Result<Value> {
+    Uuid::parse_str(request_id).context("E_PAIRING_REQUEST: invalid request ID")?;
+    let Ok(code) = fs::read_to_string(receipts_dir(state).join(format!("{request_id}.code"))) else {
+        return Ok(json!({"ready":false}));
+    };
+    let receipt = decode_receipt(&code)?;
+    ensure!(receipt.master_id == master_id, "E_PERMISSION: this pairing belongs to another Master");
+    Ok(json!({"ready":true,"code":code.trim()}))
+}
+
 /// Verify public cached codes without granting rights or assuming service health.
 pub fn inspect_receipt(code: &str, envelope: Option<&Value>) -> Result<Value> {
     let receipt = decode_receipt(code)?;
@@ -430,6 +474,7 @@ fn create(state: &Path, config: &Config, p: &Value) -> Result<Value> {
                 receipt_digest: None,
                 diagnostics: None,
                 sibling: None,
+                fetched: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -574,6 +619,64 @@ fn complete(state: &Path, config: &Config, p: &Value) -> Result<Value> {
     tx.commit()?;
     diagnose(state, config, &pending.envelope.request_id)
 }
+/// One look at the new machine for its pairing code (entry 8). `ask` gets the requested bundle and the request ID and
+/// returns the code with the host key the connection saw, `None` while Approve isn't done yet, or an error. An older
+/// installer that can't hand over the code answers "not available": then the person pastes the code, as before.
+/// Returns `{state: waiting | ready | old | done}`; `ready` carries the 6 digits and the review facts.
+pub fn fetch_with(state: &Path, config: &Config, p: &Value, ask: &dyn Fn(&Value, &str) -> Result<Option<(String, String)>>) -> Result<Value> {
+    let id = string(p, "requestId")?;
+    let db = database(state)?;
+    let mut pending = read_pending(&db, id)?;
+    if pending.receipt_digest.is_some() {
+        return Ok(json!({"state":"done","requestId":id}));
+    }
+    match ask(&pending.envelope.bundle, id) {
+        Ok(Some((code, seen_key))) => {
+            let (_, receipt, _) = validate_code(&db, config, &code)?;
+            ensure!(receipt.registration.host_keys.iter().any(|k| same_key(k, &seen_key)),
+                "E_PAIRING_HOSTKEY: the machine that answered isn't the one in its pairing code");
+            pending.fetched = Some(code.clone());
+            write_pending(&db, &pending)?;
+            let preview = preview(state, config, &json!({"code":code}))?;
+            Ok(json!({"state":"ready","requestId":id,"digits":short_code(&receipt)?,"preview":preview}))
+        }
+        Ok(None) => Ok(json!({"state":"waiting","requestId":id})),
+        Err(error) => {
+            let message = format!("{error:#}");
+            if message.contains("not available over bridge") || message.contains("E_METHOD") {
+                Ok(json!({"state":"old","requestId":id}))
+            } else {
+                Ok(json!({"state":"waiting","requestId":id,"error":message}))
+            }
+        }
+    }
+}
+fn same_key(a: &str, b: &str) -> bool {
+    let body = |k: &str| k.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+    body(a) == body(b)
+}
+/// The person compared the digits: the same finishes the pairing as a pasted code would; different cancels it.
+fn confirm(state: &Path, config: &Config, p: &Value) -> Result<Value> {
+    let id = string(p, "requestId")?;
+    let db = database(state)?;
+    let pending = read_pending(&db, id)?;
+    let code = pending.fetched.clone().context("E_PAIRING_STATE: no number to compare yet")?;
+    if p["same"] == true {
+        drop(db);
+        let mut params = json!({"code":code});
+        if let Some(label) = p.get("label") {
+            params["label"] = label.clone();
+        }
+        return complete(state, config, &params);
+    }
+    // The pair made for an unknown OS goes too: the same address answered with the wrong machine.
+    db.execute("DELETE FROM pairing_requests WHERE id=?1", [id])?;
+    if let Some(sibling) = &pending.sibling {
+        db.execute("DELETE FROM pairing_requests WHERE id=?1", [sibling])?;
+    }
+    bail!("E_PAIRING_MISMATCH: the numbers differ, so this pairing was cancelled · something may be between this Master and the new machine; check the network and start again")
+}
+
 fn status(state: &Path, config: &Config, p: &Value) -> Result<Value> {
     let mut db = database(state)?;
     let Some(id) = p.get("requestId").and_then(Value::as_str) else {
@@ -689,6 +792,8 @@ pub fn handle(state: &Path, config: &Config, req: &Request) -> Result<Option<Val
         "pairing.preview" => preview(state, config, &req.params)?,
         "pairing.cancel" => cancel(state, &req.params)?,
         "pairing.check" => check(state, &req.params)?,
+        "pairing.fetch" => fetch_with(state, config, &req.params, &|bundle, id| fleet::fetch_receipt(state, config, bundle, id))?,
+        "pairing.confirm" => confirm(state, config, &req.params)?,
         _ => bail!("E_METHOD: unsupported pairing method"),
     }))
 }
