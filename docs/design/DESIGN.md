@@ -97,8 +97,10 @@ Thai: Bai Jamjuree + Anuphan stay until a Relic pairing is tested (candidates: T
 2. **Sky plate** — 500 px, top of Inventory. Film edge (30 px, perforations, real readouts: online/total, Master, IP, last poll, offline),
    registration marks, faded word, the topology on a tilted floor (pods, curved wires, rings, halo), headline bottom-left, callout on the
    pointed host. The plate's bottom 30 px fade into the ground.
-3. **Below the sky** — square ink tabs (All / Direct / Via <Master> / Needs a look), host rows in two columns on hairlines.
-4. **Host / Master pages** — same ground and sidebar; no sky plate (a 120 px sky strip at most).
+3. **Below the sky** — the summary line, then square tabs (All · Direct · Through <Master> per merged Master · Needs a look, each with a count)
+   over host rows in two columns on hairlines (one column under 1000 px). "All" starts with this Master. The sky draws the topology; the rows are where you act.
+4. **Every other page** (host, Master, Masters, Alarms, Service, Add host) — no sky plate; a faint 150 px strip of the same sky across the top,
+   continuous under the sidebar. The sky clock runs on every page.
 
 ## Components
 
@@ -132,4 +134,5 @@ Thai: Bai Jamjuree + Anuphan stay until a Relic pairing is tested (candidates: T
   plus a dark halo. Measured 2026-10-27 at 02:00, 05:00, 06:36, 10:00, 13:00, 17:36 and 19:00 (95th-percentile background behind
   the text): headline white 7.3–11.3:1, sidebar tree 8.4–10.5:1.
 - Latency and uptime are not in the Master's data yet; the callout shows address, system and when it was last checked.
+- The sidebar is sticky: its copy of the sky follows the page scroll (`--scroll`, one write per frame while scrolling) so the seam never opens.
 - `sky.js` builds the sky once outside `#main` and only updates it (app.js `syncSky()`), so a running light survives re-renders.

@@ -17,7 +17,7 @@ const state = {
   export: null, pendingJob: null, file: null, files: null, pairing: null, pairings: [], saved: new Map(), add: null,
   merges: [], relays: [], merging: new Set(), masterCheck: new Map(),
   view: localStorage.getItem("sshcc.fleetView") === "table" ? "table" : "graph",
-  health: new Map(), healthError: "", healthLoading: false, healthAt: null, healthStarted: 0, flipped: new Set(), twoWay: new Map(),
+  invTab: "all", health: new Map(), healthError: "", healthLoading: false, healthAt: null, healthStarted: 0, flipped: new Set(), twoWay: new Map(),
   clientLinks: [], clientLinksError: "",
   // Datacenter: tree selection, collapsed branches and on-demand container data per machine ("local" = this Master).
   dc: { node: "dc", tab: "summary", query: "", collapsed: new Set(), seen: new Set(), filter: "running", adding: null, editing: null, ctView: "containers",
@@ -397,25 +397,6 @@ function renderStatusBar() {
     filters.map(([id, label, total, dot]) => '<button class="status-filter" data-action="status-filter" data-status="' + id + '" aria-pressed="' + (state.status === id) + '">' + (dot ? '<span class="dot ' + dot + '"></span>' : "") + label + " <strong>" + total + "</strong></button>").join("") +
     "</div>" + meta + "</div>";
 }
-function pcIcon(master) {
-  const monitor = '<rect class="pc-body" x="2" y="4" width="44" height="30" rx="3"/><rect class="pc-screen" x="5" y="7" width="38" height="24" rx="1.5"/>' +
-    '<path class="pc-glare" d="M9 29 27 9h7L16 29Z"/><rect class="pc-line" x="9" y="12" width="13" height="2.5" rx="1"/><rect class="pc-line pc-type" x="9" y="18" width="22" height="2.5" rx="1"/>' +
-    '<rect class="pc-cursor" x="9" y="24" width="4" height="2.5" rx=".5"/><path class="pc-stand" d="M20 34h8l1.5 6h-11ZM14 40h20a1.5 1.5 0 0 1 0 3H14a1.5 1.5 0 0 1 0-3Z"/>';
-  const tower = '<rect class="pc-body" x="50" y="7" width="12" height="36" rx="2"/><rect class="pc-bay" x="52.5" y="11" width="7" height="2" rx=".5"/><rect class="pc-bay" x="52.5" y="15" width="7" height="2" rx=".5"/><circle class="pc-led" cx="56" cy="37" r="1.6"/>';
-  return '<svg class="pc" viewBox="0 0 64 46" aria-hidden="true">' + (master ? monitor + tower : '<g transform="translate(7 0)">' + monitor + "</g>") + "</svg>";
-}
-function graphNode(item, options = {}) {
-  const status = options.status || nodeState(item), row = state.health.get(item.id), name = item.label || item.id, route = item.routes?.[0];
-  const hint = status === "offline" || status === "unknown" ? row?.error || "" : status === "online" && row?.checkedAt ? T.common.checkedAt(timestamp(row.checkedAt)) : "";
-  const sub = options.sub || [osName(item.os), !item.relayed && route?.address ? route.address : ""].filter(Boolean).join(" · ");
-  const main = pcIcon(options.master) + '<span class="node-info"><span class="node-label">' + esc(name) +
-    (options.alsoDirect ? ' <span class="node-tag">' + T.inv.alsoDirect + "</span>" : "") + (viewOnly(item) ? ' <span class="node-tag">' + T.share.viewOnly + "</span>" : "") + '</span><span class="node-sub">' + esc(sub) + "</span>" +
-    '<span class="node-state"><span class="dot"></span>' + esc(stateLabel(status)) + "</span></span>";
-  const alarm = options.static ? "" : alarmLevel(item.id);
-  return '<div class="node is-' + status + (alarm ? " alarm-" + alarm : "") + (options.master ? " is-master" : "") + (options.root ? " is-root" : "") + (state.flipped.has(item.id) ? " just-changed" : "") + '">' +
-    (options.static ? '<div class="node-main">' + main + "</div>" : '<button class="node-main" data-action="select-target" data-id="' + esc(item.id) + '"' + (hint ? ' title="' + esc(hint) + '"' : "") + ">" + main + "</button>") +
-    (options.static || item.runnerInstalled === false ? "" : '<button class="node-shell" data-action="open-shell" data-id="' + esc(item.id) + '" aria-label="' + esc(T.inv.terminalOn(name)) + '" title="' + esc(T.inv.openTerminal) + '">' + icons.shell + "</button>") + "</div>";
-}
 /** The one rule for the filter text: a host matches on its ID, name, tenant, merged Master, addresses, folder name or Tags. */
 function hostMatches(item, text) {
   const search = String(text || "").trim().toLowerCase();
@@ -464,34 +445,38 @@ function isTwoWay(merge) {
   return merge?.reverse?.status === "two-way" && state.relays.some(relay => relay.masterId === peer?.nodeId && !relay.revoked);
 }
 const noMatch = () => '<div class="empty"><h2>' + T.inv.noMatchTitle + "</h2><p>" + T.inv.noMatchText + '</p><button data-action="clear-filter">' + T.inv.clearFilters + "</button></div>";
-/* Topology: columns are hops from this window. Solid lines are SSH from this Master; dashed lines are
-   requests relayed through a merged Master. Nodes open the machine (or Master) page. */
-/** Topology, top-down: this Master on top, then one group for hosts it reaches directly and one per merged Master. */
+/** Under the sky: tabs (All · Direct · Via <Master> per merged Master · Needs a look) over host rows in two columns.
+ *  The sky draws the topology; this list is the way to act (open a host, its terminal, its Tags). */
+const needsLook = item => isHot(item) || ["offline", "unknown", "legacy"].includes(nodeState(item));
 function renderGraph() {
   const masters = dcModel(), local = masters[0], peers = masters.slice(1), peerIds = new Set(peers.map(master => master.id));
-  const online = entries => entries.filter(entry => nodeState(entry.item) === "online").length;
-  const card = (item, options = {}) => {
+  const direct = local.machines.filter(entry => !peerIds.has(entry.item.id)).map(entry => entry.item);
+  const t = T.inv.tabs, all = state.targets;
+  const tabs = [["all", t.all, all.length + 1], ["direct", t.direct, direct.length],
+    ...peers.map(peer => ["peer:" + peer.id, T.inv.through(peer.label), peer.machines.length]), ["look", t.look, all.filter(needsLook).length]];
+  if (!tabs.some(([id]) => id === state.invTab)) state.invTab = "all";
+  const peer = state.invTab.startsWith("peer:") ? peers.find(row => "peer:" + row.id === state.invTab) : null;
+  const pool = state.invTab === "direct" ? direct : state.invTab === "look" ? all.filter(needsLook) : peer ? [peer.item, ...peer.machines.map(entry => entry.item)] : all;
+  const alsoDirect = new Set(peers.flatMap(row => row.machines.filter(entry => entry.alsoDirect).map(entry => entry.item.id)));
+  const row = item => {
     const status = item ? nodeState(item) : state.service ? "online" : "offline", name = item ? item.label || item.id : local.label;
-    const sub = item ? [options.role, osName(item.os), item.relayed ? "" : item.routes?.[0]?.address].filter(Boolean) : [T.inv.cardSelf];
-    return '<div class="topo-card is-' + status + (options.wide ? " is-wide" : "") + (item && state.flipped.has(item.id) ? " just-changed" : "") + '" data-host="' + esc(item ? item.id : "local") + '">' +
-      '<span class="topo-dot" aria-hidden="true"></span><div class="topo-text"><button class="row-button" data-action="dc-select" data-node="' + (item ? "node:" + esc(item.id) : "master:local") + '">' + esc(name) + "</button>" +
-      "<small>" + esc(sub.join(" · ")) + '</small><span class="topo-status">' + esc(stateLabel(status) || status) + (options.alsoDirect ? " · " + T.inv.alsoDirectLower : "") + "</span>" + (item ? tagChips(item.id) : "") + "</div>" +
-      (item ? terminalButton(item) : "") + "</div>";
+    const role = !item ? T.inv.cardSelf : peerIds.has(item.id) ? T.inv.peerRole(peers.find(row => row.id === item.id).machines.length) : "";
+    const sub = [role, item ? osName(item.os) : "", item && !item.relayed ? item.routes?.[0]?.address : "", item?.relayed ? T.inv.via(item.viaLabel || "") : ""].filter(Boolean);
+    const shown = item && isHot(item) ? T.inv.highLoad : stateLabel(status) || status;
+    return '<div class="inv-row is-' + (item && isHot(item) ? "hot" : status) + (item && state.flipped.has(item.id) ? " just-changed" : "") + '" data-host="' + esc(item ? item.id : "local") + '">' +
+      '<span class="dot ' + ({ online: "good", offline: "bad" }[status] || "pending") + (item && isHot(item) ? " hot" : "") + '" aria-hidden="true"></span>' +
+      '<div class="inv-text"><button class="row-button" data-action="dc-select" data-node="' + (item ? "node:" + esc(item.id) : "master:local") + '">' + esc(name) + "</button>" +
+      "<small>" + esc(sub.join(" · ")) + (item && alsoDirect.has(item.id) && state.invTab.startsWith("peer:") ? " · " + T.inv.alsoDirectLower : "") + "</small>" + (item ? tagChips(item.id) : "") + "</div>" +
+      '<span class="inv-state">' + esc(shown) + "</span>" + (item ? terminalButton(item) : '<span class="inv-shell-space"></span>') + "</div>";
   };
-  const group = (title, entries, extra = "", head = "") => '<section class="topo-group"><header><h3>' + title + '</h3><span class="topo-meta">' + esc(T.inv.online(online(entries), entries.length)) + extra + "</span></header>" +
-    head + (entries.length ? '<div class="topo-cards">' + entries.map(entry => card(entry.item, { alsoDirect: entry.alsoDirect })).join("") + "</div>" : '<p class="help">' + T.inv.noHostsMatch + "</p>") + "</section>";
-  const direct = local.machines.filter(entry => !peerIds.has(entry.item.id) && matchesFilter(entry.item));
-  const groups = [group(esc(T.inv.directFrom(local.label)), direct)];
-  for (const peer of peers) {
-    const children = peer.machines.filter(entry => matchesFilter(entry.item));
-    groups.push(group(esc(T.inv.through(peer.label)), children, " · " + (peer.twoWay ? T.inv.twoWay : T.inv.oneWay) + ' <button class="text-button" data-page="masters">' + T.inv.manageMerge + "</button>",
-      '<div class="topo-cards is-head' + (online(children) ? " is-live" : "") + '">' + card(peer.item, { role: T.inv.peerRole(peer.machines.length), wide: true }) + "</div>"));
-  }
-  if (!direct.length && !peers.length) return '<div class="empty"><h2>' + T.inv.noDrawTitle + "</h2><p>" + T.inv.noDrawText + "</p></div>";
-  const live = state.service ? "is-live" : "", peerOnline = peers.some(peer => online(peer.machines));
-  return '<div class="topo-tree"><div class="topo-root">' + card(null) + '</div><span class="topo-stem ' + live + '" aria-hidden="true"></span>' +
-    '<span class="topo-bus" aria-hidden="true"><i class="to-left' + (live && online(direct) ? " is-live" : "") + '"></i><i class="to-right' + (live && peerOnline ? " is-live" : "") + '"></i></span>' +
-    '<div class="topo-groups">' + groups.join("") + "</div></div>";
+  const rows = pool.filter(item => matchesFilter(item));
+  const showLocal = state.invTab === "all" && !state.query && (!state.status || state.status === "online");
+  const meta = peer ? '<p class="inv-meta">' + esc(T.inv.online(peer.machines.filter(entry => nodeState(entry.item) === "online").length, peer.machines.length)) + " · " +
+    (peer.twoWay ? T.inv.twoWay : T.inv.oneWay) + ' <button class="text-button" data-page="masters">' + T.inv.manageMerge + "</button></p>" : "";
+  const body = rows.length || showLocal ? '<div class="inv-rows">' + (showLocal ? row(null) : "") + rows.map(row).join("") + "</div>"
+    : '<div class="empty"><h2>' + (state.invTab === "look" ? T.inv.tabs.nothingTitle : T.inv.noDrawTitle) + "</h2><p>" + (state.invTab === "look" ? T.inv.tabs.nothingText : T.inv.noDrawText) + "</p></div>";
+  return '<div class="inv-tabs" role="tablist" aria-label="' + esc(t.label) + '">' + tabs.map(([id, label, count]) =>
+    '<button role="tab" class="inv-tab" data-action="inv-tab" data-tab="' + esc(id) + '" aria-selected="' + (state.invTab === id) + '">' + esc(label) + ' <span class="n">' + count + "</span></button>").join("") + "</div>" + meta + body;
 }
 function renderFleetRows() {
   const rows = state.targets.filter(item => matchesFilter(item));
@@ -2515,6 +2500,7 @@ document.addEventListener("click", event => {
       $("#fleet-table").innerHTML = renderFleetView();
     }
     if (action === "manage-merge") return navigate("masters");
+    if (action === "inv-tab") { state.invTab = button.dataset.tab; $("#fleet-table").innerHTML = renderFleetView(); $('.inv-tab[aria-selected="true"]')?.focus(); return; }
     if (action === "dc-select") {
       if (state.page !== "datacenter") state.page = "datacenter";
       state.dc.node = button.dataset.node; state.dc.adding = null; state.backup = null; state.ctLogs = null;
@@ -2886,25 +2872,10 @@ document.addEventListener("change", event => {
   if (event.target.id === "upload-input" && event.target.files?.length) { const files = [...event.target.files]; event.target.value = ""; void busy(null, () => uploadFiles(files)); return; }
   if (event.target.matches("[data-new-folder]")) { const input = event.target.form.elements.newFolder; input.hidden = event.target.value !== "__new__"; if (!input.hidden) input.focus(); }
 });
-/* The header scene is a map: hovering or focusing a host row lights that host's window. Direct target hosts
-   take the near towers, hosts behind another Master the far group; the current Master is the logo itself. */
-function sceneLight(item) {
-  const group = state.targets.filter(row => Boolean(row.relayed) === Boolean(item.relayed)), index = group.indexOf(item);
-  return index < 0 ? null : (item.relayed ? "f" + index % 4 : "t" + index % 6);
-}
-function lightScene(row) {
-  document.querySelectorAll(".scene-light.is-lit").forEach(light => light.classList.remove("is-lit"));
-  const item = row && state.targets.find(target => target.id === row.dataset.host), id = item && sceneLight(item);
-  const light = id && document.querySelector('.scene-light[data-light="' + id + '"]');
-  if (!light) return;
-  const status = isHot(item) ? "is-high" : ({ online: "", offline: "is-off" })[nodeState(item)] ?? "is-unknown";
-  light.classList.remove("is-high", "is-off", "is-unknown");
-  if (status) light.classList.add(status);
-  light.classList.add("is-lit");
-}
 const skyPoint = target => { const host = target.closest?.("[data-host]")?.dataset.host || target.closest?.('[data-node^="node:"]')?.dataset.node.slice(5); if (host && host !== "local") sky.point(host); };
-document.addEventListener("mouseover", event => { const row = event.target.closest?.("[data-host]"); if (row !== lightScene.row) { lightScene.row = row; lightScene(row); } skyPoint(event.target); });
-document.addEventListener("focusin", event => { const row = event.target.closest?.("[data-host]"); lightScene.row = row; lightScene(row); skyPoint(event.target); });
+/* Pointing at a host row, a tree item or a topology pod points the sky's callout at that host. */
+document.addEventListener("mouseover", event => skyPoint(event.target));
+document.addEventListener("focusin", event => skyPoint(event.target));
 /* Files tab: drop files from this computer to upload them into the open folder. */
 const draggingFiles = event => [...(event.dataTransfer?.types || [])].includes("Files");
 document.addEventListener("dragover", event => {

@@ -114,14 +114,14 @@ const checks = {
     await openHost(page, "branch-master/child-1");
     assert.equal(await page.locator('#tag-suggestions option[value="บางกอก"]').count(), 0);
   },
-  /** Chips in tables and on topology cards (none in the tree), "Tag…" in the tree menu, Tags kept by a backup. */
+  /** Chips in tables and on the Inventory host rows (none in the tree), "Tag…" in the tree menu, Tags kept by a backup. */
   async "tags-everywhere"(page, url) {
     await rpc(page, url, "tags.set", { targetId: "ui-test", tags: ["web", "db"] });
     await rpc(page, url, "tags.set", { targetId: "branch-master/child-1", tags: ["web"] });
     await page.goto(url);
-    const card = page.locator('.topo-card[data-host="ui-test"]');
+    const card = page.locator('.inv-row[data-host="ui-test"]');
     await card.locator(".tag-chip", { hasText: "web" }).waitFor();
-    await page.locator('.topo-card[data-host="branch-master/child-1"] .tag-chip', { hasText: "web" }).waitFor();
+    await page.locator('.inv-row[data-host="branch-master/child-1"] .tag-chip', { hasText: "web" }).waitFor();
     assert.equal(await page.locator("#dc-tree .tag-chip").count(), 0, "the tree stays without Tags");
     await shots(page, "topology-tags");
     await openTree(page);

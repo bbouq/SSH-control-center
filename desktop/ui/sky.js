@@ -84,7 +84,8 @@ export function createSky({ onSelect }) {
     moon.style.opacity = night ? Math.min(1, Math.sin(Math.PI * m) * 4).toFixed(2) : "0";
   }
   const nowHour = () => { const d = new Date(); return d.getHours() + d.getMinutes() / 60; };
-  const tick = () => { if (!root.hidden) { paint(nowHour()); writeFilm(); } };
+  // the clock runs on every page: the thin sky strip on the other pages reads the same colours
+  const tick = () => { paint(nowHour()); if (!root.hidden) writeFilm(); };
   const startClock = () => { if (!clock) clock = setInterval(tick, 60000); };
   const stopClock = () => { clearInterval(clock); clock = 0; };
   document.addEventListener("visibilitychange", () => document.hidden ? stopClock() : (tick(), startClock()));
@@ -264,11 +265,16 @@ export function createSky({ onSelect }) {
   }
   addEventListener("resize", () => { if (!root.hidden) { paint(hour); if (focusId) point(focusId.split("\u0000").pop()); } });
 
+  paint(nowHour()); startClock();
+  // The sidebar is sticky; its copy of the sky follows the page's scroll so the two never part (one write per frame, only while scrolling)
+  let scrolling = 0;
+  addEventListener("scroll", () => { if (scrolling) return; scrolling = requestAnimationFrame(() => { document.body.style.setProperty("--scroll", (-scrollY).toFixed(0) + "px"); scrolling = 0; }); }, { passive: true });
+
   /* ---------- public ---------- */
   function update(next, strings) {
     const langChanged = strings !== T; T = strings;
     document.body.classList.toggle("has-sky", Boolean(next?.visible));
-    if (!next?.visible) { root.hidden = true; stopClock(); return; }
+    if (!next?.visible) { root.hidden = true; return; }
     const prev = snap, wasHidden = root.hidden; snap = next; root.hidden = false;
     const key = JSON.stringify([next.direct.map(h => h.id), next.peers.map(p => [p.id, p.hosts.map(h => h.id)])]);
     if (key !== layoutKey) { layoutKey = key; build(next); focusId = null; }
