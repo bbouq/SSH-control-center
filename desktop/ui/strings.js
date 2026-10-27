@@ -37,6 +37,13 @@ const en = {
     hosts: { online: "Online", offline: "Offline", checking: "Checking…", unknown: "Unknown", legacy: "Service not installed" },
     unavailable: "Unavailable",
   },
+  // The Inventory sky (sky.js): the headline, the film edge's readouts and the pointed host's facts.
+  sky: {
+    word: "Inventory", tag: "Fleet topology", hot: "High load",
+    headline: (up, total) => ({ n: String(up), of: "of " + total, on: "online." }),
+    film: { app: version => "SSHCC " + version, online: (up, total) => up + "/" + total + " online", polled: when => "Polled " + when, checking: "Checking…", off: n => n + " off" },
+    facts: { address: "Address", system: "System", checked: "Checked" }
+  },
   inv: {
     hintTitle: "How online status is checked",
     hint: ["The SSH port is probed every minute while this window is open", "Refresh runs a full check over SSH", "Use “Check connection” on a host for a detailed check", "Up to 50 Targets per Master"],
@@ -504,6 +511,12 @@ const th = {
     jobs: { succeeded: "สำเร็จ", failed: "ล้มเหลว", interrupted: "ถูกขัดจังหวะ", cancelled: "ยกเลิกแล้ว", running: "กำลังทำงาน", queued: "รอคิว" },
     hosts: { online: "ออนไลน์", offline: "ออฟไลน์", checking: "กำลังตรวจ…", unknown: "ไม่ทราบ", legacy: "ยังไม่ได้ติดตั้งบริการ" },
     unavailable: "ติดต่อไม่ได้",
+  },
+  sky: {
+    word: "เครื่องทั้งหมด", tag: "ผังเครื่อง", hot: "โหลดสูง",
+    headline: (up, total) => ({ n: String(up), of: "จาก " + total, on: "เครื่องออนไลน์" }),
+    film: { app: version => "SSHCC " + version, online: (up, total) => "ออนไลน์ " + up + "/" + total, polled: when => "ตรวจล่าสุด " + when, checking: "กำลังตรวจ…", off: n => "ออฟไลน์ " + n },
+    facts: { address: "ที่อยู่", system: "ระบบ", checked: "ตรวจเมื่อ" }
   },
   inv: {
     hintTitle: "ตรวจสถานะออนไลน์อย่างไร",

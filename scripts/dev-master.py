@@ -92,7 +92,7 @@ class Handler(BaseHTTPRequestHandler):
         ui = pathlib.Path("/opt/ui")
         name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
         fonts = {"fonts/" + font.name for font in (ui / "fonts").glob("*.woff2")}
-        if not self.allowed() or name not in {"index.html", "app.js", "strings.js", "app.css", "bridge.js", "header-scene.svg"} | fonts:
+        if not self.allowed() or name not in {"index.html", "app.js", "strings.js", "app.css", "sky.js", "sky.css", "bridge.js", "header-scene.svg"} | fonts:
             self.send_error(404)
             return
         data = BRIDGE.encode() if name == "bridge.js" else (ui / name).read_bytes()

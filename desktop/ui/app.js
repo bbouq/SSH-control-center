@@ -1,4 +1,5 @@
 import { esc, table, LANGUAGES } from "./strings.js";
+import { createSky } from "./sky.js";
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const pretty = value => JSON.stringify(value, null, 2);
 document.documentElement.dataset.theme = "dark";
@@ -256,6 +257,7 @@ async function refreshHealth(refresh = false) {
   if (state.page === "masters") $("#main").innerHTML = renderMasters();
   if (state.page === "datacenter" && state.dc.tab === "summary" && state.dc.node !== "dc" && !holdsForm() && !state.dc.adding) $("#dc-panel").innerHTML = renderDcPanel();
   if ($("#inv-summary")) $("#inv-summary").outerHTML = renderSummaryLine();
+  syncSky();
 }
 function refreshHealthIfDue() {
   const showsHealth = state.page === "datacenter";
@@ -287,6 +289,7 @@ function render() {
   if (state.page === "alarms") main.innerHTML = renderAlarms();
   if (state.page === "service") main.innerHTML = renderService();
   if (state.page === "enroll" || state.dc.adding) focusAddStep();
+  syncSky();
   if (state.rotation?.active && $("#keys-progress") && !rotationTimer) rotationTimer = setTimeout(() => void watchRotation(), 2000);
   watchFetch();
 }
@@ -1650,11 +1653,32 @@ function foilSticker(item) {
   const short = type.replace(/^ssh-|^sk-/, "").replace(/^ecdsa-sha2-/, "").replace(/@.*$/, "").toUpperCase();
   return '<div class="foil-sticker" data-egg="foil" tabindex="0" role="img" aria-label="' + esc(T.inv.keyPinned(short)) + '"><b>' + T.inv.hostKey + "</b><span>" + T.inv.pinned + "</span><span>" + esc(short) + "</span></div>";
 }
-/** The header scene as a thin banner over the topology: its circle is the logo ring, its towers light up for hovered hosts. */
-function renderBanner() {
-  const lights = [0, 1, 2, 3, 4, 5].map(i => '<b class="scene-light t' + i + '" data-light="t' + i + '"></b>').join("") + [0, 1, 2, 3].map(i => '<b class="scene-light f' + i + '" data-light="f' + i + '"></b>').join("");
-  return '<div class="scene-banner"><div class="logo" data-egg="ring" tabindex="0" role="img" aria-label="SSH Control Center"><i class="header-scene" aria-hidden="true">' + lights +
-    '</i><i class="ring" aria-hidden="true"></i><span>SSH</span><span>CONTROL</span></div></div>';
+/* The Inventory sky (sky.js, DESIGN.md "Relic Night") sits above #main and is only updated, never rebuilt, so a light
+   running down a wire survives the re-renders. It shows on the Inventory overview once there are hosts to draw. */
+const sky = createSky({ onSelect: id => {
+  // Same path as clicking the host's row, so selection behaves exactly as everywhere else.
+  const button = document.createElement("button"); button.hidden = true; button.dataset.action = "dc-select"; button.dataset.node = "node:" + id;
+  document.body.append(button); button.click(); button.remove();
+} });
+document.querySelector(".app-main").prepend(sky.el);
+window.sshccSky = sky; // for UI tests: sshccSky.paint(6.5) shows sunrise
+function skyHost(item) {
+  const status = nodeState(item), row = state.health.get(item.id);
+  return { id: item.id, label: item.label || item.id, state: status, stateLabel: stateLabel(status) || status, hot: isHot(item), os: osName(item.os),
+    address: item.relayed ? "" : item.routes?.[0]?.address || "", checked: row?.checkedAt ? timestamp(row.checkedAt) : "" };
+}
+function syncSky() {
+  const visible = state.page === "datacenter" && state.dc.node === "dc" && !state.dc.adding && !state.backup && state.targets.length > 0;
+  if (!visible) { sky.update({ visible: false }, T); return; }
+  const masters = dcModel(), local = masters[0], peers = masters.slice(1), peerIds = new Set(peers.map(master => master.id));
+  sky.update({
+    visible: true,
+    master: { label: local.label, address: state.service?.address || "", version: state.service?.version ? "v" + state.service.version : "" },
+    direct: local.machines.filter(entry => !peerIds.has(entry.item.id)).map(entry => skyHost(entry.item)),
+    peers: peers.map(peer => ({ ...skyHost(peer.item), hosts: peer.machines.map(entry => skyHost(entry.item)) })),
+    online: hostsOnline(), total: hostCount(), offline: state.targets.filter(item => nodeState(item) === "offline").length,
+    checkedAt: state.healthAt ? state.healthAt.toLocaleTimeString(T.locale, { timeStyle: "short" }) : ""
+  }, T);
 }
 /** One line instead of a stats strip: either all is well, or the hosts that need a look, each a link. */
 function renderSummaryLine() {
@@ -1677,7 +1701,7 @@ function renderDcPanel() {
   if (node !== "dc" && !found) { state.dc.node = "dc"; return renderDcPanel(); }
   if (!found) {
     state.view = "graph";
-    return renderBanner() + renderSummaryLine() + renderRestoreOffer() + renderUpgradePanel() + renderFleetTools();
+    return renderSummaryLine() + renderRestoreOffer() + renderUpgradePanel() + renderFleetTools();
   }
   if (found.kind === "master") {
     const master = found.master, target = pageTarget();
@@ -2878,8 +2902,9 @@ function lightScene(row) {
   if (status) light.classList.add(status);
   light.classList.add("is-lit");
 }
-document.addEventListener("mouseover", event => { const row = event.target.closest?.("[data-host]"); if (row !== lightScene.row) { lightScene.row = row; lightScene(row); } });
-document.addEventListener("focusin", event => { const row = event.target.closest?.("[data-host]"); lightScene.row = row; lightScene(row); });
+const skyPoint = target => { const host = target.closest?.("[data-host]")?.dataset.host || target.closest?.('[data-node^="node:"]')?.dataset.node.slice(5); if (host && host !== "local") sky.point(host); };
+document.addEventListener("mouseover", event => { const row = event.target.closest?.("[data-host]"); if (row !== lightScene.row) { lightScene.row = row; lightScene(row); } skyPoint(event.target); });
+document.addEventListener("focusin", event => { const row = event.target.closest?.("[data-host]"); lightScene.row = row; lightScene(row); skyPoint(event.target); });
 /* Files tab: drop files from this computer to upload them into the open folder. */
 const draggingFiles = event => [...(event.dataTransfer?.types || [])].includes("Files");
 document.addEventListener("dragover", event => {

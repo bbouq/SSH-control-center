@@ -652,7 +652,7 @@ const server = http.createServer(async (req, res) => {
       calls.push({ command: name, ...args });
       return json(res, await command(name, args));
     }
-    const files = { "/": "index.html", "/app.css": "app.css", "/app.js": "app.js", "/strings.js": "strings.js" };
+    const files = { "/": "index.html", "/app.css": "app.css", "/app.js": "app.js", "/strings.js": "strings.js", "/sky.js": "sky.js", "/sky.css": "sky.css" };
     if (url.pathname === "/fixture.js") { res.setHeader("content-type", "application/javascript"); return res.end(bootstrap); }
     // Bundled fonts (Latin and the Thai faces), so screenshots show the real type.
     const font = /^\/fonts\/([a-z0-9-]+\.woff2)$/.exec(url.pathname);

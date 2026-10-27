@@ -127,8 +127,9 @@ Thai: Bai Jamjuree + Anuphan stay until a Relic pairing is tested (candidates: T
 - Grain and the light leak use `data:` SVG backgrounds in the prototype — check `img-src` before shipping, or ship them as files.
 - `backdrop-filter` only on a few static blocks (callout, film edge, preview controls).
 - Six font families: subset before shipping.
-- **Text over the sky (measured 2026-10-26, must be fixed when porting):** on the ground every token passes (white 17:1, lilac 8.9:1),
-  but near the horizon the sky gets light — white is 8:1 on day `--sky2` and only 2.5–3:1 on sunrise/day `--sky3`; lilac drops to 1.3–4:1.
-  Text that sits on the sky (the sidebar tree below ~300 px, the headline) needs a local scrim: darken the sidebar's copy of the sky
-  behind text to keep ≥ 7:1, and give the headline a soft dark halo. Check against the actual sky pixel at that height for every phase.
-- Latency and uptime in the callout are not in the Master's data yet — show what exists (address, system, last seen) until they are.
+- **Text over the sky** — near the horizon the sky gets light (white is only 2.5–3:1 on sunrise/day `--sky3`), so text there
+  carries a local scrim: the sidebar's copy of the sky darkens below 38 % of its height, and the headline has a soft radial scrim
+  plus a dark halo. Measured 2026-10-27 at 02:00, 05:00, 06:36, 10:00, 13:00, 17:36 and 19:00 (95th-percentile background behind
+  the text): headline white 7.3–11.3:1, sidebar tree 8.4–10.5:1.
+- Latency and uptime are not in the Master's data yet; the callout shows address, system and when it was last checked.
+- `sky.js` builds the sky once outside `#main` and only updates it (app.js `syncSky()`), so a running light survives re-renders.
