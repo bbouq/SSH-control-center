@@ -8,8 +8,8 @@
 body {
   /* written by sky.js once a minute; the plate and the sidebar both read them */
   --sky0: #04050C; --sky1: #0A0C1E; --sky2: #151A3C; --sky3: #26305E; --glow: #6C7CFF; --gs: .2; --stars: 1; --rays: 0; --ridge-far: #0C0F22;
-  --italic: "Sky Digits", "Cormorant Garamond", "Bai Jamjuree", Georgia, serif;
-  --typewriter: "Space Mono", "JetBrains Mono", "Anuphan", monospace;
+  --italic: "Sky Digits", "Cormorant Garamond", "Noto Serif Thai", Georgia, serif;
+  --typewriter: "Space Mono", "JetBrains Mono", "Noto Sans Thai Looped", monospace;
 }
 
 .sky { position: relative; height: 500px; overflow: hidden; isolation: isolate; user-select: none;
@@ -186,3 +186,7 @@ body:not(.has-sky) .app-main::before, body:not(.has-sky) .app-side::after { cont
     linear-gradient(180deg, var(--sky0) 0%, var(--sky1) 40%, color-mix(in srgb, var(--sky2) 40%, transparent) 72%, transparent 100%);
   -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent); mask-image: linear-gradient(180deg, #000 55%, transparent); }
 body:not(.has-sky) .app-side { isolation: isolate; --strip-scroll: var(--scroll, 0px); }
+/* "เครื่องออนไลน์" runs wider than "online." and reaches the glow behind this Master: a wider, denser scrim keeps 7:1 */
+html:lang(th) .sky-headline { max-width: 520px; }
+html:lang(th) .sky-headline::before { right: -170px; bottom: -50px;
+  background: radial-gradient(ellipse 58% 55% at 45% 60%, rgba(5, 6, 14, .78), rgba(5, 6, 14, .42) 60%, transparent 100%); }

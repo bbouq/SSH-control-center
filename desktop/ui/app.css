@@ -7,12 +7,10 @@
 @font-face { font-family: "Instrument Sans"; src: url("fonts/instrument-sans.woff2") format("woff2"); font-weight: 400 700; font-stretch: 75% 100%; font-display: swap; }
 @font-face { font-family: "Space Grotesk"; src: url("fonts/space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
 @font-face { font-family: "JetBrains Mono"; src: url("fonts/jetbrains-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
-/* Thai (ไทย): Bai Jamjuree for display, Anuphan for body. Thai-only subsets, so Latin keeps the faces above and
-   Thai falls through each stack. */
-@font-face { font-family: "Bai Jamjuree"; src: url("fonts/bai-jamjuree-thai-300.woff2") format("woff2"); font-weight: 300; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
-@font-face { font-family: "Bai Jamjuree"; src: url("fonts/bai-jamjuree-thai-500.woff2") format("woff2"); font-weight: 500; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
-@font-face { font-family: "Bai Jamjuree"; src: url("fonts/bai-jamjuree-thai-700.woff2") format("woff2"); font-weight: 700; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
-@font-face { font-family: "Anuphan"; src: url("fonts/anuphan-thai.woff2") format("woff2"); font-weight: 300 700; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
+/* Thai (ไทย): Noto Serif Thai for display, Noto Sans Thai Looped for body (variable fonts). Thai-only subsets, so
+   Latin keeps the faces above and Thai falls through each stack. */
+@font-face { font-family: "Noto Serif Thai"; src: url("fonts/noto-serif-thai.woff2") format("woff2"); font-weight: 100 900; font-stretch: 62.5% 100%; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
+@font-face { font-family: "Noto Sans Thai Looped"; src: url("fonts/noto-sans-thai-looped.woff2") format("woff2"); font-weight: 100 900; font-stretch: 62.5% 100%; unicode-range: U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC; font-display: swap; }
 
 :root {
   color-scheme: dark;
@@ -43,10 +41,10 @@
   --holo: conic-gradient(from 210deg, #9CFF57, #7CF6FF, #FFFFFF, #FF9CF2, #C3A6FF, #9CFF57);
   --radius: 6px;
   /* type: --display is the caps UI voice, --serif the big numbers and headings */
-  --serif: "Fraunces", "Bai Jamjuree", Georgia, serif;
-  --display: "Space Grotesk", "Bai Jamjuree", system-ui, sans-serif;
-  --body: "Instrument Sans", "Anuphan", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "JetBrains Mono", "Anuphan", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --serif: "Fraunces", "Noto Serif Thai", Georgia, serif;
+  --display: "Space Grotesk", "Noto Serif Thai", system-ui, sans-serif;
+  --body: "Instrument Sans", "Noto Sans Thai Looped", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "Noto Sans Thai Looped", ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-family: var(--body);
   font-size: 15px;
   line-height: 1.5;
