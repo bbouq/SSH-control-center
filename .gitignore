@@ -28,3 +28,6 @@ known_hosts
 *.zip
 .scratch/
 .DS_Store
+# Agent tooling: the skills CLI lock file and oil-ui's working folder (prototypes, screenshots).
+skills-lock.json
+.oil-ui/
