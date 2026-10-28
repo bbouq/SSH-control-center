@@ -363,35 +363,6 @@ fn relay_grant(id: &str, role: Option<String>, tags: Option<String>, all_hosts: 
     anyhow::ensure!(params.as_object().is_some_and(|p| p.len() > 1), "nothing to change: give --role, --tags, --all-hosts or --pass-through");
     Ok(params)
 }
-#[cfg(test)]
-mod relay_grant_tests {
-    use super::*;
-    #[test]
-    fn targets_lists_checks_or_upgrades() {
-        assert!(Args::try_parse_from(["sshcc", "targets"]).is_ok());
-        assert!(Args::try_parse_from(["sshcc", "targets", "check"]).is_ok());
-        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "web-1"]).is_ok());
-        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "--all"]).is_ok());
-        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade"]).is_err(), "a host or --all");
-        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "web-1", "--all"]).is_err());
-    }
-    #[test]
-    fn alarms_lists_or_acknowledges() {
-        assert!(Args::try_parse_from(["sshcc", "alarms"]).is_ok());
-        assert!(Args::try_parse_from(["sshcc", "alarms", "ack", "default-disk:web-1"]).is_ok());
-        assert!(Args::try_parse_from(["sshcc", "alarms", "clear"]).is_err());
-    }
-    #[test]
-    fn flags_become_one_relays_set_request() {
-        let full = relay_grant("m", Some("view".into()), Some("web, db,".into()), false, Some("off".into())).unwrap();
-        assert_eq!(full, json!({"masterId":"m","role":"view","tags":["web","db"],"passThrough":false}));
-        assert_eq!(relay_grant("m", None, None, true, None).unwrap(), json!({"masterId":"m","tags":null}));
-        assert!(relay_grant("m", None, None, false, None).is_err());
-        let args = Args::try_parse_from(["sshcc", "relays", "m", "--role", "admin"]);
-        assert!(args.is_err(), "role is full or view");
-        assert!(Args::try_parse_from(["sshcc", "relays", "m", "--tags", "web", "--all-hosts"]).is_err());
-    }
-}
 fn call(method: &str, params: Value) -> Result<Value> {
     client::call(&Request {
         method: method.into(),
@@ -817,5 +788,34 @@ fn run() -> Result<()> {
             },
             json!({"targetId":target_id,"jobId":job_id}),
         )?),
+    }
+}
+#[cfg(test)]
+mod relay_grant_tests {
+    use super::*;
+    #[test]
+    fn targets_lists_checks_or_upgrades() {
+        assert!(Args::try_parse_from(["sshcc", "targets"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "check"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "web-1"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "--all"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade"]).is_err(), "a host or --all");
+        assert!(Args::try_parse_from(["sshcc", "targets", "upgrade", "web-1", "--all"]).is_err());
+    }
+    #[test]
+    fn alarms_lists_or_acknowledges() {
+        assert!(Args::try_parse_from(["sshcc", "alarms"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "alarms", "ack", "default-disk:web-1"]).is_ok());
+        assert!(Args::try_parse_from(["sshcc", "alarms", "clear"]).is_err());
+    }
+    #[test]
+    fn flags_become_one_relays_set_request() {
+        let full = relay_grant("m", Some("view".into()), Some("web, db,".into()), false, Some("off".into())).unwrap();
+        assert_eq!(full, json!({"masterId":"m","role":"view","tags":["web","db"],"passThrough":false}));
+        assert_eq!(relay_grant("m", None, None, true, None).unwrap(), json!({"masterId":"m","tags":null}));
+        assert!(relay_grant("m", None, None, false, None).is_err());
+        let args = Args::try_parse_from(["sshcc", "relays", "m", "--role", "admin"]);
+        assert!(args.is_err(), "role is full or view");
+        assert!(Args::try_parse_from(["sshcc", "relays", "m", "--tags", "web", "--all-hosts"]).is_err());
     }
 }

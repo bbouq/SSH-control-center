@@ -664,6 +664,7 @@ pub fn run_tauri(isolated_window: bool) {
     } else {
         Duration::ZERO
     };
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut context = tauri::generate_context!();
     // Separate instance identity and WebView2 data directory from the resident
     // tray and any browser processes created by an earlier tray version.

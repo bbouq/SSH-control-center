@@ -46,7 +46,7 @@ fn deb(files: &[(&str, &[u8])]) -> Vec<u8> {
     let data = tar.into_inner().unwrap().finish().unwrap();
     let mut out = b"!<arch>\n".to_vec();
     for (name, body) in [("debian-binary", b"2.0\n".to_vec()), ("data.tar.gz", data)] {
-        write!(out, "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", name, 0, 0, 0, 100644, body.len()).unwrap();
+        writeln!(out, "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`", name, 0, 0, 0, 100644, body.len()).unwrap();
         out.extend_from_slice(&body);
         if body.len() % 2 == 1 {
             out.push(b'\n');

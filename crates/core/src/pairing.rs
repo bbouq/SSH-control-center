@@ -623,7 +623,9 @@ fn complete(state: &Path, config: &Config, p: &Value) -> Result<Value> {
 /// returns the code with the host key the connection saw, `None` while Approve isn't done yet, or an error. An older
 /// installer that can't hand over the code answers "not available": then the person pastes the code, as before.
 /// Returns `{state: waiting | ready | old | done}`; `ready` carries the 6 digits and the review facts.
-pub fn fetch_with(state: &Path, config: &Config, p: &Value, ask: &dyn Fn(&Value, &str) -> Result<Option<(String, String)>>) -> Result<Value> {
+/// How fetch_with reaches the Target for its (code, key); tests pass a fake.
+pub type AskReceipt<'a> = dyn Fn(&Value, &str) -> Result<Option<(String, String)>> + 'a;
+pub fn fetch_with(state: &Path, config: &Config, p: &Value, ask: &AskReceipt) -> Result<Value> {
     let id = string(p, "requestId")?;
     let db = database(state)?;
     let mut pending = read_pending(&db, id)?;

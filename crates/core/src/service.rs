@@ -273,16 +273,15 @@ impl Service {
             }
             return self.local(&inner);
         }
-        if req.method.starts_with("targets.")
+        if (req.method.starts_with("targets.")
             || req.method.starts_with("jobs.")
             || req.method.starts_with("files.")
             || req.method.starts_with("terminal.")
             || req.method == "enrollment.export"
-            || req.method.starts_with("pairing.")
+            || req.method.starts_with("pairing."))
+            && !self.config.roles.iter().any(|r| r == "master")
         {
-            if !self.config.roles.iter().any(|r| r == "master") {
-                bail!("E_ROLE: master role is required");
-            }
+            bail!("E_ROLE: master role is required");
         }
         if let Some(value) = backup::handle(&self.state, &self.config, req, owner)? {
             if req.method == "backup.restore" {
