@@ -78,6 +78,7 @@ const icons = {
   file: svg('<path d="M4 1.75h5l3.25 3.25v8c0 .7-.55 1.25-1.25 1.25H4c-.7 0-1.25-.55-1.25-1.25V3c0-.7.55-1.25 1.25-1.25Z"/><path d="M9 1.75V5h3.25"/>'),
   copy: svg('<rect x="5.25" y="5.25" width="8.5" height="8.5" rx="1.5"/><path d="M10.75 5.25V3.5c0-.7-.55-1.25-1.25-1.25H3.5c-.7 0-1.25.55-1.25 1.25v6c0 .7.55 1.25 1.25 1.25h1.75"/>'),
   check: svg('<path d="m3.25 8.25 3 3 6.5-6.5"/>'),
+  lock: svg('<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.25 7V5a2.75 2.75 0 0 1 5.5 0v2"/>'),
   alert: svg('<path d="M8 2 1.5 13.5h13Z"/><path d="M8 6.5v3.25M8 11.75h.01"/>'),
   info: svg('<circle cx="8" cy="8" r="6.25"/><path d="M8 7.25v4M8 4.75h.01"/>'),
   pulse: svg('<path d="M1.5 8.5h3l1.75-4.5 3.5 8 1.75-3.5h3"/>'),
@@ -490,12 +491,15 @@ function stat(label, value, sub = "") {
 }
 function healthStat(item) {
   const row = state.health.get(item.id), status = nodeState(item);
-  return stat(T.host.lastStatus, '<span class="dot ' + (stateStyles[status] || "") + '"></span>' + esc(stateLabel(status)), row?.checkedAt ? T.common.checkedAt(timestamp(row.checkedAt)) : "");
+  const live = row?.online ? [row.latencyMs != null ? T.sky.ms(row.latencyMs) : "", row.onlineSince ? T.sky.facts.online + " " + formatUptime(Math.max(60, (Date.now() - Date.parse(row.onlineSince)) / 1000)) : ""] : [];
+  return stat(T.host.lastStatus, '<span class="dot ' + (stateStyles[status] || "") + '"></span>' + esc(stateLabel(status)),
+    [row?.checkedAt ? T.common.checkedAt(timestamp(row.checkedAt)) : "", ...live].filter(Boolean).join(" · "));
 }
-function renderOverview(item) {
+/** The Summary tab: the facts first, then `middle` (tags, alarms), then the details you open on purpose. */
+function renderOverview(item, middle = "") {
   const t = T.host;
   if (item.relayed) {
-    return '<div class="stat-grid">' + stat(t.viaMaster, esc(item.viaLabel || item.via)) + stat(t.permissions, t.usesRights) + healthStat(item) + "</div>" +
+    return '<div class="stat-grid">' + stat(t.viaMaster, esc(item.viaLabel || item.via)) + stat(t.permissions, t.usesRights) + healthStat(item) + "</div>" + middle +
       '<div class="disclosure-list"><details><summary>' + t.technical + ' <small class="muted">' + t.technicalIds + "</small></summary><div><dl class=\"facts\"><dt>" + t.masterId + "</dt><dd><code>" + esc(item.via) + "</code></dd><dt>" + t.nodeId + "</dt><dd><code>" + esc(item.nodeId) + '</code></dd></dl><p class="help mt">' + esc(t.relayedHelp(item.viaLabel || item.via)) + "</p></div></details></div>";
   }
   const routes = item.routes || [], primary = routes[0], head = t.routeHead;
@@ -504,7 +508,7 @@ function renderOverview(item) {
     stat(t.fallback, routes.length > 1 ? String(routes.length - 1) : t.noneRoutes) +
     healthStat(item) +
     stat(t.service, item.runnerInstalled ? '<span class="dot good"></span>' + t.installed : '<span class="dot pending"></span>' + t.notInstalled) +
-    "</div>" +
+    "</div>" + middle +
     '<div class="disclosure-list">' +
     "<details><summary>" + t.technical + ' <small class="muted">' + t.technicalMore + '</small></summary><div><dl class="facts"><dt>' + t.nodeId + "</dt><dd><code>" + esc(item.nodeId || t.awaiting) + "</code></dd><dt>" + t.sshUser + "</dt><dd>" + esc(item.user) + "</dd><dt>" + t.bridge + "</dt><dd><code>" + esc(item.bridgePath || "—") + "</code></dd><dt>" + t.targetId + "</dt><dd><code>" + esc(item.id) + "</code></dd></dl>" +
     '<div class="table-wrap mt"><table><thead><tr><th>' + head.order + "</th><th>" + head.type + "</th><th>" + head.destination + "</th><th>" + head.jump + "</th></tr></thead><tbody>" +
@@ -722,7 +726,7 @@ function scopeLine(scope) {
   if (scope.folder) return t.folder((state.folders.folders || []).find(f => f.id === scope.folder)?.name || scope.folder);
   return t.hosts((scope.hosts || []).length) + " · " + (scope.hosts || []).map(id => state.targets.find(h => h.id === id)?.label || id).join(", ");
 }
-const levelBadge = level => '<span class="badge ' + (level === "red" ? "bad" : "warn") + '">' + esc(T.alarms.level[level]) + "</span>";
+const levelBadge = level => '<span class="alarm-level is-' + (level === "red" ? "red" : "yellow") + '"><span class="dot alarm-' + (level === "red" ? "red" : "yellow") + '" aria-hidden="true"></span>' + esc(T.alarms.level[level]) + "</span>";
 function renderAlarms() {
   const t = T.alarms;
   const tabs = '<div class="tabs" role="tablist">' + ["active", "rules"].map(tab => '<button role="tab" class="tab ' + (state.alarmTab === tab ? "active" : "") + '" aria-selected="' + (state.alarmTab === tab) + '" data-action="alarm-tab" data-tab="' + tab + '">' + t[tab] + "</button>").join("") + "</div>";
@@ -781,7 +785,7 @@ function renderHostAlarms(item) {
   const packages = up?.packages?.length ? "<details><summary>" + t.packages + '</summary><ul class="package-list">' + up.packages.map(p => "<li><code>" + esc(p) + "</code></li>").join("") + "</ul></details>" : "";
   return '<section class="section host-alarms" id="host-alarms"><div class="section-heading"><h2>' + t.hostAlarms + '</h2><button class="small" data-action="alarm-for-host" data-id="' + esc(item.id) + '">' + t.forHost + "</button></div>" +
     (mine.length ? '<ul class="alarm-lines">' + mine.map(a => "<li>" + levelBadge(a.level) + " " + esc(alarmWhat(a)) + (a.acknowledged ? ' <span class="muted">· ' + t.acknowledged + "</span>" : "") + "</li>").join("") + "</ul>" : "") +
-    '<p class="updates-line"><strong>' + t.updates + ':</strong> <span class="badge ' + (up?.count ? "warn" : "") + '" id="updates-badge">' + esc(state.checkingUpdates === item.id ? t.checking : updates) + "</span>" +
+    '<p class="updates-line"><strong>' + t.updates + '</strong> <span class="badge ' + (up?.count ? "warn" : "") + '" id="updates-badge">' + esc(state.checkingUpdates === item.id ? t.checking : updates) + "</span>" +
     (up?.checkedAt ? ' <small class="muted">' + esc(t.checkedAt(thaiTime(up.checkedAt))) + "</small>" : "") +
     (up?.error === "view-only" ? "" : ' <button class="small" data-action="check-updates" data-id="' + esc(item.id) + '"' + (state.checkingUpdates === item.id ? " disabled" : "") + ">" + t.checkNow + "</button>") + "</p>" + packages + "</section>";
 }
@@ -1630,13 +1634,13 @@ function dcMachineTable(entries) {
   if (!entries.length) return '<div class="empty-inline">' + T.inv.noTargets + "</div>";
   return '<div class="table-wrap"><table>' + hostHead() + "<tbody>" + entries.map(({ item }) => hostRow(item)).join("") + "</tbody></table></div>";
 }
-/** The engraved host-key seal; clicking it sweeps a light across once. */
-function foilSticker(item) {
+/** The pinned host key, as a hairline chip beside the status (DESIGN.md: data is crisp). */
+function keyChip(item) {
   const key = (item.hostKeys || [])[0];
   if (!key) return "";
   const type = String(key).split(/\s+/).find(part => /^(ssh-|ecdsa-|sk-)/.test(part)) || "ssh";
   const short = type.replace(/^ssh-|^sk-/, "").replace(/^ecdsa-sha2-/, "").replace(/@.*$/, "").toUpperCase();
-  return '<div class="foil-sticker" data-egg="foil" tabindex="0" role="img" aria-label="' + esc(T.inv.keyPinned(short)) + '"><b>' + T.inv.hostKey + "</b><span>" + T.inv.pinned + "</span><span>" + esc(short) + "</span></div>";
+  return '<span class="key-chip" title="' + esc(T.inv.keyPinned(short)) + '">' + icons.lock + esc(T.inv.keyPinned(short)) + "</span>";
 }
 /* The Inventory sky (sky.js, DESIGN.md "Relic Night") sits above #main and is only updated, never rebuilt, so a light
    running down a wire survives the re-renders. It shows on the Inventory overview once there are hosts to draw. */
@@ -1663,7 +1667,8 @@ function syncSky() {
     visible: true,
     master: { label: local.label, address: state.service?.address || "", version: state.service?.version ? "v" + state.service.version : "" },
     direct: local.machines.filter(entry => !peerIds.has(entry.item.id)).map(entry => skyHost(entry.item)),
-    peers: peers.map(peer => ({ ...skyHost(peer.item), hosts: peer.all.map(entry => skyHost(entry.item)) })),
+    // A host below a merged Master that is itself a Master (peer.subs) stands as a smaller Master pod
+    peers: peers.map(peer => { const subs = new Set(peer.subs.map(sub => sub.id)); return { ...skyHost(peer.item), hosts: peer.all.map(entry => ({ ...skyHost(entry.item), master: subs.has(entry.item.id) })) }; }),
     online: hostsOnline(), total: hostCount(), offline: state.targets.filter(item => nodeState(item) === "offline").length,
     checkedAt: state.healthAt ? state.healthAt.toLocaleTimeString(T.locale, { timeStyle: "short" }) : ""
   }, T);
@@ -1733,13 +1738,13 @@ function renderDcPanel() {
       '<section class="section mt">' + (folder.machines.length ? dcMachineTable(folder.machines) : '<div class="empty-inline">' + t.folderEmpty + "</div>") + "</section>";
   }
   const item = found.item;
-  const head = '<div class="page-heading"><div class="target-title"><span class="live-label">● ' + esc(dcPath(item)) + "</span><h1>" + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) + (item.os ? chip(osName(item.os)) : "") + "</div></div>" +
+  const head = '<div class="page-heading"><div class="target-title"><span class="live-label">● ' + esc(dcPath(item)) + "</span><h1>" + esc(item.label || item.id) + '</h1><div class="meta-row">' + statusBadge(item) + (item.os ? chip(osName(item.os)) : "") + keyChip(item) + "</div></div>" +
     (upgradeRow(item.id)?.outdated ? '<div class="meta-row upgrade-row">' + upgradeBadge(item) + upgradeControls(item) + "</div>" : "") +
     (viewOnly(item) ? '<div class="meta-row">' + accessBadge(item) + '<small class="muted">' + esc(T.share.rightView(accessFrom(item))) + "</small></div>" : "") +
-    '<div class="target-actions">' + foilSticker(item) + '<button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
+    '<div class="target-actions"><button class="primary" data-action="open-shell" data-id="' + esc(item.id) + '"' + (!item.runnerInstalled ? ' disabled title="' + esc(T.inv.installFirst) + '"' : "") + ">" + icons.shell + t.openTerminal + '</button><button data-action="diagnose">' + icons.pulse + t.checkConnection + "</button></div></div>" +
     (!item.runnerInstalled ? '<div class="callout pending">' + icons.alert + "<div><strong>" + t.v1Title + "</strong><p>" + t.v1Text + "</p></div></div>" : "");
   const tabs = '<div id="check-slot">' + renderCheckPanel(item) + "</div>" + dcTabs(hostPageTabs());
-  const body = state.dc.tab === "summary" ? renderTagRow(item) + renderHostAlarms(item) + renderOverview(item) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
+  const body = state.dc.tab === "summary" ? renderOverview(item, renderTagRow(item) + renderHostAlarms(item)) : state.dc.tab === "jobs" ? renderJobs(item) : state.dc.tab === "files" ? renderFiles(item)
     : state.dc.tab === "monitoring" ? renderMonitorTab(item.id, item.label || item.id) : renderContainerTab(item.id, item.label || item.id);
   return head + tabs + body;
 }
@@ -2344,24 +2349,10 @@ function bytesToBase64(bytes) {
   for (let i = 0; i < bytes.length; i += 8192) raw += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(raw);
 }
-function playEgg(host) {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const element = host.dataset.egg === "ring" ? host.querySelector(".ring") : host;
-  if (!element) return;
-  element.classList.remove("is-playing");
-  void element.offsetWidth;
-  element.classList.add("is-playing");
-}
-document.addEventListener("animationend", event => event.target.classList?.remove("is-playing"));
-document.addEventListener("keydown", event => {
-  if ((event.key === "Enter" || event.key === " ") && event.target.dataset?.egg) { event.preventDefault(); playEgg(event.target); }
-});
 document.addEventListener("click", event => {
   if (event.target.closest("#notice-close")) { clearNotice(); return; }
   const pick = event.target.closest("[data-lang]");
   if (pick) { setLanguage(pick.dataset.lang); return; }
-  const egg = event.target.closest("[data-egg]");
-  if (egg && !event.target.closest(".marker")) { playEgg(egg); return; }
   const nav = event.target.closest("[data-page]");
   if (nav) { state.backup = null; if (nav.dataset.page === "datacenter") { state.dc.node = "dc"; state.dc.adding = null; } void navigate(nav.dataset.page); return; }
   const button = event.target.closest("[data-action]");
