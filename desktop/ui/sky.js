@@ -88,7 +88,10 @@ export function createSky({ onSelect }) {
   // This Master: the hosts sit evenly round the ring, merged Masters and Masters below them larger
   function build(s) {
     const list = [...s.direct.map(h => [h.id, h, 1]), ...s.peers.flatMap(p => [[p.id, p, 1.6], ...p.hosts.map(h => [p.id + "\u0000" + h.id, h, h.master ? 1.3 : 1])])].slice(0, MAX_SPARKS);
-    ring = list.map(([key, , size], i) => ({ key, size, a: -Math.PI / 2 + (i + .5) * Math.PI * 2 / list.length }));
+    // hosts evenly round the ring; the Masters (planets) spread apart, each half a step between two hosts
+    const hosts = list.filter(([, , size]) => size === 1), masters = list.filter(([, , size]) => size > 1), step = Math.PI * 2 / Math.max(1, hosts.length);
+    ring = [...hosts.map(([key, , size], i) => ({ key, size, a: -Math.PI / 2 + i * step })),
+      ...masters.map(([key, , size], j) => ({ key, size, a: -Math.PI / 2 + (Math.round(j * hosts.length / masters.length) + .5) * step + .35 }))];
     byKey = new Map(ring.map(sp => [sp.key, sp]));
   }
   function size() {
@@ -133,6 +136,26 @@ export function createSky({ onSelect }) {
     x.fillStyle = g; x.beginPath(); x.arc(px, py, r * 3, 0, 7); x.fill();
     x.strokeStyle = `rgba(${rgb},${a * .8})`; x.lineWidth = .8; x.beginPath(); x.moveTo(px - r * 4, py); x.lineTo(px + r * 4, py); x.moveTo(px, py - r * 4); x.lineTo(px, py + r * 4); x.stroke();
   }
+  /* A Master as a planet: a lit silver-violet sphere, a tilted ring (its far arc behind, near arc in front) and a glow
+     in its status colour; dimmer when it is on the far side of the halo */
+  function planet(x, g, px, py, r, st, far) {
+    const rgb = SPARK_RGB[st], tilt = -.32, rx = r * 1.9, ry = r * .5;
+    x.globalCompositeOperation = "lighter"; flare(g, px, py, r * .9, rgb, .7);
+    const halo = x.createRadialGradient(px, py, r * .8, px, py, r * 1.9); halo.addColorStop(0, `rgba(${rgb},.32)`); halo.addColorStop(1, `rgba(${rgb},0)`);
+    x.fillStyle = halo; x.beginPath(); x.arc(px, py, r * 1.9, 0, 7); x.fill();
+    x.globalCompositeOperation = "source-over"; x.globalAlpha = far ? .7 : 1;
+    const ring = (from, to) => { x.strokeStyle = "rgba(255,232,200,.75)"; x.lineWidth = Math.max(1, r * .09); x.beginPath(); x.ellipse(px, py, rx, ry, tilt, from, to); x.stroke();
+      x.strokeStyle = "rgba(240,160,96,.45)"; x.lineWidth = Math.max(.6, r * .05); x.beginPath(); x.ellipse(px, py, rx * .84, ry * .84, tilt, from, to); x.stroke(); };
+    ring(Math.PI, Math.PI * 2);
+    const sphere = x.createRadialGradient(px - r * .38, py - r * .42, r * .08, px, py, r);
+    sphere.addColorStop(0, "#F4F6FB"); sphere.addColorStop(.35, st === "offline" ? "#C9A0B8" : "#B8C2E4"); sphere.addColorStop(.75, st === "offline" ? "#4A2A44" : "#3A4166"); sphere.addColorStop(1, "#14162A");
+    x.fillStyle = sphere; x.beginPath(); x.arc(px, py, r, 0, 7); x.fill();
+    // faint bands and a rim in its status colour
+    x.save(); x.beginPath(); x.arc(px, py, r, 0, 7); x.clip(); x.strokeStyle = "rgba(255,255,255,.12)"; x.lineWidth = r * .12;
+    for (const k of [-.35, .1, .5]) { x.beginPath(); x.ellipse(px, py + r * k, r * 1.1, r * .22, tilt * .6, 0, 7); x.stroke(); } x.restore();
+    x.strokeStyle = `rgba(${rgb},.85)`; x.lineWidth = 1.2; x.beginPath(); x.arc(px, py, r, 0, 7); x.stroke();
+    ring(0, Math.PI); x.globalAlpha = 1; x.globalCompositeOperation = "lighter";
+  }
   const eased = t => 1 - Math.pow(1 - t, 3);
   function frame(now) {
     if (arrive < 1) arrive = arriveAt ? Math.min(1, (now - arriveAt) / 1800) : 0;
@@ -150,11 +173,19 @@ export function createSky({ onSelect }) {
       const [x, y, z, s] = project(sp.a, 0, 0), c = z > 0 ? b : f, st = podState(h), hit = changed.get(sp.key);
       const swell = hit ? Math.max(0, 1 - (now - hit) / 1400) : 0; if (swell) busy = true;
       const r = 2 * sp.size * s * (sp.key === hover || sp.key === focusId ? 1.8 : 1) * (1 + swell * 1.5) * (k - .6) / .4;
-      sp.x = x; sp.y = y; flare(c, x, y, r, SPARK_RGB[st], 1); flare(g, x, y, r * 1.6, SPARK_RGB[st], .9);
-      if (swell) { c.strokeStyle = `rgba(${SPARK_RGB[st]},${swell.toFixed(2)})`; c.lineWidth = 1.5; c.beginPath(); c.arc(x, y, 6 + (1 - swell) * 30, 0, 7); c.stroke(); }
+        sp.x = x; sp.y = y;
+      // a Master (merged, or one below it) is a planet on the halo; every other host a spark
+      if (sp.size > 1) { const pr = R * (sp.size > 1.4 ? .11 : .07) * s * (sp.key === hover || sp.key === focusId ? 1.18 : 1) * (1 + swell * .4) * (k - .6) / .4;
+        sp.r = pr; planet(c, g, x, y, pr, st, z > 0); }
+      else { sp.r = 0; flare(c, x, y, r, SPARK_RGB[st], 1); flare(g, x, y, r * 1.6, SPARK_RGB[st], .9); }
+      if (swell) { c.globalCompositeOperation = "lighter"; c.strokeStyle = `rgba(${SPARK_RGB[st]},${swell.toFixed(2)})`; c.lineWidth = 1.5; c.beginPath(); c.arc(x, y, 6 + (1 - swell) * 30, 0, 7); c.stroke(); }
       if (sp.size > 1 || st === "offline" || st === "hot" || sp.key === hover) {
         c.globalCompositeOperation = "source-over"; c.font = "400 10px 'Space Mono', monospace"; c.globalAlpha = z > 0 ? .55 : 1;
-        c.fillStyle = st === "offline" ? "#FF7FAE" : st === "hot" ? "#FFC266" : "#DCE0F0"; c.fillText(h.label.toUpperCase(), x + 11, y - 9);
+        c.fillStyle = st === "offline" ? "#FF7FAE" : st === "hot" ? "#FFC266" : "#DCE0F0";
+        const text = h.label.toUpperCase();
+        if (sp.r) { c.font = "700 11px 'Space Mono', monospace"; const w = c.measureText(text).width, right = x + sp.r * 1.9 + 6;
+          // a planet near the plate's right edge names itself on its left
+          c.fillText(text, right + w > W - BLEED - 12 ? x - sp.r * 1.9 - 6 - w : right, y + 4); } else c.fillText(text, x + 11, y - 9);
         c.globalAlpha = 1; c.globalCompositeOperation = "lighter";
       }
     }
@@ -168,7 +199,11 @@ export function createSky({ onSelect }) {
   }
   document.addEventListener("visibilitychange", kick);
   // drag turns the halo, a point names a spark, a click opens its host
-  const pick = (x, y) => { let best = null, d = 22; for (const sp of ring) { if (sp.x == null) continue; const dd = Math.hypot(sp.x - x, sp.y - y); if (dd < d) { d = dd; best = sp.key; } } return best; };
+  // a planet under the pointer wins over a spark near it; otherwise the nearest spark within 22 px
+  const pick = (x, y) => {
+    const on = ring.find(sp => sp.r && sp.x != null && Math.hypot(sp.x - x, sp.y - y) < sp.r + 8); if (on) return on.key;
+    let best = null, d = 22; for (const sp of ring) { if (sp.x == null) continue; const dd = Math.hypot(sp.x - x, sp.y - y); if (dd < d) { d = dd; best = sp.key; } } return best;
+  };
   let lastX = 0, lastY = 0, moved = 0;
   const local = e => { const r = root.getBoundingClientRect(); return [e.clientX - r.left + BLEED - parallax.x, e.clientY - r.top - parallax.y]; };
   root.addEventListener("pointerdown", e => { if (e.button !== 0 || e.target.closest(".sky-callout")) return; if (arrive < 1) { arrive = 1; kick(); }

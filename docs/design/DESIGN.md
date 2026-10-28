@@ -127,7 +127,8 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 | Button (primary) | 6 px, hairline white | `--pearl`, dark ink | — |
 | Callout | frosted ink block (`rgba(10,11,24,.72)` + 10 px backdrop blur), square, inner hairline, straight elbow leader, square terminal | — | — |
 | Halo | 5 200 glitter points (ember `#F0A060`, cream, pale blue) in a tilted ring; far half behind the hill and relic, near half and a ¼-size bloom in front | — | — |
-| Spark (host) | a flare in its status colour (cream online, rose offline, amber high load); merged Masters ×1.6, Masters below them ×1.3; Masters, offline and high-load sparks are named in mono | ×1.8 and named | callout on it |
+| Spark (host) | a flare in its status colour (cream online, rose offline, amber high load); offline and high-load sparks are named in mono | ×1.8 and named | callout on it |
+| Planet (Master) | a merged Master (radius 11 % of the halo) or a Master below one (7 %): a lit silver-violet sphere with faint bands, a tilted cream-and-ember ring (far arc behind, near arc in front), a rim and glow in its status colour; spread round the halo, named in bold mono (on its left near the edge); this Master stays the relic | ×1.18; a pointer anywhere on it picks it | callout on it |
 | Status dot | 9 px round in its colour (7 px in the tree) | | |
 
 ## Motion (all event-driven, all transform/opacity)
