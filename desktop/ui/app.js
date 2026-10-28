@@ -1668,19 +1668,26 @@ function syncSky() {
     checkedAt: state.healthAt ? state.healthAt.toLocaleTimeString(T.locale, { timeStyle: "short" }) : ""
   }, T);
 }
-/** One line instead of a stats strip: either all is well, or the hosts that need a look, each a link. */
+/** One line instead of a stats strip: either all is well, or the hosts that need a look grouped by why, with the
+ *  first few named (each opens the host) and the rest one click away in the Needs a look tab. */
 function renderSummaryLine() {
   const problems = state.targets.filter(item => isHot(item) || ["offline", "unknown", "legacy"].includes(nodeState(item)));
   const checking = state.targets.filter(item => nodeState(item) === "checking").length;
   const when = state.healthError ? '<span class="status-meta error" title="' + esc(state.healthError) + '">' + icons.alert + T.inv.statusFailed + "</span>"
     : '<span class="status-meta">' + (state.healthAt ? esc(T.common.checkedAt(timestamp(state.healthAt))) : T.inv.checking) + "</span>";
-  const why = item => isHot(item) ? T.inv.why.hot : nodeState(item) === "legacy" ? T.inv.why.legacy : (stateLabel(nodeState(item)) || "").toLowerCase();
+  const why = item => isHot(item) ? "hot" : nodeState(item);
+  const reason = { hot: T.inv.why.hot, legacy: T.inv.why.legacy }, dot = { offline: "bad", hot: "hot" };
+  const groups = ["offline", "hot", "unknown", "legacy"].map(key => [key, problems.filter(item => why(item) === key)]).filter(([, items]) => items.length);
+  const group = ([key, items]) => '<div class="sum-group is-' + key + '"><span class="sum-tag"><span class="dot ' + (dot[key] || "pending") + '" aria-hidden="true"></span>' +
+    esc(reason[key] || stateLabel(key) || key) + " <b>" + items.length + "</b></span>" +
+    items.slice(0, 3).map(item => '<button class="sum-host" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + "</button>").join("") +
+    (items.length > 3 ? '<button class="sum-more" data-action="sum-look">' + esc(T.inv.moreHosts(items.length - 3)) + "</button>" : "") + "</div>";
   const body = problems.length
-    ? '<span class="summary-icon is-bad" aria-hidden="true">!</span><strong>' + esc(T.inv.needLook(problems.length, hostCount())) + "</strong>" +
-      problems.map(item => '<button class="text-button" data-action="dc-select" data-node="node:' + esc(item.id) + '">' + esc(item.label || item.id) + " · " + esc(why(item)) + "</button>").join("")
+    ? '<span class="summary-icon is-bad" aria-hidden="true">!</span><strong>' + esc(T.inv.needLook(problems.length, hostCount())) + "</strong>"
     : checking ? '<span class="summary-icon" aria-hidden="true">…</span><strong>' + esc(T.inv.checkingN(checking)) + "</strong>"
     : '<span class="summary-icon is-good" aria-hidden="true">✓</span><strong>' + esc(T.inv.allOnline(hostCount())) + "</strong>";
-  return '<div id="inv-summary" class="inv-summary" role="status">' + body + when + '<button class="icon-button" data-action="refresh-fleet" aria-label="' + esc(T.inv.checkAgain) + '" title="' + esc(T.inv.checkAgainTitle) + '">' + icons.refresh + "</button></div>";
+  return '<div id="inv-summary" class="inv-summary" role="status">' + body + when + '<button class="icon-button" data-action="refresh-fleet" aria-label="' + esc(T.inv.checkAgain) + '" title="' + esc(T.inv.checkAgainTitle) + '">' + icons.refresh + "</button>" +
+    (groups.length ? '<div class="sum-groups">' + groups.map(group).join("") + "</div>" : "") + "</div>";
 }
 function renderDcPanel() {
   if (state.backup) return renderBackupFlow();
@@ -2503,6 +2510,7 @@ document.addEventListener("click", event => {
       $("#fleet-table").innerHTML = renderFleetView();
     }
     if (action === "manage-merge") return navigate("masters");
+    if (action === "sum-look") { state.invTab = "look"; $("#fleet-table").innerHTML = renderFleetView(); $(".inv-tabs")?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); $('.inv-tab[aria-selected="true"]')?.focus({ preventScroll: true }); return; }
     if (action === "inv-tab") { state.invTab = button.dataset.tab; $("#fleet-table").innerHTML = renderFleetView(); $('.inv-tab[aria-selected="true"]')?.focus(); return; }
     if (action === "dc-select") {
       if (state.page !== "datacenter") state.page = "datacenter";

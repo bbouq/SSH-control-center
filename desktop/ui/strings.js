@@ -66,7 +66,7 @@ const en = {
     restoreTitle: "Moving a Master to this machine?", restoreText: "Restore a backup of the old Master to get all its hosts back at once, or add hosts one by one",
     // One summary line over the topology.
     statusFailed: "Status check failed", checking: "Checking…",
-    why: { hot: "high load", legacy: "service not installed" },
+    why: { hot: "High load", legacy: "Service not installed" }, moreHosts: n => "+" + n + " more",
     needLook: (n, total) => n + " of " + total + " hosts need a look", checkingN: n => "Checking " + n + " hosts", allOnline: n => "All " + n + " hosts online",
     checkAgain: "Check every host again", checkAgainTitle: "Check every host over SSH again",
     // The tree.
@@ -540,7 +540,7 @@ const th = {
     firstTitle: "เชื่อมต่อเครื่องแรกของคุณ", firstText: "กด “+ เพิ่มเครื่อง” ที่แถบด้านข้าง",
     restoreTitle: "ย้าย Master มาที่เครื่องนี้?", restoreText: "กู้คืนไฟล์สำรองของ Master เครื่องเก่าเพื่อได้เครื่องทั้งหมดกลับมาในครั้งเดียว หรือเพิ่มเครื่องทีละเครื่อง",
     statusFailed: "ตรวจสถานะไม่สำเร็จ", checking: "กำลังตรวจ…",
-    why: { hot: "โหลดสูง", legacy: "ยังไม่ได้ติดตั้งบริการ" },
+    why: { hot: "โหลดสูง", legacy: "ยังไม่ได้ติดตั้งบริการ" }, moreHosts: n => "อีก " + n + " เครื่อง",
     needLook: (n, total) => n + " จาก " + total + " เครื่องควรตรวจดู", checkingN: n => "กำลังตรวจ " + n + " เครื่อง", allOnline: n => "ออนไลน์ครบทั้ง " + n + " เครื่อง",
     checkAgain: "ตรวจทุกเครื่องอีกครั้ง", checkAgainTitle: "ตรวจทุกเครื่องผ่าน SSH อีกครั้ง",
     current: "ปัจจุบัน", collapse: "ยุบ", expand: "ขยาย", newFolderName: "ชื่อโฟลเดอร์ใหม่", renameFolder: "เปลี่ยนชื่อโฟลเดอร์",
