@@ -291,10 +291,22 @@ td > code { white-space: nowrap; overflow-wrap: normal; }
 .alarm-count.is-red { color: var(--rose); }
 .alarm-count.is-yellow { color: var(--amber); }
 .alarm-table tr.acknowledged td { color: var(--lilac); opacity: .7; }
+/* The level is a status tag (dot + mono caps), and Acknowledge stays quiet until pointed at */
+.alarm-level { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; font-weight: 500; }
+.alarm-level .dot { width: 9px; height: 9px; }
+.alarm-level.is-red { color: var(--rose); }
+.alarm-level.is-yellow { color: var(--amber); }
+.alarm-table td { padding-top: 10px; padding-bottom: 10px; }
+.alarm-table td.actions button.small { border-color: transparent; color: var(--lilac); }
+.alarm-table tr:hover td.actions button.small, .alarm-table td.actions button.small:focus-visible { border-color: var(--rule); color: var(--white); }
+.alarm-table td.actions button.small:hover { background: var(--pearl); border-color: transparent; color: var(--ink-on-green); }
 .rule-editor { margin-bottom: 22px; }
 .host-pick { display: flex; flex-wrap: wrap; gap: 8px 18px; border: 1px solid var(--rule); padding: 10px 12px; }
 .alarm-lines { list-style: none; padding: 0; margin: 0 0 10px; display: grid; gap: 6px; }
-.updates-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.updates-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.updates-line > strong { font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .16em; text-transform: uppercase; color: var(--lilac); }
+/* The host's Alarms block sits under its facts: hairline-quiet buttons, the pearl only when pointed at */
+.host-alarms button.small { min-height: 32px; border-color: var(--rule); color: var(--lilac); }
 .package-list { columns: 2 220px; margin: 8px 0 0; padding-left: 18px; }
 /* Team sharing: the grant controls on "This Master is controlled by", and the View only badge. */
 .grant { display: grid; gap: 8px; min-width: 220px; }
@@ -370,17 +382,10 @@ details > div, details > form, details > p { padding: 4px 0 18px; }
 .stat { box-shadow: -1px 0 0 var(--rule); }
 .stat:first-child { box-shadow: none; }
 .stat:first-child { padding-left: 0; }
-.stat-value { font-family: var(--serif); font-weight: 600; font-size: 30px; line-height: 1.05; font-variation-settings: "SOFT" 0, "WONK" 0, "opsz" 144; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; margin-top: 4px; display: flex; align-items: center; gap: 10px; }
+.stat-value { font-family: var(--body); font-weight: 600; font-size: 20px; line-height: 1.2; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; margin-top: 6px; display: flex; align-items: center; gap: 10px; }
 .stat-value code { font-size: 15px; }
 .stat > small { display: block; margin-top: 4px; }
 /* Inventory: the fleet numbers always take their own full row under the heading (side by side looked off-balance on wide screens). */
-.inv-stats { flex: 1 1 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
-.inv-stats .stat { padding: 14px 20px 16px; }
-.inv-stats .stat:first-child { box-shadow: none; }
-.inv-stats .stat-value { font-size: 52px; line-height: 1; min-height: 56px; margin-top: 8px; }
-.inv-stats .stat-value .eng { font-size: 60px; }
-.inv-stats .stat > small { color: var(--lilac); font-size: 14px; margin-top: 6px; }
-@media (max-width: 760px) { .inv-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .inv-stats .stat:nth-child(3) { box-shadow: none; } }
 .copy-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0 8px 14px; background: var(--deep); }
 .copy-row code { flex: 1; min-width: 0; color: var(--lilac-2); }
 .copy-row + .copy-row { margin-top: 8px; }
@@ -405,13 +410,9 @@ details > div, details > form, details > p { padding: 4px 0 18px; }
 .tabs button.active { color: var(--white); border-bottom: 2px solid transparent; border-image: var(--pearl) 1; }
 
 /* Host-key seal: engraved hatching (the Inventory halo is the one hologram); a light sweeps across on click. */
-.foil-sticker { position: relative; width: 104px; height: 104px; flex: none; transform: rotate(6deg); overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: var(--white); border: 1px solid rgba(238, 240, 248, .5); border-radius: var(--radius); background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .12) 0 1px, transparent 1px 4px), var(--plate); cursor: default; }
-.foil-sticker::before { content: ""; position: absolute; top: 0; bottom: 0; left: -60%; width: 40%; background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .55), transparent); transform: translateX(0); opacity: 0; z-index: 0; }
-.foil-sticker > * { position: relative; z-index: 1; }
-.foil-sticker b { font-family: var(--serif); font-weight: 800; font-size: 17px; line-height: 1; text-align: center; font-variation-settings: "SOFT" 0, "WONK" 0, "opsz" 144; }
-.foil-sticker span { font-family: var(--mono); font-size: 9px; letter-spacing: .14em; font-weight: 500; text-transform: uppercase; color: var(--lilac); }
-.foil-sticker.is-playing::before { animation: foil-once 1.5s ease-in-out; }
-@keyframes foil-once { 0% { opacity: 1; transform: translateX(0); } 100% { opacity: 1; transform: translateX(420%); } }
+/* The pinned host key: a hairline chip in the meta row */
+.key-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--rule); border-radius: var(--radius); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; color: var(--lilac); }
+.key-chip svg { width: 12px; height: 12px; }
 
 /* Jobs & terminal (terminal blocks are the one other filled surface). */
 .new-job { margin-bottom: 22px; }
@@ -512,11 +513,6 @@ dialog h2 { margin-bottom: 12px; }
 .dc-item[draggable="true"] { cursor: grab; }
 #pairing-new-folder { margin-top: 8px; }
 
-/* Engraved numerals (DESIGN.md effect) — the stats strip's hosts-online count. */
-.eng { background: repeating-linear-gradient(180deg, transparent 0 2px, var(--ground-1) 2px 4px), linear-gradient(180deg, #FFFFFF 0%, #E6EAF8 38%, #A9B8E8 52%, #FFFFFF 60%, #BFE4FF 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
-/* Small engraving: finer hatching so the numerals stay legible at stat size. */
-.stat-value .eng { font-weight: 900; font-size: 48px; line-height: .9; letter-spacing: -.03em; background: repeating-linear-gradient(180deg, transparent 0 2px, var(--ground-1) 2px 3px), linear-gradient(180deg, #FFFFFF 0%, #E6EAF8 38%, #A9B8E8 52%, #FFFFFF 60%, #BFE4FF 100%); -webkit-background-clip: text; background-clip: text; }
-
 /* Under the sky: square tabs over host rows in two columns on hairlines (DESIGN.md "Components").
    Rows hover and select in a faint pearl; tabs hover and select in the full pearl. */
 .inv-tabs { display: flex; flex-wrap: wrap; margin: 6px 0 4px; border: 1.5px solid rgba(238, 240, 248, .28); width: fit-content; max-width: 100%; }
@@ -538,7 +534,11 @@ dialog h2 { margin-bottom: 12px; }
 .inv-text .row-button { font-size: 17px; }
 .inv-text small { color: var(--lilac); font-size: 12px; font-family: var(--mono); overflow-wrap: anywhere; }
 .inv-state { font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--white); white-space: nowrap; }
+.inv-row.is-online .inv-state { color: var(--led); }
 .inv-row.is-offline .inv-state { color: var(--rose); }
+/* Not known (unknown, checking, no service): muted label and a dashed ring, so it never reads as fine */
+.inv-row:is(.is-unknown, .is-checking, .is-legacy) .inv-state { color: var(--lilac); font-weight: 500; }
+.inv-row:is(.is-unknown, .is-checking, .is-legacy) .dot { border-style: dashed; border-color: var(--lilac); }
 .inv-row.is-hot .inv-state { color: var(--amber); }
 .inv-row [data-action="open-shell"] { width: 40px; min-height: 40px; padding: 0; justify-content: center; border-color: transparent; background: transparent; }
 .inv-row [data-action="open-shell"]:hover:not(:disabled), .inv-row [data-action="open-shell"]:focus-visible { border-color: transparent; background: var(--pearl); color: var(--ink-on-green); }
@@ -701,7 +701,7 @@ dialog h2 { margin-bottom: 12px; }
    marks above and below the letters. Latin-only text (logo, version, host key seal, EN) keeps its spacing. */
 html:lang(th) :is(.side-nav .nav, .side-foot .label, .side-foot strong, .inv-summary strong, h3, .label, .stat-label, th, .status-meta, .fig, button, label, .nav, .info-line,
   .status-filter strong, td strong, .badge, .chip, .callout strong, summary, summary small, .facts dt, .live-label, .tabs button, .console-bar strong, .stepper strong,
-  .ctx-item, .dc-item, .dc-tag, .inv-state, .spark-empty, .check-head h2, .foil-sticker span, .sum-tag) { letter-spacing: 0; }
+  .ctx-item, .dc-item, .dc-tag, .inv-state, .spark-empty, .check-head h2, .key-chip, .sum-tag, .alarm-level, .updates-line > strong) { letter-spacing: 0; }
 html:lang(th) :is(h1, h2) { line-height: 1.2; }
 html:lang(th) :is(h3, .callout strong, td strong, .badge, summary, button) { line-height: 1.3; }
 html:lang(th) .lang-switch button[lang="en"] { letter-spacing: .08em; }

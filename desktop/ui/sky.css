@@ -92,6 +92,11 @@ body {
 .sky-pod.is-master .cap { background: conic-gradient(from 210deg, #F4F6FB, #A6B4D8, #E8ECF6, #6E7CA8, #DCD6EE, #C9E6EA, #F4F6FB); border-color: rgba(238, 240, 248, .35); }
 .sky-pod.is-master .led { width: 12px; height: 12px; left: -6px; top: -6px; background: var(--steel); animation: none; }
 .sky-pod.is-peer { cursor: pointer; }
+.sky-pod.is-sub { --d: 34px; cursor: pointer; }
+.sky-pod.is-sub .led { width: 9px; height: 9px; left: -4.5px; top: -4.5px; }
+.sky-pod.is-sub.is-online .led { background: var(--led); }
+.sky-pod.is-sub.is-offline .led { background: var(--rose); }
+.sky-pod.is-sub.is-hot .led { background: var(--amber); }
 .sky-pod.is-focus { transform: translate(5.8px, -17.9px); }
 .sky-pod.is-focus .cap { background: var(--holo); border-color: transparent; }
 .sky-pod.is-focus .dk { border-color: #C9D6FF; }

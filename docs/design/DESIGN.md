@@ -101,17 +101,23 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
    over host rows in two columns on hairlines (one column under 1000 px). "All" starts with this Master. The sky draws the topology; the rows are where you act.
 4. **Every other page** (host, Master, Masters, Alarms, Service, Add host) — no sky plate; a faint 150 px strip of the same sky across the top,
    continuous under the sidebar. The sky clock runs on every page.
+5. **Host page, Summary tab** — the facts first (address, routes, last status, service), then tags and the host's alarms, then the
+   details you open on purpose (technical, edit, remove).
 
 ## Components
 
 | Component | Rest | Hover / focus | Selected |
 |---|---|---|---|
-| Host row | hairline below, white name, lilac IP | `--pearl-faint`, text stays light | `--pearl-faint` + 3 px pearl left edge |
+| Host row | hairline below, white name, lilac IP; state word in its status colour (online `--led`, offline `--rose`, high load `--amber`); not known (unknown, checking, no service) is a lilac word and a dashed ring | `--pearl-faint`, text stays light | `--pearl-faint` + 3 px pearl left edge |
+| Fact (host page) | mono caps label, value in Instrument Sans 600 20 px (addresses in mono), sub-line lilac; last status adds response time and online for | — | — |
+| Host key | hairline chip in the meta row: lock + "Host key pinned · TYPE", mono 11 px | — | — |
+| Alarm level | dot + mono caps word in its colour (red `--rose`, yellow `--amber`) | — | — |
+| Quiet row action (Acknowledge, Check now) | text only, lilac | hairline on row hover; `--pearl` on its own hover | — |
 | Tab | square, 1.5 px rule border | `--pearl`, dark ink | `--pearl`, dark ink |
 | Menu row | faint pill `rgba(238,240,248,.035)` | `--pearl` | `--pearl` + dark dot |
 | Button (primary) | 6 px, hairline white | `--pearl`, dark ink | — |
 | Callout | frosted ink block (`rgba(10,11,24,.72)` + 10 px backdrop blur), square, inner hairline, straight elbow leader, square terminal | — | — |
-| Pod | stacked discs, hairline edges; Master taller, chrome cap; every 4th Master disc steel | lifts 10 px, cap `--holo` | — |
+| Pod | stacked discs, hairline edges; Master taller, chrome cap; every 4th Master disc steel; a host below a merged Master that is itself a Master stands as a smaller Master pod (34 px, 9 discs, named, LED in its status colour) | lifts 10 px, cap `--holo` | — |
 | Status dot | 9 px round in its colour (7 px in the tree) | | |
 
 ## Motion (all event-driven, all transform/opacity)

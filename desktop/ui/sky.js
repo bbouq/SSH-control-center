@@ -122,7 +122,7 @@ export function createSky({ onSelect }) {
     for (const h of s.direct.slice(0, MAX_PODS)) pod(h.id, pos.get(h.id), "", 5, 6, h.label);
     for (const peer of s.peers) {
       pod(peer.id, pos.get(peer.id), "is-master is-peer", 12, 7, peer.label);
-      for (const h of peer.hosts.slice(0, MAX_PODS)) pod(peer.id + "\u0000" + h.id, pos.get(peer.id + "\u0000" + h.id), "", 5, 6, h.label);
+      for (const h of peer.hosts.slice(0, MAX_PODS)) pod(peer.id + "\u0000" + h.id, pos.get(peer.id + "\u0000" + h.id), h.master ? "is-master is-sub" : "", h.master ? 9 : 5, 6, h.label);
       if (peer.hosts.length > MAX_PODS) more(pos.get(peer.id), peer.hosts.length - MAX_PODS, 150);
     }
     if (s.direct.length > MAX_PODS) more({ x: 230 + MAX_PODS * 30, y: 40 }, s.direct.length - MAX_PODS, 0);

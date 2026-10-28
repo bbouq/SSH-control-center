@@ -72,7 +72,7 @@ const checks = {
     await row.locator('[data-action="alarm-rule-edit"]').click();
     await page.locator('#alarm-rule [name="level"]').selectOption("red");
     await page.locator('#alarm-rule [type="submit"]').click();
-    await page.locator("tbody tr[data-rule]", { hasText: "Container stopped" }).locator(".badge", { hasText: "Red" }).waitFor();
+    await page.locator("tbody tr[data-rule]", { hasText: "Container stopped" }).locator(".alarm-level", { hasText: "Red" }).waitFor();
     page.once("dialog", dialog => dialog.accept());
     await page.locator("tbody tr[data-rule]", { hasText: "Container stopped" }).locator('[data-action="alarm-rule-delete"]').click();
     await page.locator("#notice", { hasText: "Rule deleted" }).waitFor();
@@ -101,7 +101,7 @@ const checks = {
     assert.match(await page.locator("#alarm-list").textContent(), /Disk 93\.5%/);
     await shots(page, "active");
     // Acknowledge both red alarms: the count turns yellow.
-    for (let i = 0; i < 2; i++) await page.locator("#alarm-list tr:not(.acknowledged) .badge.bad").first().locator("xpath=ancestor::tr").locator('[data-action="alarm-ack"]').click();
+    for (let i = 0; i < 2; i++) await page.locator("#alarm-list tr:not(.acknowledged) .alarm-level.is-red").first().locator("xpath=ancestor::tr").locator('[data-action="alarm-ack"]').click();
     await page.waitForFunction(() => document.querySelector("#alarm-count")?.textContent === "1");
     assert.match(await count.getAttribute("class"), /is-yellow/);
     assert.equal(await page.locator("#alarm-list tr.acknowledged").count(), 2, "still listed, greyed");
