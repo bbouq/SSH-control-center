@@ -13,17 +13,17 @@
 <body>
   <aside class="app-side" aria-label="Navigation" data-i18n-aria="side.nav">
     <div class="side-logo" role="img" aria-label="SSH Control Center" data-raw><b>SSH</b><span>Control</span><span>Center</span></div>
+    <button class="accent add-host" data-action="add-host" data-i18n="side.addHost">+ Add host</button>
     <nav class="side-nav" aria-label="Main menu" data-i18n-aria="side.menu">
       <div class="side-nav-row"><button data-page="datacenter" class="nav active"><span data-i18n="side.inventory">Inventory</span> <span id="fleet-count" class="count">0</span></button><button class="icon-button tree-toggle" data-action="tree-toggle" aria-expanded="false" aria-controls="side-hosts" aria-label="Show or hide the host tree" title="Show or hide the host tree" data-i18n-aria="side.treeToggle" data-i18n-title="side.treeToggle"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button></div>
+      <div class="side-hosts" id="side-hosts" hidden>
+        <div class="search"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="dc-search" type="search" aria-label="Filter hosts" placeholder="Filter hosts…" data-i18n-aria="side.filter" data-i18n-placeholder="side.filterPlaceholder"></div>
+        <div id="dc-tree"></div>
+      </div>
       <button data-page="masters" class="nav" data-i18n="side.masters">Masters</button>
       <button data-page="alarms" class="nav"><span data-i18n="side.alarms">Alarms</span> <span id="alarm-count" class="count alarm-count" hidden>0</span></button>
       <button data-page="service" class="nav" data-i18n="side.service">Service</button>
     </nav>
-    <div class="side-hosts" id="side-hosts" hidden>
-      <button class="accent add-host" data-action="add-host" data-i18n="side.addHost">+ Add host</button>
-      <div class="search"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input id="dc-search" type="search" aria-label="Filter hosts" placeholder="Filter hosts…" data-i18n-aria="side.filter" data-i18n-placeholder="side.filterPlaceholder"></div>
-      <div id="dc-tree"></div>
-    </div>
     <div class="side-foot" title="This window operates from this Master" data-i18n-title="side.footTitle"><span class="label"><span id="service-dot" class="dot pending"></span><span data-i18n="side.current">Current Master</span></span><strong id="service-label" data-i18n="side.connecting">Connecting…</strong><small id="app-version" class="side-version">v0.4.0</small>
       <button class="icon-button" id="refresh-all" aria-label="Refresh" title="Refresh" data-i18n-aria="side.refresh" data-i18n-title="side.refresh"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"/><path d="M13.25 2.25v3.5h-3.5"/></svg></button>
       <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria="side.language"><button type="button" data-lang="en" lang="en" aria-pressed="true">EN</button><button type="button" data-lang="th" lang="th" aria-pressed="false">ไทย</button></div></div>

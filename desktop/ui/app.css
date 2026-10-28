@@ -65,9 +65,12 @@ body { margin: 0; background: radial-gradient(ellipse 60% 45% at 0% 0%, rgba(120
 .side-logo b { display: block; font: 800 34px/.9 var(--serif); font-variation-settings: "SOFT" 0, "WONK" 0, "opsz" 144; letter-spacing: -.02em; }
 .side-logo span { display: block; margin-top: 3px; font: 400 10px/1.5 var(--mono); letter-spacing: .3em; text-transform: uppercase; color: var(--lilac); }
 .side-nav { display: flex; flex-direction: column; gap: 6px; }
-/* Below the menu, quieter: Add host, the filter and the host tree (the prototype keeps the top to the logo and menu) */
+/* Inventory's dropdown, right under it: the filter and the host tree, folded until its chevron opens it */
 .side-hosts[hidden] { display: none; }
-.side-hosts { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.side-hosts { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 6px; padding: 8px 0 4px 4px; border-left: 1px solid var(--rule); }
+/* Add host stays in sight under the logo: the one solid button in the sidebar */
+.app-side .add-host { flex: none; min-height: 44px; background: var(--white); color: var(--ink-on-green); border-color: var(--white); font-weight: 700; }
+.app-side .add-host:hover:not(:disabled), .app-side .add-host:focus-visible { background: var(--pearl); border-color: transparent; color: var(--ink-on-green); }
 .side-nav-row { display: flex; align-items: center; }
 .side-nav .nav { width: 100%; min-height: 40px; padding: 0 12px; justify-content: flex-start; font-size: 13px; font-weight: 700; letter-spacing: .16em; color: #C9CDE2; background: rgba(238, 240, 248, .035) !important; border-radius: var(--radius); }
 .side-nav .nav:hover:not(:disabled) { background: var(--pearl) !important; color: var(--ink-on-green) !important; }

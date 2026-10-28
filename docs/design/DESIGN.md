@@ -94,9 +94,10 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 
 1. **Sidebar** — 236 px, transparent over the window ground. The sky continues under it down to the hill line (`--hill-y`, written by
    sky.js where the hill meets the plate's left edge), and the hill carries on under it in the same colours. Top → bottom, as the
-   prototype: stacked logo (SSH / Control / CENTER), menu (each row a faint pill; the active one pearl); then, under a hairline, Add host
-   (6 px, hairline), filter (6 px, faint fill), host tree with curved connectors — folded by default (only the menu shows), opened by
-   the chevron by Inventory and remembered; current Master + round-cornered Refresh at the foot. Its sky carries the plate's stars,
+   prototype: stacked logo (SSH / Control / CENTER); **Add host**, always in sight, the one solid button (white, pearl on hover);
+   the menu (each row a faint pill; the active one pearl). Inventory's dropdown opens right under it — the filter and the host tree
+   with curved connectors — folded by default, opened by its chevron and remembered; then Masters, Alarms, Service; current Master +
+   round-cornered Refresh at the foot. Its sky carries the plate's stars,
    haze and grain (positions from sky.js), so nothing steps at the edge.
    No scrim over the sidebar's sky: its tree and foot words carry a dark halo instead.
 2. **Sky plate** — the full window height (560–980 px), top of Inventory; the rows start below it. As the prototype: a fixed night
