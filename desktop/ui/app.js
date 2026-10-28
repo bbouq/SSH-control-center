@@ -453,14 +453,14 @@ function renderGraph() {
   const direct = local.machines.filter(entry => !peerIds.has(entry.item.id)).map(entry => entry.item);
   const t = T.inv.tabs, all = state.targets;
   const tabs = [["all", t.all, all.length + 1], ["direct", t.direct, direct.length],
-    ...peers.map(peer => ["peer:" + peer.id, T.inv.through(peer.label), peer.machines.length]), ["look", t.look, all.filter(needsLook).length]];
+    ...peers.map(peer => ["peer:" + peer.id, T.inv.through(peer.label), peer.all.length]), ["look", t.look, all.filter(needsLook).length]];
   if (!tabs.some(([id]) => id === state.invTab)) state.invTab = "all";
   const peer = state.invTab.startsWith("peer:") ? peers.find(row => "peer:" + row.id === state.invTab) : null;
-  const pool = state.invTab === "direct" ? direct : state.invTab === "look" ? all.filter(needsLook) : peer ? [peer.item, ...peer.machines.map(entry => entry.item)] : all;
-  const alsoDirect = new Set(peers.flatMap(row => row.machines.filter(entry => entry.alsoDirect).map(entry => entry.item.id)));
+  const pool = state.invTab === "direct" ? direct : state.invTab === "look" ? all.filter(needsLook) : peer ? [peer.item, ...peer.all.map(entry => entry.item)] : all;
+  const alsoDirect = new Set(peers.flatMap(row => row.all.filter(entry => entry.alsoDirect).map(entry => entry.item.id)));
   const row = item => {
     const status = item ? nodeState(item) : state.service ? "online" : "offline", name = item ? item.label || item.id : local.label;
-    const role = !item ? T.inv.cardSelf : peerIds.has(item.id) ? T.inv.peerRole(peers.find(row => row.id === item.id).machines.length) : "";
+    const role = !item ? T.inv.cardSelf : peerIds.has(item.id) ? T.inv.peerRole(peers.find(row => row.id === item.id).all.length) : "";
     const sub = [role, item ? osName(item.os) : "", item && !item.relayed ? item.routes?.[0]?.address : "", item?.relayed ? T.inv.via(item.viaLabel || "") : ""].filter(Boolean);
     const shown = item && isHot(item) ? T.inv.highLoad : stateLabel(status) || status;
     return '<div class="inv-row is-' + (item && isHot(item) ? "hot" : status) + (item && state.flipped.has(item.id) ? " just-changed" : "") + '" data-host="' + esc(item ? item.id : "local") + '">' +
@@ -1660,7 +1660,7 @@ function syncSky() {
     visible: true,
     master: { label: local.label, address: state.service?.address || "", version: state.service?.version ? "v" + state.service.version : "" },
     direct: local.machines.filter(entry => !peerIds.has(entry.item.id)).map(entry => skyHost(entry.item)),
-    peers: peers.map(peer => ({ ...skyHost(peer.item), hosts: peer.machines.map(entry => skyHost(entry.item)) })),
+    peers: peers.map(peer => ({ ...skyHost(peer.item), hosts: peer.all.map(entry => skyHost(entry.item)) })),
     online: hostsOnline(), total: hostCount(), offline: state.targets.filter(item => nodeState(item) === "offline").length,
     checkedAt: state.healthAt ? state.healthAt.toLocaleTimeString(T.locale, { timeStyle: "short" }) : ""
   }, T);
