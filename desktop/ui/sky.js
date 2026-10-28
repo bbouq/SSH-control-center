@@ -96,9 +96,10 @@ export function createSky({ onSelect }) {
     pos = new Map(); const peers = s.peers, direct = s.direct.slice(0, MAX_PODS);
     const span = peers.length ? 400 : 720, step = Math.min(110, span / Math.max(1, direct.length));
     direct.forEach((h, i) => pos.set(h.id, { x: 250 + step / 2 + i * step, y: 70 + Math.abs(i - (direct.length - 1) / 2) * 12, via: null }));
-    const gap = peers.length ? (960 - 600) / peers.length : 0;
+    // With nothing direct, the merged Masters take the floor from just past this Master
+    const from = direct.length ? 600 : 330, gap = peers.length ? (960 - from) / peers.length : 0;
     peers.forEach((p, k) => {
-      const px0 = 600 + k * gap + gap * .15, kids = p.hosts.slice(0, MAX_PODS), kstep = Math.min(72, (gap * .8) / Math.max(1, kids.length));
+      const px0 = from + k * gap + gap * .15, kids = p.hosts.slice(0, MAX_PODS), kstep = Math.min(72, (gap * .8) / Math.max(1, kids.length));
       pos.set(p.id, { x: px0, y: 230, peer: true });
       kids.forEach((h, i) => pos.set(p.id + "\u0000" + h.id, { x: px0 + 60 + i * kstep, y: 330 - Math.abs(i - (kids.length - 1) / 2) * 16, via: p.id }));
     });
