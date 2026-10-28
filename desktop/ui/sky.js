@@ -1,11 +1,13 @@
-/* The Inventory sky (DESIGN.md "Relic Night"). Built once, then only updated, so a running light or the parallax
+/* The Inventory sky (DESIGN.md "Relic Night"). Built once, then only updated, so the halo's turn or the parallax
    survives the window's re-renders. app.js hands it a snapshot of the fleet; the sky never asks the Master itself.
-   Motion budget: nothing loops but the LED breathing, the glint and a few sparks. A host changing state sends one light
-   down its wire, a recovery one shooting star; the clock repaints the sky once a minute. CSP: no style="" anywhere,
-   custom properties go through CSSOM. */
+   The fleet is the Stardust Halo: a ring of glitter around this Master (a silver relic on the near ridge), one bright
+   spark per host. Real 3D points projected by hand on canvas 2D (no library, no WebGL, so it also draws in WebKitGTK
+   without a GPU). It draws only while something moves: the arrival, a drag, its inertia, a host changing. Motion budget
+   otherwise: the glint and a few sparks; the clock repaints the sky once a minute. CSP: no style="" anywhere, custom
+   properties go through CSSOM. */
 const NS = "http://www.w3.org/2000/svg";
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const MAX_PODS = 14; // per group; the rest are counted as "+N"
+const MAX_SPARKS = 48; // hosts named on the halo; the rest still glitter in it
 
 // Sky colours (zenith → horizon), glow and far ridge per phase of the day, and the hours they peak at.
 const PHASES = {
@@ -24,6 +26,9 @@ const SUNRISE = 6, SUNSET = 18.6;
 const SPARKS = [[78, 12, 8, 9.5, 0], [88, 26, 5, 11, 2.4], [66, 8, 5, 8.2, 4.1], [94, 44, 7, 12, 1.2], [57, 18, 4, 10.4, 6], [83, 52, 4, 9, 3.3]];
 const FACES = ["c", "f", "g", "m"];
 const STATE_COLOUR = { online: "var(--led)", offline: "var(--rose)", hot: "var(--amber)" };
+const SPARK_RGB = { online: "255,238,214", offline: "255,127,174", hot: "255,194,102", checking: "201,205,226" };
+const GLITTER = 5200, TONES = [[240, 160, 96], [255, 232, 200], [191, 216, 255], [255, 140, 90]];
+const REST = { yaw: .35, pitch: .27 };
 
 const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
 const mix = (a, b, t) => "#" + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t).toString(16).padStart(2, "0")).join("");
@@ -49,9 +54,10 @@ export function createSky({ onSelect }) {
   svgEl("path", { class: "fill", d: RIDGE_FAR + " L1200 190 L0 190 Z" }, far);
   svgEl("path", { class: "rim", d: RIDGE_FAR }, far);
   const glint = make("div", "sky-glint", root); make("i", "", glint);
-  const view = make("div", "sky-view", root), floor = make("div", "sky-floor", view);
+  const back = make("canvas", "sky-halo", root);
   const near = svgEl("svg", { class: "sky-ridge near", viewBox: "0 0 1200 190", preserveAspectRatio: "none" }, root);
   svgEl("path", { d: RIDGE_NEAR + " L1200 190 L0 190 Z" }, near);
+  const front = make("canvas", "sky-halo", root), bloom = make("canvas", "sky-halo bloom", root);
   const sparks = SPARKS.map(([x, y, s, t, dl]) => set(make("i", "sky-spark", root), { left: x + "%", top: y + "%", "--s": px(s), "--t": t + "s", "--dl": dl + "s" }));
   const film = make("div", "sky-film", root); make("i", "perf", film); const frames = make("span", "frames", film); make("i", "perf", film);
   make("i", "sky-reg tl", root); make("i", "sky-reg br", root);
@@ -62,7 +68,7 @@ export function createSky({ onSelect }) {
   const shoot = make("div", "", root); set(shoot, { inset: "0", "pointer-events": "none", overflow: "hidden" });
   void sparks;
 
-  let T = null, snap = null, layoutKey = "", pods = new Map(), pos = new Map(), paths = new Map(), halo = null;
+  let T = null, snap = null, layoutKey = "", ring = [], byKey = new Map();
   let focusId = null, last = new Map(), hour = 0, clock = 0, parallax = { x: 0, y: 0 };
 
   /* ---------- the sky clock ---------- */
@@ -90,57 +96,96 @@ export function createSky({ onSelect }) {
   const stopClock = () => { clearInterval(clock); clock = 0; };
   document.addEventListener("visibilitychange", () => document.hidden ? stopClock() : (tick(), startClock()));
 
-  /* ---------- layout: this Master, direct hosts north, each merged Master on the trunk with its hosts south ---------- */
-  const M = { x: 110, y: 210 };
-  function layout(s) {
-    pos = new Map(); const peers = s.peers, direct = s.direct.slice(0, MAX_PODS);
-    const span = peers.length ? 400 : 720, step = Math.min(110, span / Math.max(1, direct.length));
-    direct.forEach((h, i) => pos.set(h.id, { x: 250 + step / 2 + i * step, y: 70 + Math.abs(i - (direct.length - 1) / 2) * 12, via: null }));
-    // With nothing direct, the merged Masters take the floor from just past this Master
-    const from = direct.length ? 600 : 330, gap = peers.length ? (960 - from) / peers.length : 0;
-    peers.forEach((p, k) => {
-      const px0 = from + k * gap + gap * .15, kids = p.hosts.slice(0, MAX_PODS), kstep = Math.min(72, (gap * .8) / Math.max(1, kids.length));
-      pos.set(p.id, { x: px0, y: 230, peer: true });
-      kids.forEach((h, i) => pos.set(p.id + "\u0000" + h.id, { x: px0 + 60 + i * kstep, y: 330 - Math.abs(i - (kids.length - 1) / 2) * 16, via: p.id }));
-    });
+  /* ---------- the halo: glitter in ring space (angle, radial offset, height), one spark per host ---------- */
+  const rand = (seed => () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646)(7);
+  const G = new Float32Array(GLITTER * 4), GC = [], FROM = new Float32Array(GLITTER * 2);
+  for (let i = 0; i < GLITTER; i++) {
+    G[i * 4] = rand() * Math.PI * 2; G[i * 4 + 1] = (rand() + rand() + rand() - 1.5) * .075; G[i * 4 + 2] = (rand() - .5) * .035;
+    G[i * 4 + 3] = rand() < .985 ? .5 + rand() * 1.1 : 1.8 + rand() * 1.6;
+    const t = rand(), c = TONES[t < .45 ? 0 : t < .75 ? 1 : t < .93 ? 2 : 3]; GC.push(`rgba(${c[0]},${c[1]},${c[2]},${(.25 + rand() * .75).toFixed(2)})`);
+    FROM[i * 2] = rand(); FROM[i * 2 + 1] = rand();
   }
-  const trunkTo = p => `M ${M.x} ${M.y} C ${M.x + 160} ${M.y + 70}, ${p.x - 180} ${p.y + 60}, ${p.x} ${p.y}`;
-  const branch = (from, p) => `Q ${p.x} ${from.y} ${p.x} ${p.y}`;
-
+  const cam = { yaw: REST.yaw, pitch: REST.pitch, vy: 0, vp: 0 };
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 0, arrive = REDUCED ? 1 : 0, arriveAt = 0, hover = null, changed = new Map();
+  const project = (a, off, h) => {
+    const r = 1 + off, x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const x1 = x * Math.cos(cam.yaw) - z * Math.sin(cam.yaw), z1 = x * Math.sin(cam.yaw) + z * Math.cos(cam.yaw);
+    const y2 = h * Math.cos(cam.pitch) - z1 * Math.sin(cam.pitch), z2 = h * Math.sin(cam.pitch) + z1 * Math.cos(cam.pitch), s = 3.2 / (3.2 + z2);
+    return [cx + x1 * R * s, cy + y2 * R * s, z2, s];
+  };
+  // This Master: the hosts sit evenly round the ring, merged Masters and Masters below them larger
   function build(s) {
-    floor.replaceChildren(); pods = new Map(); paths = new Map();
-    layout(s);
-    [[M, 190, ""], [M, 330, ""], [M, 260, " steel"]].forEach(([c, r, extra]) => set(make("div", "sky-orbit" + extra, floor), { left: px(c.x - r), top: px(c.y - r), width: px(r * 2), height: px(r * 2) }));
-    const wires = svgEl("svg", { class: "sky-wires", width: 1000, height: 380, viewBox: "0 0 1000 380" }, floor);
-    const line = (d, cls) => svgEl("path", cls ? { d, class: cls } : { d }, wires);
-    for (const h of s.direct.slice(0, MAX_PODS)) { const p = pos.get(h.id), d = `M ${M.x} ${M.y} ${branch(M, p)}`; line(d); paths.set(h.id, d); }
-    for (const peer of s.peers) {
-      const P = pos.get(peer.id), trunk = trunkTo(P); line(trunk); paths.set(peer.id, trunk);
-      for (const h of peer.hosts.slice(0, MAX_PODS)) { const key = peer.id + "\u0000" + h.id, p = pos.get(key); line(`M ${P.x} ${P.y} ${branch(P, p)}`); paths.set(key, trunk + " " + branch(P, p)); }
-    }
-    pod("local", M, "is-master", 22, 7, s.master.label);
-    for (const h of s.direct.slice(0, MAX_PODS)) pod(h.id, pos.get(h.id), "", 5, 6, h.label);
-    for (const peer of s.peers) {
-      pod(peer.id, pos.get(peer.id), "is-master is-peer", 12, 7, peer.label);
-      for (const h of peer.hosts.slice(0, MAX_PODS)) pod(peer.id + "\u0000" + h.id, pos.get(peer.id + "\u0000" + h.id), h.master ? "is-master is-sub" : "", h.master ? 9 : 5, 6, h.label);
-      if (peer.hosts.length > MAX_PODS) more(pos.get(peer.id), peer.hosts.length - MAX_PODS, 150);
-    }
-    if (s.direct.length > MAX_PODS) more({ x: 230 + MAX_PODS * 30, y: 40 }, s.direct.length - MAX_PODS, 0);
-    halo = set(make("div", "sky-halo", floor), { left: px(M.x), top: px(M.y), "--z": px(22 * 7 + 78) });
-    halo.addEventListener("click", () => { if (REDUCED) return; halo.classList.remove("is-turning"); void halo.offsetWidth; halo.classList.add("is-turning"); });
+    const list = [...s.direct.map(h => [h.id, h, 1]), ...s.peers.flatMap(p => [[p.id, p, 1.6], ...p.hosts.map(h => [p.id + "\u0000" + h.id, h, h.master ? 1.3 : 1])])].slice(0, MAX_SPARKS);
+    ring = list.map(([key, , size], i) => ({ key, size, a: -Math.PI / 2 + (i + .5) * Math.PI * 2 / list.length }));
+    byKey = new Map(ring.map(sp => [sp.key, sp]));
   }
-  function more(at, n, dy) { const el = make("span", "sky-more", floor); el.textContent = "+" + n; set(el, { left: px(at.x + 40), top: px(at.y + dy) }); }
-  function pod(key, p, cls, discs, gap, label) {
-    const el = make("div", "sky-pod " + cls, floor), h = discs * gap;
-    for (let i = 0; i < discs; i++) { const d = make("div", "dk" + (cls.includes("is-master") && i % 4 === 3 ? " s" : ""), el); d.style.setProperty("--z", px(i * gap)); }
-    make("div", "cap", el); make("div", "led", el); make("span", "lbl", el).textContent = label;
-    set(el, { left: px(p.x), top: px(p.y), "--h": px(h), "z-index": String(Math.round(p.y) + 1) });
-    el.dataset.key = key; pods.set(key, el);
-    if (key !== "local") el.addEventListener("click", () => onSelect(key.split("\u0000").pop()));
-    el.addEventListener("pointerenter", () => point(key.split("\u0000").pop()));
+  function size() {
+    DPR = Math.min(2, devicePixelRatio || 1); W = root.clientWidth; H = root.clientHeight;
+    cx = W * .6; cy = H * .58; R = Math.min(W * .25, H * .7);
+    for (const c of [back, front]) { c.width = W * DPR; c.height = H * DPR; }
+    bloom.width = W * DPR / 4; bloom.height = H * DPR / 4;
   }
+  function relic(x) {
+    const w = R * .07, h = R * .34, base = H - 36, g = x.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
+    g.addColorStop(0, "#6E7CA8"); g.addColorStop(.35, "#F4F6FB"); g.addColorStop(.6, "#A6B4D8"); g.addColorStop(1, "#3A4166");
+    x.globalCompositeOperation = "source-over"; x.fillStyle = g; x.beginPath(); x.roundRect(cx - w / 2, base - h, w, h, [w / 2, w / 2, 2, 2]); x.fill();
+    const s = (seed => () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646)(11);
+    for (let i = 0; i < 200; i++) { x.fillStyle = `rgba(255,${230 + s() * 25},${200 + s() * 55},${s().toFixed(2)})`; x.fillRect(cx - w / 2 + s() * w, base - h + s() * h, 1.2, 1.2); }
+  }
+  function flare(x, px, py, r, rgb, a) {
+    const g = x.createRadialGradient(px, py, 0, px, py, r * 3); g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    x.fillStyle = g; x.beginPath(); x.arc(px, py, r * 3, 0, 7); x.fill();
+    x.strokeStyle = `rgba(${rgb},${a * .8})`; x.lineWidth = .8; x.beginPath(); x.moveTo(px - r * 4, py); x.lineTo(px + r * 4, py); x.moveTo(px, py - r * 4); x.lineTo(px, py + r * 4); x.stroke();
+  }
+  const eased = t => 1 - Math.pow(1 - t, 3);
+  function frame(now) {
+    if (arrive < 1) arrive = arriveAt ? Math.min(1, (now - arriveAt) / 1800) : 0;
+    const k = eased(arrive), b = back.getContext("2d"), f = front.getContext("2d"), g = bloom.getContext("2d");
+    for (const [x, d] of [[b, DPR], [f, DPR], [g, DPR / 4]]) { x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, W, H); x.globalCompositeOperation = "lighter"; }
+    relic(b); b.globalCompositeOperation = "lighter";
+    for (let i = 0; i < GLITTER; i++) {
+      const [x0, y0, z, s] = project(G[i * 4], G[i * 4 + 1], G[i * 4 + 2]), x = x0 + (FROM[i * 2] * W - x0) * (1 - k), y = y0 + (FROM[i * 2 + 1] * H - y0) * (1 - k);
+      const c = z > 0 ? b : f, sz = G[i * 4 + 3] * s; c.fillStyle = GC[i]; c.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+      if (sz > 1.6 || i % 9 === 0) { g.fillStyle = GC[i]; g.fillRect(x - sz, y - sz, sz * 2, sz * 2); }
+    }
+    let busy = false;
+    if (k > .6) for (const sp of ring) {
+      const h = hostByKey(sp.key); if (!h) continue;
+      const [x, y, z, s] = project(sp.a, 0, 0), c = z > 0 ? b : f, st = podState(h), hit = changed.get(sp.key);
+      const swell = hit ? Math.max(0, 1 - (now - hit) / 1400) : 0; if (swell) busy = true;
+      const r = 2 * sp.size * s * (sp.key === hover || sp.key === focusId ? 1.8 : 1) * (1 + swell * 1.5) * (k - .6) / .4;
+      sp.x = x; sp.y = y; flare(c, x, y, r, SPARK_RGB[st], 1); flare(g, x, y, r * 1.6, SPARK_RGB[st], .9);
+      if (swell) { c.strokeStyle = `rgba(${SPARK_RGB[st]},${swell.toFixed(2)})`; c.lineWidth = 1.5; c.beginPath(); c.arc(x, y, 6 + (1 - swell) * 30, 0, 7); c.stroke(); }
+      if (sp.size > 1 || st === "offline" || st === "hot" || sp.key === hover) {
+        c.globalCompositeOperation = "source-over"; c.font = "400 10px 'Space Mono', monospace"; c.globalAlpha = z > 0 ? .55 : 1;
+        c.fillStyle = st === "offline" ? "#FF7FAE" : st === "hot" ? "#FFC266" : "#DCE0F0"; c.fillText(h.label.toUpperCase(), x + 11, y - 9);
+        c.globalAlpha = 1; c.globalCompositeOperation = "lighter";
+      }
+    }
+    return busy || arrive < 1 && arriveAt > 0 || Math.abs(cam.vy) > .0004 || Math.abs(cam.vp) > .0004;
+  }
+  let raf = 0, dragging = false;
+  const kick = () => { if (!raf && !document.hidden && !root.hidden) raf = requestAnimationFrame(step); };
+  function step(now) {
+    raf = 0; cam.yaw += cam.vy; cam.pitch = Math.max(.1, Math.min(.34, cam.pitch + cam.vp)); cam.vy *= .94; cam.vp *= .9;
+    const more = frame(now); if (focusId) place(); if (more || dragging) kick();
+  }
+  document.addEventListener("visibilitychange", kick);
+  // drag turns the halo, a point names a spark, a click opens its host
+  const pick = (x, y) => { let best = null, d = 22; for (const sp of ring) { if (sp.x == null) continue; const dd = Math.hypot(sp.x - x, sp.y - y); if (dd < d) { d = dd; best = sp.key; } } return best; };
+  let lastX = 0, lastY = 0, moved = 0;
+  const local = e => { const r = root.getBoundingClientRect(); return [e.clientX - r.left - parallax.x, e.clientY - r.top - parallax.y]; };
+  root.addEventListener("pointerdown", e => { if (e.button !== 0 || e.target.closest(".sky-callout")) return; if (arrive < 1) { arrive = 1; kick(); }
+    dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY; root.setPointerCapture(e.pointerId); root.classList.add("is-dragging"); });
+  root.addEventListener("pointermove", e => {
+    if (dragging) { const dx = e.clientX - lastX, dy = e.clientY - lastY; moved += Math.abs(dx) + Math.abs(dy); lastX = e.clientX; lastY = e.clientY;
+      if (REDUCED) { cam.yaw -= dx * .004; cam.pitch = Math.max(.1, Math.min(.34, cam.pitch + dy * .0025)); } else { cam.vy = -dx * .004; cam.vp = dy * .0025; } kick(); return; }
+    const key = pick(...local(e)); if (key !== hover) { hover = key; root.classList.toggle("is-pointing", !!key); if (key) point(key.split("\u0000").pop()); kick(); }
+  });
+  root.addEventListener("pointerup", e => { dragging = false; root.classList.remove("is-dragging"); if (moved < 6) { const key = pick(...local(e)); if (key) onSelect(key.split("\u0000").pop()); } });
+  root.addEventListener("dblclick", () => { cam.yaw = REST.yaw; cam.pitch = REST.pitch; cam.vy = cam.vp = 0; kick(); });
 
-  /* ---------- state on the pods, the headline and the film edge ---------- */
+  /* ---------- state on the sparks, the headline and the film edge ---------- */
   const hostByKey = key => {
     if (!snap) return null;
     const [a, b] = key.split("\u0000");
@@ -148,15 +193,6 @@ export function createSky({ onSelect }) {
     return snap.direct.find(h => h.id === a) || snap.peers.find(p => p.id === a) || null;
   };
   const podState = h => h.hot ? "hot" : h.state === "online" ? "online" : h.state === "offline" ? "offline" : "checking";
-  function decorate() {
-    for (const [key, el] of pods) {
-      if (key === "local") continue;
-      const h = hostByKey(key); if (!h) continue;
-      const s = podState(h);
-      el.classList.toggle("is-online", s === "online"); el.classList.toggle("is-hot", s === "hot"); el.classList.toggle("is-offline", s === "offline");
-      el.querySelector(".lbl").textContent = h.label;
-    }
-  }
   function writeHeadline() {
     const parts = T.sky.headline(snap.online, snap.total);
     headline.replaceChildren();
@@ -191,40 +227,29 @@ export function createSky({ onSelect }) {
   /* ---------- the callout follows the pointed host (or the first host that needs a look) ---------- */
   function point(id) {
     if (!snap) return;
-    const key = [...pods.keys()].find(k => k !== "local" && k.split("\u0000").pop() === id);
+    const key = [...byKey.keys()].find(k => k.split("\u0000").pop() === id);
     if (!key) return;
-    if (focusId && pods.get(focusId)) pods.get(focusId).classList.remove("is-focus");
-    focusId = key; const el = pods.get(key); el.classList.add("is-focus");
+    focusId = key; kick();
     const h = hostByKey(key), s = podState(h);
     cName.textContent = h.label;
     cState.textContent = s === "hot" ? T.sky.hot : h.stateLabel; set(cState, { "--c": STATE_COLOUR[s] || "var(--lilac)" });
     const facts = [[T.sky.facts.address, h.address], [T.sky.facts.system, h.os], [T.sky.facts.response, h.response], [T.sky.facts.online, h.online], [T.sky.facts.checked, h.checked]].filter(([, v]) => v);
     cFacts.replaceChildren(...facts.flatMap(([k, v]) => { const dt = make("dt"); dt.textContent = k; const dd = make("dd"); dd.textContent = v; return [dt, dd]; }));
-    requestAnimationFrame(() => {
-      const r = el.querySelector(".cap").getBoundingClientRect(), pr = root.getBoundingClientRect();
-      const x = r.left + r.width / 2 - pr.left - parallax.x, y = r.top + r.height / 2 - pr.top - parallax.y;
-      callout.classList.toggle("down", y < 220); callout.classList.toggle("left", x > pr.width - 330);
-      callout.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
-      callout.classList.add("is-shown");
-    });
+    requestAnimationFrame(place);
+  }
+  function place() {
+    const sp = byKey.get(focusId); if (!sp || sp.x == null) return;
+    callout.classList.toggle("down", sp.y < 220); callout.classList.toggle("left", sp.x > W - 330);
+    callout.style.transform = `translate(${sp.x.toFixed(0)}px, ${sp.y.toFixed(0)}px)`;
+    callout.classList.add("is-shown");
   }
   const defaultFocus = () => {
     const all = [...snap.direct, ...snap.peers.flatMap(p => p.hosts)];
     return (all.find(h => h.hot || h.state === "offline") || all[0])?.id;
   };
 
-  /* ---------- events: a light down the wire on a change, a shooting star on a recovery ---------- */
-  function signal(key, off) {
-    const d = paths.get(key), wires = floor.querySelector(".sky-wires"); if (!d || !wires) return 0;
-    const c = svgEl("path", { d, class: "comet" + (off ? " is-off" : ""), pathLength: 1000 }, wires);
-    c.style.strokeDasharray = "90 1000";
-    const dur = key.includes("\u0000") ? 1500 : 900;
-    c.animate([{ strokeDashoffset: 90 }, { strokeDashoffset: -1000 }], { duration: dur, easing: "cubic-bezier(.45,.05,.4,1)", fill: "both" }).finished.then(() => c.remove());
-    const p = pos.get(key), ping = set(make("div", "sky-ping" + (off ? " is-off" : ""), floor), { left: px(p.x), top: px(p.y) });
-    ping.animate([{ transform: "scale(.3)", opacity: 1 }, { transform: "scale(1.6)", opacity: 0 }], { duration: 800, delay: dur - 120, easing: "ease-out", fill: "both" }).finished.then(() => ping.remove());
-    setTimeout(() => { const el = pods.get(key); if (el) { el.classList.remove("is-hit"); void el.offsetWidth; el.classList.add("is-hit"); } }, dur);
-    return dur;
-  }
+  /* ---------- events: a host that changes swells and rings once; a recovery sends a shooting star ---------- */
+  function signal(key) { changed.set(key, performance.now()); kick(); }
   function shootingStar() {
     const s = make("i", "sky-star", shoot);
     set(s, { position: "absolute", left: (45 + Math.random() * 30) + "%", top: px(40 + Math.random() * 90) });
@@ -240,18 +265,17 @@ export function createSky({ onSelect }) {
   function react(prev) {
     if (!prev || REDUCED || root.hidden) return;
     let recovered = false;
-    for (const [key] of pods) {
-      if (key === "local") continue;
+    for (const [key] of byKey) {
       const h = hostByKey(key); if (!h) continue;
       const before = last.get(key), now = podState(h);
-      if (before && before !== now) { signal(key, now === "offline"); if (before !== "online" && now === "online") recovered = true; }
+      if (before && before !== now) { signal(key); if (before !== "online" && now === "online") recovered = true; }
     }
     if (recovered) setTimeout(shootingStar, 700);
     if (prev.online !== snap.online) { flex(); reroll(); }
   }
 
   /* ---------- parallax: one write per pointer move, eased by CSS, nothing while still ---------- */
-  const LAYERS = [[dust, 4], [word, 9], [far, 6], [dawn, 3], [view, 13], [callout, 13], [glint, 16], [near, 20]];
+  const LAYERS = [[dust, 4], [word, 9], [far, 6], [dawn, 3], [back, 13], [front, 13], [bloom, 13], [callout, 13], [glint, 16], [near, 20]];
   let pending = 0;
   function drift(nx, ny) {
     for (const [el, d] of LAYERS) el.style.translate = `${(nx * d).toFixed(1)}px ${(ny * d * .5).toFixed(1)}px`;
@@ -264,7 +288,7 @@ export function createSky({ onSelect }) {
     });
     root.addEventListener("pointerleave", () => drift(0, 0));
   }
-  addEventListener("resize", () => { if (!root.hidden) { paint(hour); if (focusId) point(focusId.split("\u0000").pop()); } });
+  addEventListener("resize", () => { if (!root.hidden) { paint(hour); size(); kick(); } });
 
   paint(nowHour()); startClock();
   // The sidebar is sticky; its copy of the sky follows the page's scroll so the two never part (one write per frame, only while scrolling)
@@ -279,17 +303,19 @@ export function createSky({ onSelect }) {
     const prev = snap, wasHidden = root.hidden; snap = next; root.hidden = false;
     const key = JSON.stringify([next.direct.map(h => h.id), next.peers.map(p => [p.id, p.hosts.map(h => h.id)])]);
     if (key !== layoutKey) { layoutKey = key; build(next); focusId = null; }
-    decorate(); writeHeadline(); writeFilm(); health();
+    if (wasHidden) { size(); if (!arriveAt && !REDUCED) arriveAt = performance.now(); }
+    writeHeadline(); writeFilm(); health(); kick();
     tag.textContent = T.sky.tag;
     if (langChanged || !word.childElementCount) writeWord();
     if (wasHidden) { paint(nowHour()); startClock(); }
     react(wasHidden ? null : prev);
     // a host that just went offline or hot takes the callout
-    const turned = wasHidden || !prev ? null : [...pods.keys()].find(k => { const h = k !== "local" && hostByKey(k), now = h && podState(h); return now && (now === "offline" || now === "hot") && last.get(k) !== now; });
-    last = new Map([...pods.keys()].filter(k => k !== "local").map(k => { const h = hostByKey(k); return [k, h ? podState(h) : "checking"]; }));
+    const turned = wasHidden || !prev ? null : [...byKey.keys()].find(k => { const h = hostByKey(k), now = h && podState(h); return now && (now === "offline" || now === "hot") && last.get(k) !== now; });
+    last = new Map([...byKey.keys()].map(k => { const h = hostByKey(k); return [k, h ? podState(h) : "checking"]; }));
     const keep = turned ? turned.split("\u0000").pop() : focusId && hostByKey(focusId) ? focusId.split("\u0000").pop() : defaultFocus();
     if (keep) point(keep); else callout.classList.remove("is-shown");
   }
   // paint(hour) also lets a test show any hour; the clock repaints the real one within a minute
-  return { el: root, update, point, paint };
+  // keys() lists the hosts on the halo (for UI tests)
+  return { el: root, update, point, paint, keys: () => [...byKey.keys()] };
 }

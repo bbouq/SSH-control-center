@@ -60,6 +60,10 @@ body { margin: 0; background: radial-gradient(ellipse 60% 45% at 0% 0%, rgba(120
 .app-side { position: sticky; top: 0; height: 100vh; box-sizing: border-box; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 18px 12px 12px; border-right: 0; }
 .add-host { width: 100%; min-height: 40px; font-size: 13px; justify-content: center; }
 .app-side .search { flex: none; }
+/* The stacked logo at the top of the sidebar (DESIGN.md Layout 1): Fraunces "SSH" over spaced mono words */
+.side-logo { flex: none; padding: 6px 4px 10px; color: var(--white); }
+.side-logo b { display: block; font: 800 34px/.9 var(--serif); font-variation-settings: "SOFT" 0, "WONK" 0, "opsz" 144; letter-spacing: -.02em; }
+.side-logo span { display: block; margin-top: 3px; font: 400 10px/1.5 var(--mono); letter-spacing: .3em; text-transform: uppercase; color: var(--lilac); }
 .side-nav { display: flex; flex-direction: column; gap: 2px; }
 .side-nav-row { display: flex; align-items: center; }
 .side-nav .nav { width: 100%; min-height: 40px; padding: 0 12px; justify-content: flex-start; font-size: 13px; font-weight: 700; letter-spacing: .16em; color: #C9CDE2; background: rgba(238, 240, 248, .035) !important; border-radius: var(--radius); }

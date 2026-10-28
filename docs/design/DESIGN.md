@@ -1,7 +1,7 @@
 # SSH Control Center — Design System "Relic Night" (v6)
 
 A black sky over the fleet. The sky keeps local time, the hour's colour gathers at the horizon, stars stay visible all day.
-The fleet stands on the land as ribbed pods; light runs down the wires when a host changes state. The rainbow lives only where you point.
+The fleet is a halo of stardust around this Master, one bright spark per host; a spark swells when its host changes. The rainbow lives only where you point.
 Dreamy where it is sky, precise where it is data.
 
 Supersedes "Engraved Violet" (`DESIGN-v5.md`, kept for reference). The prototype that settled every value below is
@@ -95,8 +95,9 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
    (meets the plate's ridge at 416 px). Top → bottom: stacked logo (SSH / Control / CENTER), Add host (6 px, hairline), filter (6 px,
    faint fill), menu (each row a faint pill; the active one pearl with a dark dot), host tree with curved connectors, current Master + round-cornered Refresh.
 2. **Sky plate** — 500 px, top of Inventory. Film edge (30 px, perforations, real readouts: online/total, Master, IP, last poll, offline),
-   registration marks, faded word, the topology on a tilted floor (pods, curved wires, rings, halo), headline bottom-left, callout on the
-   pointed host. The plate's bottom 30 px fade into the ground.
+   registration marks, faded word, the **Stardust Halo** (a ring of glitter round this Master, a silver relic standing on the near ridge;
+   one spark per host, merged Masters larger), headline bottom-left, callout on the pointed spark. Drag turns and tilts the halo
+   (inertia; double-click resets); a click opens the host. The plate's bottom 30 px fade into the ground.
 3. **Below the sky** — the summary line, then square tabs (All · Direct · Through <Master> per merged Master · Needs a look, each with a count)
    over host rows in two columns on hairlines (one column under 1000 px). "All" starts with this Master. The sky draws the topology; the rows are where you act.
 4. **Every other page** (host, Master, Masters, Alarms, Service, Add host) — no sky plate; a faint 150 px strip of the same sky across the top,
@@ -117,15 +118,18 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 | Menu row | faint pill `rgba(238,240,248,.035)` | `--pearl` | `--pearl` + dark dot |
 | Button (primary) | 6 px, hairline white | `--pearl`, dark ink | — |
 | Callout | frosted ink block (`rgba(10,11,24,.72)` + 10 px backdrop blur), square, inner hairline, straight elbow leader, square terminal | — | — |
-| Pod | stacked discs, hairline edges; Master taller, chrome cap; every 4th Master disc steel; a host below a merged Master that is itself a Master stands as a smaller Master pod (34 px, 9 discs, named, LED in its status colour) | lifts 10 px, cap `--holo` | — |
+| Halo | 5 200 glitter points (ember `#F0A060`, cream, pale blue) in a tilted ring; far half behind the near ridge, near half and a ¼-size bloom in front | — | — |
+| Spark (host) | a flare in its status colour (cream online, rose offline, amber high load); merged Masters ×1.6, Masters below them ×1.3; Masters, offline and high-load sparks are named in mono | ×1.8 and named | callout on it |
 | Status dot | 9 px round in its colour (7 px in the tree) | | |
 
 ## Motion (all event-driven, all transform/opacity)
 
-- State change: a short light runs along the curved wire from this Master to the host (0.9–1.5 s), ping on arrival, the row flashes once.
+- State change: the host's spark swells and rings once (1.4 s), the row flashes once.
+- Arrival: the first time the sky shows, the glitter gathers from scattered dust into the halo (1.8 s); a click skips it.
+- Drag: the halo turns and tilts with inertia (pitch .10–.34); it draws only while it moves.
 - Recovery: one shooting star across the upper sky.
 - Count change: the numeral flexes (weight/axis + skew, 0.9 s); the faded word's letters re-roll their faces one by one.
-- Pointer: 8 parallax layers (stars, word, far ridge, glow, scene, callout, glint, near ridge), eased, one rAF per move; the callout glides (560 ms).
+- Pointer: parallax layers (stars, word, far ridge, glow, halo, callout, glint, near ridge), eased, one rAF per move; the callout glides (560 ms).
 - Always on (cheap): online LED breathing, glint ripple under this Master (7 s), ≤ 6 twinkling stars (8–12 s).
 - Nothing runs while the window is hidden. Nothing moves under `prefers-reduced-motion`.
 
@@ -134,10 +138,10 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 - Tauri CSP `style-src 'self'`: no `style=""` attributes. Set custom properties through CSSOM (`el.style.setProperty`).
 - Grain and the light leak use `data:` SVG backgrounds in the prototype — check `img-src` before shipping, or ship them as files.
 - `backdrop-filter` only on a few static blocks (callout, film edge, preview controls).
-- **No `preserve-3d` / `translateZ` on the floor.** WebKitGTK (the Ubuntu window) without GPU compositing — a VM, or
-  `WEBKIT_DISABLE_COMPOSITING_MODE=1` — flattens it and the pods collapse into ellipses. Height is drawn in 2D inside the
-  tilted floor: up the screen is `translate(.581h, −1.789h)`; labels undo the tilt with `rotate(18deg) scaleY(2.13)`; pods
-  stack by `z-index` from their depth. Checked 2026-10-28 in Chromium and in Linux WebKit (Playwright 1.48 image).
+- The halo is canvas 2D with hand-projected points (no library, no WebGL), so it draws the same in WebKitGTK without a GPU.
+  At rest it draws nothing (measured 2026-10-28: 0 frames, sky page 0.12 % of a core).
+- **No `preserve-3d` / `translateZ` anywhere.** WebKitGTK (the Ubuntu window) without GPU compositing — a VM, or
+  `WEBKIT_DISABLE_COMPOSITING_MODE=1` — flattens it (found 2026-10-28 in Linux WebKit, Playwright 1.48 image). 3D is drawn by hand.
 - Six font families: subset before shipping.
 - **Text over the sky** — near the horizon the sky gets light (white is only 2.5–3:1 on sunrise/day `--sky3`), so text there
   carries a local scrim: the sidebar's copy of the sky darkens below 38 % of its height, and the headline has a soft radial scrim
