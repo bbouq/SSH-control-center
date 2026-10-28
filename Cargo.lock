@@ -3730,7 +3730,7 @@ dependencies = [
 
 [[package]]
 name = "sshcc"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3744,7 +3744,7 @@ dependencies = [
 
 [[package]]
 name = "sshcc-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3768,7 +3768,7 @@ dependencies = [
 
 [[package]]
 name = "sshcc-desktop"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "base64 0.22.1",
  "gtk",

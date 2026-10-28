@@ -39,14 +39,14 @@ A published thin template must stay byte-identical after generating its manifest
 
 ## Normal installation and pairing
 
-The generic installers named below, `sshcc-0.5.1-windows-x64-setup.exe` and `sshcc-0.5.1-ubuntu-setup.deb`, are the files that the "Build packages" steps write to `dist/`. No prebuilt downloads are provided. For a guided walkthrough, follow [pairing.md](pairing.md) (English) or [QUICKSTART.th.md](QUICKSTART.th.md) (Thai).
+The generic installers named below, `sshcc-0.5.2-windows-x64-setup.exe` and `sshcc-0.5.2-ubuntu-setup.deb`, are the files that the "Build packages" steps write to `dist/`. No prebuilt downloads are provided. For a guided walkthrough, follow [pairing.md](pairing.md) (English) or [QUICKSTART.th.md](QUICKSTART.th.md) (Thai).
 
-On Windows open the generic `sshcc-0.5.1-windows-x64-setup.exe` in the intended Owner's session and choose “ใช้เครื่องนี้เป็นเครื่องหลัก” (Use this machine as the Master). The window has a box “ใช้ Owner session (administrator) สำหรับ jobs, files และ terminal” that is ticked on a fresh install. With it ticked (the default Owner-session mode), the account that opens the file must itself be an administrator, because the Owner needs an elevated token. A different administrator can supply the UAC password only when you clear that box (service mode). Either way, the account that opened the file is the one recorded as Owner. Reinstallation retains the existing owner and node identity.
+On Windows open the generic `sshcc-0.5.2-windows-x64-setup.exe` in the intended Owner's session and choose “ใช้เครื่องนี้เป็นเครื่องหลัก” (Use this machine as the Master). The window has a box “ใช้ Owner session (administrator) สำหรับ jobs, files และ terminal” that is ticked on a fresh install. With it ticked (the default Owner-session mode), the account that opens the file must itself be an administrator, because the Owner needs an elevated token. A different administrator can supply the UAC password only when you clear that box (service mode). Either way, the account that opened the file is the one recorded as Owner. Reinstallation retains the existing owner and node identity.
 
-On Ubuntu install the generic `sshcc-0.5.1-ubuntu-setup.deb`, then open **SSH Control Center Setup** from the application menu. Installing the helper alone does not install/start the actual service or add Master SSH authority. Approval runs the privileged worker. Desktop dependencies/tray are optional; a Server uses the same helper in a terminal:
+On Ubuntu install the generic `sshcc-0.5.2-ubuntu-setup.deb`, then open **SSH Control Center Setup** from the application menu. Installing the helper alone does not install/start the actual service or add Master SSH authority. Approval runs the privileged worker. Desktop dependencies/tray are optional; a Server uses the same helper in a terminal:
 
 ~~~bash
-sudo apt install --no-install-recommends ./sshcc-0.5.1-ubuntu-setup.deb
+sudo apt install --no-install-recommends ./sshcc-0.5.2-ubuntu-setup.deb
 sshcc-setup --terminal
 ~~~
 
@@ -83,7 +83,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1 -Role target
 ~~~
 
 ~~~bash
-sudo apt install ./sshcc_0.5.1_amd64.deb
+sudo apt install ./sshcc_0.5.2_amd64.deb
 sudo /usr/lib/sshcc/setup.sh --role target --owner "$USER" --bundle ./bundle.json --registration ./registration.json
 ~~~
 
