@@ -197,7 +197,7 @@ export function createSky({ onSelect }) {
     const h = hostByKey(key), s = podState(h);
     cName.textContent = h.label;
     cState.textContent = s === "hot" ? T.sky.hot : h.stateLabel; set(cState, { "--c": STATE_COLOUR[s] || "var(--lilac)" });
-    const facts = [[T.sky.facts.address, h.address], [T.sky.facts.system, h.os], [T.sky.facts.checked, h.checked]].filter(([, v]) => v);
+    const facts = [[T.sky.facts.address, h.address], [T.sky.facts.system, h.os], [T.sky.facts.response, h.response], [T.sky.facts.online, h.online], [T.sky.facts.checked, h.checked]].filter(([, v]) => v);
     cFacts.replaceChildren(...facts.flatMap(([k, v]) => { const dt = make("dt"); dt.textContent = k; const dd = make("dd"); dd.textContent = v; return [dt, dd]; }));
     requestAnimationFrame(() => {
       const r = el.querySelector(".cap").getBoundingClientRect(), pr = root.getBoundingClientRect();

@@ -1650,7 +1650,10 @@ window.sshccSky = sky; // for UI tests: sshccSky.paint(6.5) shows sunrise
 function skyHost(item) {
   const status = nodeState(item), row = state.health.get(item.id);
   return { id: item.id, label: item.label || item.id, state: status, stateLabel: stateLabel(status) || status, hot: isHot(item), os: osName(item.os),
-    address: item.relayed ? "" : item.routes?.[0]?.address || "", checked: row?.checkedAt ? timestamp(row.checkedAt) : "" };
+    address: item.relayed ? "" : item.routes?.[0]?.address || "", checked: row?.checkedAt ? timestamp(row.checkedAt) : "",
+    // From the Master's banner check: how fast the host answered, and how long it has stayed online since the Master saw it come up
+    response: row?.online && row.latencyMs != null ? T.sky.ms(row.latencyMs) : "",
+    online: row?.online && row.onlineSince ? formatUptime(Math.max(60, (Date.now() - Date.parse(row.onlineSince)) / 1000)) : "" };
 }
 function syncSky() {
   const visible = state.page === "datacenter" && state.dc.node === "dc" && !state.dc.adding && !state.backup && state.targets.length > 0;

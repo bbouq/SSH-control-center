@@ -138,6 +138,7 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
   plus a dark halo. Measured 2026-10-27 at 02:00, 05:00, 06:36, 10:00, 13:00, 17:36 and 19:00 (95th-percentile background behind
   the text): headline white 7.3–11.3:1, sidebar tree 8.4–10.5:1.
   Thai ("เครื่องออนไลน์" runs wider, into the glow) gets a wider, denser scrim: 7.9–12.9:1 at the same hours.
-- Latency and uptime are not in the Master's data yet; the callout shows address, system and when it was last checked.
+- The callout shows address, system, response (the Master's timed SSH banner read, `latencyMs`), online for (since `onlineSince`,
+  the first check of the current online run, as the Master saw it, not the machine's boot uptime) and when it was last checked.
 - The sidebar is sticky: its copy of the sky follows the page scroll (`--scroll`, one write per frame while scrolling) so the seam never opens.
 - `sky.js` builds the sky once outside `#main` and only updates it (app.js `syncSky()`), so a running light survives re-renders.

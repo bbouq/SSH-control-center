@@ -700,8 +700,12 @@ fn routine_health_reads_the_ssh_banner_without_logging_in() {
     };
     assert_eq!(row("up")["online"], true);
     assert_eq!(row("up")["failures"], 0);
+    assert!(row("up")["latencyMs"].is_u64(), "the banner read is timed");
+    assert_eq!(row("up")["onlineSince"], row("up")["checkedAt"]);
     assert_eq!(row("down")["online"], false);
     assert_eq!(row("down")["failures"], 1);
+    assert_eq!(row("down")["latencyMs"], Value::Null);
+    assert_eq!(row("down")["onlineSince"], Value::Null);
     assert!(row("down")["error"]
         .as_str()
         .unwrap()
@@ -709,6 +713,22 @@ fn routine_health_reads_the_ssh_banner_without_logging_in() {
     // A failing Target backs off; refresh asks over SSH, which fails here without the key.
     let cached = fx.call("fleet.health", json!({})).unwrap();
     assert_eq!(cached, rows);
+    // A later banner check keeps the start of the online run.
+    let db = rusqlite::Connection::open(fx.state.join("fleet.sqlite")).unwrap();
+    db.execute(
+        "UPDATE health SET document=json_set(document,'$.checkedAt','2000-01-01T00:00:00+00:00') WHERE target_id='up'",
+        [],
+    )
+    .unwrap();
+    let again = fx.call("fleet.health", json!({})).unwrap();
+    let up = again
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["targetId"] == "up")
+        .unwrap();
+    assert_ne!(up["checkedAt"], row("up")["checkedAt"]);
+    assert_eq!(up["onlineSince"], row("up")["onlineSince"]);
     let refreshed = fx.call("fleet.health", json!({"refresh":true})).unwrap();
     assert!(refreshed
         .as_array()
