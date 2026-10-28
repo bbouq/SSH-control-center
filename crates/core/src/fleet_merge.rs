@@ -1055,6 +1055,13 @@ pub fn relay_health(state: &Path, config: &Config, master_id: &str) -> Result<Va
     Ok(json!(rows))
 }
 
+/// A child's row as its merged Master reported it, under this Master's composite id. `failures` stays behind:
+/// backing off is for the Master that probes, not for this one.
+fn reported_row(id: &str, r: &Value, via: &str) -> Value {
+    json!({"targetId":id,"online":r["online"].as_bool(),"checkedAt":r["checkedAt"],"error":r["error"],
+        "isMaster":r["isMaster"],"version":r["version"],"latencyMs":r["latencyMs"],"onlineSince":r["onlineSince"],"via":via})
+}
+
 /// Children of each merged Master, asked through that Master at most once per `HEALTH_TTL`.
 /// An unreachable merged Master leaves its children unknown (`online: null`), not offline.
 /// A merged Master already found offline is not asked, which would hold an SSH client open.
@@ -1122,9 +1129,7 @@ fn merged_health(
         for id in ids {
             let child = id.split_once('/').map(|(_, c)| c).unwrap_or_default();
             fresh_rows.push(match (reported.get(child), &reply) {
-                (Some(r), _) => json!({"targetId":id,"online":r["online"].as_bool(),
-                    "checkedAt":r["checkedAt"],"error":r["error"],"isMaster":r["isMaster"],
-                    "version":r["version"],"via":peer.id}),
+                (Some(r), _) => reported_row(id, r, &peer.id),
                 (None, Err(error)) => json!({"targetId":id,"online":null,"checkedAt":checked,
                     "error":format!("via {}: {error}", peer.label),"isMaster":false,
                     "version":null,"via":peer.id}),
@@ -1266,4 +1271,22 @@ pub(super) fn handle_local(state: &Path, config: &Config, req: &Request) -> Resu
         _ => return Ok(None),
     };
     Ok(Some(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reported_rows_keep_response_time_and_online_since() {
+        let r = json!({"targetId":"child","online":true,"checkedAt":"t","error":null,"failures":2,"isMaster":false,
+            "version":"0.5.1","latencyMs":38,"onlineSince":"s"});
+        let row = reported_row("peer/child", &r, "peer");
+        assert_eq!((row["targetId"].as_str(), row["via"].as_str()), (Some("peer/child"), Some("peer")));
+        assert_eq!((row["latencyMs"].as_u64(), row["onlineSince"].as_str()), (Some(38), Some("s")));
+        assert_eq!(row["failures"], Value::Null);
+        // A Master older than 0.5.1 sends neither: they stay null.
+        let old = reported_row("peer/child", &json!({"online":true}), "peer");
+        assert_eq!((old["latencyMs"].clone(), old["onlineSince"].clone()), (Value::Null, Value::Null));
+    }
 }
