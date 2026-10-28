@@ -981,9 +981,15 @@ fn local_health(state: &Path, config: &Config, refresh: bool) -> Result<Vec<Valu
         .filter(|t| refresh || !fresh(cached.get(&t.id)))
         .cloned()
         .collect();
-    let results = bounded(&stale, |t| match (refresh, reachable(t)) {
-        (false, Some(result)) => result.map(|()| None),
-        _ => status(state, config, t).map(Some),
+    // A banner read is timed: its milliseconds are the Target's response time. A full SSH check keeps the last one.
+    let results = bounded(&stale, |t| {
+        let started = Instant::now();
+        match (refresh, reachable(t)) {
+            (false, Some(result)) => {
+                result.map(|()| (None, Some(started.elapsed().as_millis() as u64)))
+            }
+            _ => status(state, config, t).map(|status| (Some(status), None)),
+        }
     });
     let checked = now();
     let rows: Vec<Value> = results
@@ -991,15 +997,22 @@ fn local_health(state: &Path, config: &Config, refresh: bool) -> Result<Vec<Valu
         .zip(&stale)
         .map(|(result, t)| {
             let previous = cached.get(&t.id);
+            let kept = |key: &str| previous.map_or(Value::Null, |p| p[key].clone());
+            // Online since the first check of the current online run.
+            let since = match previous {
+                Some(p) if p["online"] == true && p["onlineSince"].is_string() => {
+                    p["onlineSince"].clone()
+                }
+                _ => json!(checked),
+            };
             match result {
-                Ok(Some(status)) => json!({"targetId":t.id,"online":true,"checkedAt":checked,
-                    "error":null,"failures":0,"isMaster":is_master(&status),"version":status["version"]}),
-                Ok(None) => json!({"targetId":t.id,"online":true,"checkedAt":checked,
-                    "error":null,"failures":0,
-                    "isMaster":previous.map_or(json!(false), |p| p["isMaster"].clone()),
-                    "version":previous.map_or(Value::Null, |p| p["version"].clone())}),
+                Ok((status, latency)) => json!({"targetId":t.id,"online":true,"checkedAt":checked,
+                    "error":null,"failures":0,"onlineSince":since,
+                    "latencyMs":latency.map_or_else(|| kept("latencyMs"), |ms| json!(ms)),
+                    "isMaster":status.as_ref().map_or_else(|| kept("isMaster"), |s| json!(is_master(s))),
+                    "version":status.as_ref().map_or_else(|| kept("version"), |s| s["version"].clone())}),
                 Err(error) => json!({"targetId":t.id,"online":false,"checkedAt":checked,
-                    "error":error,"isMaster":false,"version":null,
+                    "error":error,"isMaster":false,"version":null,"onlineSince":null,"latencyMs":null,
                     "failures":previous.and_then(|p| p["failures"].as_u64()).unwrap_or(0) + 1}),
             }
         })
