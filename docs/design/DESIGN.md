@@ -1,6 +1,6 @@
 # SSH Control Center — Design System "Relic Night" (v6)
 
-A black sky over the fleet. The sky keeps local time, the hour's colour gathers at the horizon, stars stay visible all day.
+A night sky over the fleet, as the Stardust Halo prototype: deep blue to violet, an ember haze where the halo sits, scattered stars, film grain.
 The fleet is a halo of stardust around this Master, one bright spark per host; a spark swells when its host changes. The rainbow lives only where you point.
 Dreamy where it is sky, precise where it is data.
 
@@ -54,6 +54,8 @@ Supersedes "Engraved Violet" (`DESIGN-v5.md`, kept for reference). The prototype
 
 ### Sky clock
 
+Since 2026-10-28 the Inventory sky is the prototype's fixed night; the clock below still colours the thin sky strip on the other pages.
+
 The sky's four stops (`--sky0` zenith → `--sky3` horizon), the glow colour and the far-ridge colour are interpolated between hour
 keyframes (smoothstep) and written to `<body>` **once a minute** from the viewer's local time. The sky and the sidebar both read them.
 
@@ -93,13 +95,16 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 1. **Sidebar** — 236 px, transparent over the window ground. The sky continues under it down to the hill line (`--hill-y`, written by
    sky.js where the hill meets the plate's left edge), and the hill carries on under it in the same colours. Top → bottom, as the
    prototype: stacked logo (SSH / Control / CENTER), menu (each row a faint pill; the active one pearl); then, under a hairline, Add host
-   (6 px, hairline), filter (6 px, faint fill), host tree with curved connectors; current Master + round-cornered Refresh at the foot.
+   (6 px, hairline), filter (6 px, faint fill), host tree with curved connectors — folded by default (only the menu shows), opened by
+   the chevron by Inventory and remembered; current Master + round-cornered Refresh at the foot. Its sky carries the plate's stars,
+   haze and grain (positions from sky.js), so nothing steps at the edge.
    No scrim over the sidebar's sky: its tree and foot words carry a dark halo instead.
-2. **Sky plate** — the full window height (560–980 px), top of Inventory; the rows start below it. Clean, as the prototype: film edge
-   (30 px, perforations, real readouts: online/total, Master, IP, last poll, offline), the clock's sun or moon, one hill, the
+2. **Sky plate** — the full window height (560–980 px), top of Inventory; the rows start below it. As the prototype: a fixed night
+   (`#05071A → #16204A → #2A3566 → #0B0D1A`, ember haze `rgba(240,160,96,.22)` at the halo), scattered stars drawn once, a vignette,
+   film grain (.32, overlay), the film edge (30 px, real readouts: online/total, Master, IP, last poll, offline), one hill, the
    **Stardust Halo** (a ring of glitter round this Master, a silver relic standing on the hill's crest;
    one spark per host, merged Masters larger), headline bottom-left, callout on the pointed spark. Drag turns and tilts the halo
-   (inertia; double-click resets); a click opens the host. The plate's bottom 30 px fade into the ground.
+   (inertia; double-click resets); a click opens the host; a mono hint bottom-right says so. The plate's bottom 30 px fade into the ground.
 3. **Below the sky** — the summary line, then square tabs (All · Direct · Through <Master> per merged Master · Needs a look, each with a count)
    over host rows in two columns on hairlines (one column under 1000 px). "All" starts with this Master. The sky draws the topology; the rows are where you act.
 4. **Every other page** (host, Master, Masters, Alarms, Service, Add host) — no sky plate; a faint 150 px strip of the same sky across the top,

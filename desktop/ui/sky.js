@@ -1,6 +1,6 @@
 /* The Inventory sky (DESIGN.md "Relic Night"). Built once, then only updated, so the halo's turn or the parallax
    survives the window's re-renders. app.js hands it a snapshot of the fleet; the sky never asks the Master itself.
-   The fleet is the Stardust Halo: a ring of glitter around this Master (a silver relic on the near ridge), one bright
+   The fleet is the Stardust Halo: a ring of glitter around this Master (a silver relic on its hill), one bright
    spark per host. Real 3D points projected by hand on canvas 2D (no library, no WebGL, so it also draws in WebKitGTK
    without a GPU). It draws only while something moves: the arrival, a drag, its inertia, a host changing. Motion budget
    otherwise: the glint and a few sparks; the clock repaints the sky once a minute. CSP: no style="" anywhere, custom
@@ -21,7 +21,6 @@ const PHASES = {
 // hour · phase · glow strength · stars · rays
 const HOURS = [[0, "night", .2, 1, 0], [4.3, "predawn", .55, .95, 0], [6.2, "sunrise", .95, .3, .2], [8.5, "day", .5, 0, .55], [13, "day", .42, 0, .7],
   [16.3, "late", .5, 0, .5], [18.1, "golden", .9, .15, .15], [19.4, "dusk", .55, .6, 0], [21, "night", .22, 1, 0], [24, "night", .2, 1, 0]];
-const SUNRISE = 6, SUNSET = 18.6;
 const STATE_COLOUR = { online: "var(--led)", offline: "var(--rose)", hot: "var(--amber)" };
 const SPARK_RGB = { online: "255,238,214", offline: "255,127,174", hot: "255,194,102", checking: "201,205,226" };
 const GLITTER = 5200, TONES = [[240, 160, 96], [255, 232, 200], [191, 216, 255], [255, 140, 90]];
@@ -39,12 +38,12 @@ const make = (tag, cls, parent) => { const el = document.createElement(tag); if 
 export function createSky({ onSelect }) {
   const root = make("section", "sky");
   root.id = "sky"; root.hidden = true; root.setAttribute("aria-hidden", "true");
-  // Clean, as the prototype: stars, the clock's sun and moon, the glow, the halo on one hill, the film edge, the headline
-  const dust = make("div", "sky-dust", root);
-  const sun = make("div", "sky-sun", root), moon = make("div", "sky-moon", root);
-  const dawn = make("div", "sky-dawn", root), chill = make("div", "sky-chill", root);
+  // As the prototype: a fixed night (CSS), scattered stars, the halo on one hill, grain and a vignette, the film edge, the headline
+  const stars = make("canvas", "sky-stars", root);
   const back = make("canvas", "sky-halo", root), front = make("canvas", "sky-halo", root), bloom = make("canvas", "sky-halo bloom", root);
-  const film = make("div", "sky-film", root); make("i", "perf", film); const frames = make("span", "frames", film); make("i", "perf", film);
+  make("div", "sky-vignette", root); make("div", "sky-grain", root);
+  const film = make("div", "sky-film", root); const frames = make("span", "frames", film);
+  const hint = make("p", "sky-hint", root);
   const headline = make("p", "sky-headline", root);
   const callout = make("div", "sky-callout", root); make("i", "stem", callout);
   const cBody = make("div", "body", callout), cName = make("span", "name", cBody), cState = make("span", "state", cBody), cFacts = make("dl", "", cBody);
@@ -61,15 +60,6 @@ export function createSky({ onSelect }) {
     a[0].forEach((c, n) => st.setProperty("--sky" + n, mix(c, b[0][n], t)));
     st.setProperty("--glow", mix(a[1], b[1], t)); st.setProperty("--ridge-far", mix(a[2], b[2], t));
     st.setProperty("--gs", lerp(A[2], B[2], t).toFixed(3)); st.setProperty("--stars", lerp(A[3], B[3], t).toFixed(3)); st.setProperty("--rays", lerp(A[4], B[4], t).toFixed(3));
-    const W = root.clientWidth, H = root.clientHeight, horizon = H * .8;
-    const d = (h - SUNRISE) / (SUNSET - SUNRISE), up = d > -.04 && d < 1.04, dc = Math.min(Math.max(d, 0), 1);
-    const sx = W * (.33 + .58 * dc), sy = horizon - Math.sin(Math.PI * dc) * H * .5;
-    sun.style.transform = `translate(${sx.toFixed(0)}px, ${sy.toFixed(0)}px)`;
-    sun.style.opacity = up ? Math.min(1, Math.sin(Math.PI * dc) * 6).toFixed(2) : "0";
-    set(root, { "--gx": up ? (sx / W * 100).toFixed(1) + "%" : "34%", "--gy": up ? Math.min(92, sy / H * 100 + 6).toFixed(1) + "%" : "74%" });
-    const m = (h >= 19 ? h - 19 : h + 5) / 10.5, night = m >= 0 && m <= 1;
-    moon.style.transform = `translate(${(W * (.9 - .55 * m)).toFixed(0)}px, ${(horizon - Math.sin(Math.PI * m) * H * .58).toFixed(0)}px) rotate(-20deg)`;
-    moon.style.opacity = night ? Math.min(1, Math.sin(Math.PI * m) * 4).toFixed(2) : "0";
   }
   const nowHour = () => { const d = new Date(); return d.getHours() + d.getMinutes() / 60; };
   // the clock runs on every page: the thin sky strip on the other pages reads the same colours
@@ -108,6 +98,20 @@ export function createSky({ onSelect }) {
     document.body.style.setProperty("--hill-y", hillAt(BLEED).toFixed(0) + "px");
     for (const c of [back, front]) { c.width = W * DPR; c.height = H * DPR; }
     bloom.width = W * DPR / 4; bloom.height = H * DPR / 4;
+    stars.width = W * DPR; stars.height = H * DPR; scatter(stars.getContext("2d"), W, H, DPR, 3);
+    const side = document.querySelector(".app-side"), sw = side ? side.clientWidth : 0;
+    // the ember haze, in the sidebar's own coordinates, so its copy of the sky carries the same warmth to the edge
+    const bs = document.body.style; bs.setProperty("--haze-x", (sw + plate * .56).toFixed(0) + "px"); bs.setProperty("--haze-y", (H * .5).toFixed(0) + "px");
+    bs.setProperty("--haze-rx", (plate * .6).toFixed(0) + "px"); bs.setProperty("--haze-ry", (H * .7).toFixed(0) + "px");
+    if (sw) { const c = document.createElement("canvas"); c.width = sw * DPR; c.height = H * DPR; scatter(c.getContext("2d"), sw, H, DPR, 5);
+      document.body.style.setProperty("--side-stars", `url(${c.toDataURL()})`); }
+  }
+  // the prototype's stars: scattered, uneven, a few larger; thinning toward the hill
+  function scatter(x, w, h, d, seed) {
+    const s = (v => () => ((v = (v * 16807) % 2147483647) - 1) / 2147483646)(seed);
+    x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, w, h);
+    for (let i = 0, n = Math.round(w * h / 1440); i < n; i++) { const y = s() * h * .82, a = (.15 + s() * .6) * (1 - y / h * .6);
+      x.fillStyle = `rgba(230,235,255,${a.toFixed(2)})`; x.beginPath(); x.arc(s() * w, y, s() < .96 ? .6 : 1.3, 0, 7); x.fill(); }
   }
   const crest = () => cy + R * .3;
   // the hill: rises from the left edge to the relic's crest, falls away to the right (the prototype's curve)
@@ -199,11 +203,6 @@ export function createSky({ onSelect }) {
     const raw = new Set([items[0], snap.master.label, snap.master.address]);
     frames.replaceChildren(...items.map((text, i) => { const s = make("span", i === 1 ? "on" : ""); s.textContent = text; if (raw.has(text)) s.dataset.raw = ""; return s; }));
   }
-  function health() {
-    const share = snap.total ? snap.online / snap.total : 1;
-    dawn.style.opacity = (0.25 + 0.75 * share ** 3).toFixed(2);
-    chill.style.opacity = Math.min(1, snap.offline * 0.7).toFixed(2);
-  }
 
   /* ---------- the callout follows the pointed host (or the first host that needs a look) ---------- */
   function point(id) {
@@ -256,7 +255,7 @@ export function createSky({ onSelect }) {
   }
 
   /* ---------- parallax: one write per pointer move, eased by CSS, nothing while still ---------- */
-  const LAYERS = [[dust, 4], [dawn, 3], [back, 13], [front, 13], [bloom, 13], [callout, 13]];
+  const LAYERS = [[stars, 4], [back, 13], [front, 13], [bloom, 13], [callout, 13]];
   let pending = 0;
   function drift(nx, ny) {
     for (const [el, d] of LAYERS) el.style.translate = `${(nx * d).toFixed(1)}px ${(ny * d * .5).toFixed(1)}px`;
@@ -285,7 +284,7 @@ export function createSky({ onSelect }) {
     const key = JSON.stringify([next.direct.map(h => h.id), next.peers.map(p => [p.id, p.hosts.map(h => h.id)])]);
     if (key !== layoutKey) { layoutKey = key; build(next); focusId = null; }
     if (wasHidden) { size(); if (!arriveAt && !REDUCED) arriveAt = performance.now(); }
-    writeHeadline(); writeFilm(); health(); kick();
+    writeHeadline(); writeFilm(); hint.textContent = T.sky.hint; kick();
     if (wasHidden) { paint(nowHour()); startClock(); }
     react(wasHidden ? null : prev);
     // a host that just went offline or hot takes the callout

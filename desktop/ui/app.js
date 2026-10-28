@@ -20,7 +20,7 @@ const state = {
   invTab: "all", health: new Map(), healthError: "", healthLoading: false, healthAt: null, healthStarted: 0, flipped: new Set(), twoWay: new Map(),
   clientLinks: [], clientLinksError: "",
   // Datacenter: tree selection, collapsed branches and on-demand container data per machine ("local" = this Master).
-  dc: { node: "dc", tab: "summary", query: "", collapsed: new Set(), seen: new Set(), filter: "running", adding: null, editing: null, ctView: "containers",
+  dc: { treeHidden: (() => { try { return localStorage.getItem("sshcc.sideHosts") !== "open"; } catch { return true; } })(), node: "dc", tab: "summary", query: "", collapsed: new Set(), seen: new Set(), filter: "running", adding: null, editing: null, ctView: "containers",
     monInterval: Number(localStorage.getItem("sshcc.monitorInterval")) || 5000, monPaused: false },
   monitor: new Map(),
   containers: new Map(), ctLogs: null, folders: { folders: [], members: {} }, datacenters: { datacenters: [], members: {} },
@@ -191,7 +191,8 @@ function renderHeader() {
   $("#service-label").textContent = state.service ? state.service.label : T.side.unavailable;
   if (state.service?.version && $("#app-version")) $("#app-version").textContent = "v" + state.service.version;
   $("#service-dot").className = "dot " + (state.service ? "good" : "bad");
-  $("#dc-tree").hidden = state.dc.treeHidden === true;
+  // Folded by default (only the main menu shows); the chevron by Inventory opens Add host, the filter and the tree, and it is remembered
+  $("#side-hosts").hidden = state.dc.treeHidden === true;
   $(".tree-toggle").setAttribute("aria-expanded", String(state.dc.treeHidden !== true));
   document.querySelectorAll("[data-page]").forEach(button => {
     const active = button.dataset.page === state.page;
@@ -2380,7 +2381,7 @@ document.addEventListener("click", event => {
     if (action === "add-skip-save") { state.add.skipped.add(state.pairing?.requestId); render(); }
     if (action === "open-paired-target") { state.pairing = null; addReset(); await refreshFleet(); await selectTarget(button.dataset.id); }
     if (action === "back-fleet") { state.page = "datacenter"; state.dc.node = "dc"; state.selected = null; render(); }
-    if (action === "tree-toggle") { state.dc.treeHidden = state.dc.treeHidden !== true; renderHeader(); return; }
+    if (action === "tree-toggle") { state.dc.treeHidden = state.dc.treeHidden !== true; try { localStorage.setItem("sshcc.sideHosts", state.dc.treeHidden ? "folded" : "open"); } catch {} renderHeader(); return; }
     if (action === "backup-start") { state.backup = { mode: "backup", valid: false, saved: "", error: "" }; render(); $("#backup-flow [data-focus]")?.focus(); return; }
     if (action === "backup-save") return saveBackup();
     if (action === "backup-close") { const restored = state.backup?.result; state.backup = null; if (restored) { state.page = "datacenter"; state.dc.node = "dc"; } render(); return; }
