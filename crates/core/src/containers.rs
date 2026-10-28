@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::{
     env,
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Stdio},
     thread,
     time::{Duration, Instant},
@@ -63,7 +63,7 @@ fn drain(mut stream: impl Read + Send + 'static, limit: usize) -> thread::JoinHa
     })
 }
 
-fn run(program: &PathBuf, args: &[&str], timeout: Duration) -> Result<Output> {
+fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
     let mut child: Child = crate::fleet::quiet_command(&program.to_string_lossy())
         .args(args)
         .stdin(Stdio::null())

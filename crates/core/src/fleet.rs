@@ -522,6 +522,7 @@ fn key_path(state: &Path, tenant: &str) -> PathBuf {
     state.join("keys").join(format!("{tenant}.ed25519"))
 }
 pub(crate) fn quiet_command(name: &str) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(name);
     #[cfg(windows)]
     {

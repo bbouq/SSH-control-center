@@ -112,7 +112,7 @@ pub fn identity(state: &Path, target: &Target) -> Result<PathBuf> {
 
 /// Hosts this Master moves itself: direct ones. Merged hosts are moved by the Master they belong to.
 fn own_hosts(state: &Path) -> Result<Vec<Target>> {
-    Ok(list_targets(&database(state)?)?)
+    list_targets(&database(state)?)
 }
 
 fn keygen(path: &Path) -> Result<String> {

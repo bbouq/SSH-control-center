@@ -136,6 +136,7 @@ pub fn script(os: &str, path: &str, id: &str) -> String {
 
 /// Updates one host: refuses what can't be updated, uploads, starts the installer detached, then waits for the new
 /// version. `wait` and `poll` are passed in so tests don't wait.
+#[allow(clippy::too_many_arguments)] // wait/poll are separate so tests can shrink them
 pub fn one(state: &Path, config: &Config, templates: &Path, id: &str, act: &Act, progress: &dyn Fn(&str), wait: Duration, poll: Duration) -> Result<Value> {
     let row = check(state, config, templates)?.into_iter().find(|r| r["targetId"] == id).with_context(|| format!("E_TARGET: unknown host {id}"))?;
     match row["reason"].as_str() {
