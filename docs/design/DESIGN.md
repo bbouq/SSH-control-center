@@ -128,6 +128,10 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 - Tauri CSP `style-src 'self'`: no `style=""` attributes. Set custom properties through CSSOM (`el.style.setProperty`).
 - Grain and the light leak use `data:` SVG backgrounds in the prototype — check `img-src` before shipping, or ship them as files.
 - `backdrop-filter` only on a few static blocks (callout, film edge, preview controls).
+- **No `preserve-3d` / `translateZ` on the floor.** WebKitGTK (the Ubuntu window) without GPU compositing — a VM, or
+  `WEBKIT_DISABLE_COMPOSITING_MODE=1` — flattens it and the pods collapse into ellipses. Height is drawn in 2D inside the
+  tilted floor: up the screen is `translate(.581h, −1.789h)`; labels undo the tilt with `rotate(18deg) scaleY(2.13)`; pods
+  stack by `z-index` from their depth. Checked 2026-10-28 in Chromium and in Linux WebKit (Playwright 1.48 image).
 - Six font families: subset before shipping.
 - **Text over the sky** — near the horizon the sky gets light (white is only 2.5–3:1 on sunrise/day `--sky3`), so text there
   carries a local scrim: the sidebar's copy of the sky darkens below 38 % of its height, and the headline has a soft radial scrim

@@ -63,24 +63,26 @@ body {
   -webkit-mask: radial-gradient(ellipse 50% 100% at 50% 0, #000 0 30%, transparent 100%); mask: radial-gradient(ellipse 50% 100% at 50% 0, #000 0 30%, transparent 100%); }
 .sky-glint i { position: absolute; left: 0; right: 0; top: -14px; bottom: -14px; background: repeating-linear-gradient(180deg, rgba(143, 176, 240, .7) 0 1px, transparent 1px 7px); animation: sky-ripple 7s linear infinite; }
 
-/* The floor: a tilted plane holding rings, wires and pods */
+/* The floor: a tilted plane holding rings, wires and pods. Height on the floor is drawn in 2D, not with translateZ:
+   WebKitGTK without GPU compositing flattens preserve-3d. Up the screen is (.581, -1.789) × height in floor space
+   (the inverse of rotateX(62deg) rotateZ(-18deg)); labels undo the tilt with rotate(18deg) scaleY(2.13). */
 .sky-view { inset: 0; perspective: 4200px; }
-.sky-floor { position: absolute; left: 61%; top: 66%; width: 1000px; height: 380px; margin: -190px 0 0 -500px; transform-style: preserve-3d; transform: rotateX(62deg) rotateZ(-18deg) scale(.86); }
+.sky-floor { position: absolute; left: 61%; top: 66%; width: 1000px; height: 380px; margin: -190px 0 0 -500px; transform: rotateX(62deg) rotateZ(-18deg) scale(.86); }
 .sky-floor > * { position: absolute; }
-.sky-orbit { border: 1px solid rgba(238, 240, 248, .12); border-radius: 50%; transform: translateZ(.5px); }
+.sky-orbit { border: 1px solid rgba(238, 240, 248, .12); border-radius: 50%; }
 .sky-orbit.steel { border-color: var(--steel); opacity: .6;
   -webkit-mask: conic-gradient(from 200deg, #000 0 120deg, transparent 120deg); mask: conic-gradient(from 200deg, #000 0 120deg, transparent 120deg); }
-.sky-wires { left: 0; top: 0; overflow: visible; transform: translateZ(1px); }
+.sky-wires { left: 0; top: 0; overflow: visible; }
 .sky-wires path { fill: none; stroke: rgba(238, 240, 248, .32); stroke-width: 1.2; }
 .sky-wires .comet { stroke: #DCE4FF; stroke-width: 3; stroke-linecap: round; }
 .sky-wires .comet.is-off { stroke: var(--rose); }
 
-.sky-pod { width: 0; height: 0; transform-style: preserve-3d; transition: transform 320ms cubic-bezier(.2, .8, .2, 1); --d: 26px; cursor: pointer; }
+.sky-pod { width: 0; height: 0; transition: transform 320ms cubic-bezier(.2, .8, .2, 1); --d: 26px; cursor: pointer; }
 .sky-pod .dk, .sky-pod .cap { position: absolute; width: var(--d); height: var(--d); left: calc(var(--d) / -2); top: calc(var(--d) / -2); border-radius: 50%; }
-.sky-pod .dk { border: 1px solid rgba(238, 240, 248, .5); background: rgba(8, 9, 20, .9); }
+.sky-pod .dk { transform: translate(calc(var(--z) * .581), calc(var(--z) * -1.789)); border: 1px solid rgba(238, 240, 248, .5); background: rgba(8, 9, 20, .9); }
 .sky-pod .dk.s { border-color: var(--steel); }
-.sky-pod .cap { border: 1px solid rgba(238, 240, 248, .7); background: #171A30; transform: translateZ(var(--h)); }
-.sky-pod .led { position: absolute; width: 8px; height: 8px; left: -4px; top: -4px; border-radius: 50%; background: var(--lilac); transform: translateZ(calc(var(--h) + 1px)); }
+.sky-pod .cap { border: 1px solid rgba(238, 240, 248, .7); background: #171A30; transform: translate(calc(var(--h) * .581), calc(var(--h) * -1.789)); }
+.sky-pod .led { position: absolute; width: 8px; height: 8px; left: -4px; top: -4px; border-radius: 50%; background: var(--lilac); transform: translate(calc((var(--h) + 1px) * .581), calc((var(--h) + 1px) * -1.789)); }
 .sky-pod.is-online .led { background: var(--led); animation: sky-breathe 2.8s ease-in-out infinite; }
 .sky-pod.is-hot .led { background: var(--amber); animation: none; }
 .sky-pod.is-hot .cap { border-color: var(--amber); }
@@ -90,20 +92,20 @@ body {
 .sky-pod.is-master .cap { background: conic-gradient(from 210deg, #F4F6FB, #A6B4D8, #E8ECF6, #6E7CA8, #DCD6EE, #C9E6EA, #F4F6FB); border-color: rgba(238, 240, 248, .35); }
 .sky-pod.is-master .led { width: 12px; height: 12px; left: -6px; top: -6px; background: var(--steel); animation: none; }
 .sky-pod.is-peer { cursor: pointer; }
-.sky-pod.is-focus { transform: translateZ(10px); }
+.sky-pod.is-focus { transform: translate(5.8px, -17.9px); }
 .sky-pod.is-focus .cap { background: var(--holo); border-color: transparent; }
 .sky-pod.is-focus .dk { border-color: #C9D6FF; }
 .sky-pod.is-hit .dk { animation: sky-edge 900ms ease-out 1; }
 /* Labels stand up and face the viewer (the inverse of the floor's rotation); quiet hosts stay unlabelled */
 .sky-pod .lbl { position: absolute; left: 0; top: 0; white-space: nowrap; transform-origin: 0 100%; opacity: 0; transition: opacity 200ms;
-  transform: translateZ(calc(var(--h) + 16px)) rotateZ(18deg) rotateX(-62deg) translate(-50%, -100%);
+  transform: translate(calc((var(--h) + 16px) * .581), calc((var(--h) + 16px) * -1.789)) rotate(18deg) scaleY(2.13) translate(-50%, -100%);
   font: 500 12px/1 var(--mono); color: var(--lilac); }
 .sky-pod:is(.is-master, .is-hot, .is-offline) .lbl { opacity: 1; }
 .sky-pod.is-master .lbl { font: 400 12px/1 var(--typewriter); letter-spacing: .1em; color: var(--white); background: rgba(8, 9, 20, .8); padding: 4px 6px; outline: 1px solid rgba(238, 240, 248, .5); }
 .sky-pod.is-focus .lbl { opacity: 0 !important; }
-.sky-more { font: 400 12px/1 var(--typewriter); color: var(--lilac); transform: translateZ(2px) rotateZ(18deg) rotateX(-62deg); white-space: nowrap; }
+.sky-more { font: 400 12px/1 var(--typewriter); color: var(--lilac); transform: rotate(18deg) scaleY(2.13); white-space: nowrap; }
 /* The one hologram on this screen: a dotted halo above this Master; it turns once when clicked */
-.sky-halo { width: 118px; height: 118px; margin: -59px 0 0 -59px; border-radius: 50%; background: var(--holo); transform: translateZ(var(--z)); cursor: pointer;
+.sky-halo { width: 118px; height: 118px; margin: -59px 0 0 -59px; border-radius: 50%; background: var(--holo); z-index: 999; transform: translate(calc(var(--z) * .581), calc(var(--z) * -1.789)); cursor: pointer;
   -webkit-mask: radial-gradient(circle, transparent 0 66%, #000 67% 71%, transparent 72%); mask: radial-gradient(circle, transparent 0 66%, #000 67% 71%, transparent 72%); }
 .sky-halo.is-turning { animation: sky-turn 2.4s cubic-bezier(.3, .1, .2, 1) 1; }
 .sky-ping { width: 80px; height: 80px; margin: -40px 0 0 -40px; border: 1.5px solid #DCE4FF; border-radius: 50%; opacity: 0; }
@@ -169,7 +171,7 @@ body.has-sky .app-side::after { content: ""; position: absolute; z-index: -1; le
 @keyframes sky-ripple { from { transform: translateY(-7px); } to { transform: translateY(7px); } }
 @keyframes sky-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 @keyframes sky-edge { 0%, 40% { border-color: #DCE4FF; } }
-@keyframes sky-turn { to { transform: translateZ(var(--z)) rotate(360deg); } }
+@keyframes sky-turn { to { transform: translate(calc(var(--z) * .581), calc(var(--z) * -1.789)) rotate(360deg); } }
 
 html:lang(th) .sky-film .frames, html:lang(th) .sky-tag, html:lang(th) .sky-headline .of, html:lang(th) .sky-callout :is(.state, dt) { letter-spacing: 0; }
 html:lang(th) .sky-headline .on { font: 500 52px/1.2 var(--serif); }

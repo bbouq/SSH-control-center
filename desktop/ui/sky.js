@@ -131,9 +131,9 @@ export function createSky({ onSelect }) {
   function more(at, n, dy) { const el = make("span", "sky-more", floor); el.textContent = "+" + n; set(el, { left: px(at.x + 40), top: px(at.y + dy) }); }
   function pod(key, p, cls, discs, gap, label) {
     const el = make("div", "sky-pod " + cls, floor), h = discs * gap;
-    for (let i = 0; i < discs; i++) { const d = make("div", "dk" + (cls.includes("is-master") && i % 4 === 3 ? " s" : ""), el); d.style.transform = `translateZ(${i * gap}px)`; }
+    for (let i = 0; i < discs; i++) { const d = make("div", "dk" + (cls.includes("is-master") && i % 4 === 3 ? " s" : ""), el); d.style.setProperty("--z", px(i * gap)); }
     make("div", "cap", el); make("div", "led", el); make("span", "lbl", el).textContent = label;
-    set(el, { left: px(p.x), top: px(p.y), "--h": px(h) });
+    set(el, { left: px(p.x), top: px(p.y), "--h": px(h), "z-index": String(Math.round(p.y) + 1) });
     el.dataset.key = key; pods.set(key, el);
     if (key !== "local") el.addEventListener("click", () => onSelect(key.split("\u0000").pop()));
     el.addEventListener("pointerenter", () => point(key.split("\u0000").pop()));
@@ -220,7 +220,7 @@ export function createSky({ onSelect }) {
     const dur = key.includes("\u0000") ? 1500 : 900;
     c.animate([{ strokeDashoffset: 90 }, { strokeDashoffset: -1000 }], { duration: dur, easing: "cubic-bezier(.45,.05,.4,1)", fill: "both" }).finished.then(() => c.remove());
     const p = pos.get(key), ping = set(make("div", "sky-ping" + (off ? " is-off" : ""), floor), { left: px(p.x), top: px(p.y) });
-    ping.animate([{ transform: "translateZ(2px) scale(.3)", opacity: 1 }, { transform: "translateZ(2px) scale(1.6)", opacity: 0 }], { duration: 800, delay: dur - 120, easing: "ease-out", fill: "both" }).finished.then(() => ping.remove());
+    ping.animate([{ transform: "scale(.3)", opacity: 1 }, { transform: "scale(1.6)", opacity: 0 }], { duration: 800, delay: dur - 120, easing: "ease-out", fill: "both" }).finished.then(() => ping.remove());
     setTimeout(() => { const el = pods.get(key); if (el) { el.classList.remove("is-hit"); void el.offsetWidth; el.classList.add("is-hit"); } }, dur);
     return dur;
   }
