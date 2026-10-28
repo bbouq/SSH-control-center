@@ -37,6 +37,13 @@ const en = {
     hosts: { online: "Online", offline: "Offline", checking: "Checking…", unknown: "Unknown", legacy: "Service not installed" },
     unavailable: "Unavailable",
   },
+  // The Inventory sky (sky.js): the headline, the film edge's readouts and the pointed host's facts.
+  sky: {
+    word: "Inventory", tag: "Fleet topology", hot: "High load",
+    headline: (up, total) => ({ n: String(up), of: "of " + total, on: "online." }),
+    film: { app: version => "SSHCC " + version, online: (up, total) => up + "/" + total + " online", polled: when => "Polled " + when, checking: "Checking…", off: n => n + " off" },
+    facts: { address: "Address", system: "System", checked: "Checked" }
+  },
   inv: {
     hintTitle: "How online status is checked",
     hint: ["The SSH port is probed every minute while this window is open", "Refresh runs a full check over SSH", "Use “Check connection” on a host for a detailed check", "Up to 50 Targets per Master"],
@@ -53,6 +60,7 @@ const en = {
     cardSelf: "This window · current Master", online: (up, total) => up + "/" + total + " online", noHostsMatch: "No hosts match",
     directFrom: name => "Direct from " + name, through: name => "Through " + name, twoWay: "two-way", oneWay: "one-way", manageMerge: "Manage merge",
     peerRole: n => "Master · " + n + " target hosts",
+    tabs: { label: "Show hosts", all: "All", direct: "Direct", look: "Needs a look", nothingTitle: "Nothing needs a look", nothingText: "Every host answers and none is under high load" },
     noDrawTitle: "No hosts to draw", noDrawText: "Add a target host, or clear the filters",
     firstTitle: "Connect your first target host", firstText: "Use “+ Add host” at the top right",
     restoreTitle: "Moving a Master to this machine?", restoreText: "Restore a backup of the old Master to get all its hosts back at once, or add hosts one by one",
@@ -505,6 +513,12 @@ const th = {
     hosts: { online: "ออนไลน์", offline: "ออฟไลน์", checking: "กำลังตรวจ…", unknown: "ไม่ทราบ", legacy: "ยังไม่ได้ติดตั้งบริการ" },
     unavailable: "ติดต่อไม่ได้",
   },
+  sky: {
+    word: "เครื่องทั้งหมด", tag: "ผังเครื่อง", hot: "โหลดสูง",
+    headline: (up, total) => ({ n: String(up), of: "จาก " + total, on: "เครื่องออนไลน์" }),
+    film: { app: version => "SSHCC " + version, online: (up, total) => "ออนไลน์ " + up + "/" + total, polled: when => "ตรวจล่าสุด " + when, checking: "กำลังตรวจ…", off: n => "ออฟไลน์ " + n },
+    facts: { address: "ที่อยู่", system: "ระบบ", checked: "ตรวจเมื่อ" }
+  },
   inv: {
     hintTitle: "ตรวจสถานะออนไลน์อย่างไร",
     hint: ["ระหว่างที่หน้าต่างนี้เปิด จะลองต่อพอร์ต SSH ทุกนาที", "กดรีเฟรชเพื่อตรวจเต็มรูปแบบผ่าน SSH", "ใช้ “ตรวจการเชื่อมต่อ” ที่เครื่องนั้นเพื่อดูผลละเอียด", "Master หนึ่งเครื่องดูแลได้สูงสุด 50 เครื่อง"],
@@ -521,6 +535,7 @@ const th = {
     cardSelf: "หน้าต่างนี้ · Master ปัจจุบัน", online: (up, total) => "ออนไลน์ " + up + "/" + total, noHostsMatch: "ไม่มีเครื่องที่ตรงกัน",
     directFrom: name => "ต่อตรงจาก " + name, through: name => "ผ่าน " + name, twoWay: "สองทาง", oneWay: "ทางเดียว", manageMerge: "จัดการ Merge",
     peerRole: n => "Master · " + n + " เครื่อง",
+    tabs: { label: "แสดงเครื่อง", all: "ทั้งหมด", direct: "ต่อตรง", look: "ต้องดู", nothingTitle: "ไม่มีเครื่องที่ต้องดู", nothingText: "ทุกเครื่องตอบกลับและไม่มีเครื่องที่โหลดสูง" },
     noDrawTitle: "ไม่มีเครื่องให้แสดง", noDrawText: "เพิ่มเครื่อง หรือล้างตัวกรอง",
     firstTitle: "เชื่อมต่อเครื่องแรกของคุณ", firstText: "กด “+ เพิ่มเครื่อง” ที่แถบด้านข้าง",
     restoreTitle: "ย้าย Master มาที่เครื่องนี้?", restoreText: "กู้คืนไฟล์สำรองของ Master เครื่องเก่าเพื่อได้เครื่องทั้งหมดกลับมาในครั้งเดียว หรือเพิ่มเครื่องทีละเครื่อง",

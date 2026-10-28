@@ -221,7 +221,7 @@ def handler(preview):
         def do_GET(self):
             name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
             fonts = {"fonts/" + font.name for font in (UI / "fonts").glob("*.woff2")}
-            if name not in {"index.html", "app.js", "app.css", "bridge.js", "header-scene.svg"} | fonts:
+            if name not in {"index.html", "app.js", "app.css", "sky.js", "sky.css", "strings.js", "bridge.js"} | fonts:
                 self.send_error(404)
                 return
             # The bridge is served as a file so the page runs under the app's real CSP.
