@@ -79,16 +79,19 @@ body {
 
 /* The sky continues under the sidebar down to the hill, which meets the plate's left edge at --hill-y (sky.js) */
 body.has-sky .app-side { isolation: isolate; }
-body.has-sky .app-side::after { content: ""; position: absolute; z-index: -1; left: 0; right: 0; top: 0; height: max(560px, min(100vh, 980px)); pointer-events: none; transform: translateY(var(--scroll, 0px));
+body.has-sky .app-side { overflow-x: hidden; }
+body.has-sky .app-side::after { content: ""; position: absolute; z-index: -2; left: 0; right: 0; top: 0; height: max(560px, min(100vh, 980px)); pointer-events: none; transform: translateY(var(--scroll, 0px));
   background: var(--grain) 0 0 / 200px 200px, var(--side-stars, none) 0 0 / 100% 100% no-repeat,
     radial-gradient(var(--haze-rx, 700px) var(--haze-ry, 600px) at var(--haze-x, 900px) var(--haze-y, 450px), rgba(240, 160, 96, .22), rgba(240, 160, 96, 0) 70%),
     linear-gradient(180deg, #05071A 0%, #16204A 55%, #2A3566 80%, #0B0D1A 100%);
   background-blend-mode: overlay, normal, normal, normal;
-  clip-path: polygon(0 0, 100% 0, 100% var(--hill-y, 70%), 0 calc(var(--hill-y, 70%) + 40px)); }
+  background-position: 0 0, var(--sx, 0px) var(--sy, 0px), 0 0, 0 0; transition: background-position 900ms cubic-bezier(.2, .7, .2, 1); }
 /* …and the hill carries on under it in the canvas hill's colours, so nothing steps at the edge */
-body.has-sky .app-side::before { content: ""; position: absolute; z-index: -1; left: 0; right: 0; top: 0; height: max(560px, min(100vh, 980px)); pointer-events: none;
+body.has-sky .app-side::before { content: ""; position: absolute; z-index: -1; left: -24px; right: -24px; top: 0; height: max(560px, min(100vh, 980px)); pointer-events: none;
   transform: translateY(var(--scroll, 0px)); background: var(--grain) 0 0 / 200px 200px, linear-gradient(180deg, #10101A var(--hill-y, 70%), #06060B 100%); background-blend-mode: overlay, normal;
-  clip-path: polygon(0 calc(var(--hill-y, 70%) + 40px), 100% var(--hill-y, 70%), 100% 100%, 0 100%); }
+  clip-path: polygon(0 var(--hill-l, 74%), 100% var(--hill-r, 70%), 100% 100%, 0 100%);
+  /* it bleeds 24 px past both edges and moves with the plate's hill, so the parallax never opens the seam */
+  translate: var(--hx, 0px) var(--hy, 0px); transition: translate 900ms cubic-bezier(.2, .7, .2, 1); }
 /* No scrim over the sidebar's sky (it would step at the edge): its words carry a dark halo instead */
 body.has-sky .app-side :is(.dc-item, .side-foot) { text-shadow: 0 0 6px rgba(4, 5, 12, .95), 0 0 14px rgba(4, 5, 12, .8); }
 

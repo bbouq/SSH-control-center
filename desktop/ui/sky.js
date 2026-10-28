@@ -106,6 +106,9 @@ export function createSky({ onSelect }) {
     // the ember haze, in the sidebar's own coordinates, so its copy of the sky carries the same warmth to the edge
     const bs = document.body.style; bs.setProperty("--haze-x", (sw + plate * .56).toFixed(0) + "px"); bs.setProperty("--haze-y", (H * .5).toFixed(0) + "px");
     bs.setProperty("--haze-rx", (plate * .6).toFixed(0) + "px"); bs.setProperty("--haze-ry", (H * .7).toFixed(0) + "px");
+    // the sidebar's hill line, at the curve's own slope at the seam (so a parallax shift keeps the two meeting); its box bleeds 24 px each side
+    const slope = (hillAt(BLEED - 8) - hillAt(BLEED)) / 8;
+    bs.setProperty("--hill-l", (hillAt(BLEED) + slope * (sw + 24)).toFixed(1) + "px"); bs.setProperty("--hill-r", (hillAt(BLEED) - slope * 24).toFixed(1) + "px");
     if (sw) { const c = document.createElement("canvas"); c.width = sw * DPR; c.height = H * DPR; scatter(c.getContext("2d"), sw, H, DPR, 5);
       document.body.style.setProperty("--side-stars", `url(${c.toDataURL()})`); }
   }
@@ -295,6 +298,10 @@ export function createSky({ onSelect }) {
   function drift(nx, ny) {
     for (const [el, d] of LAYERS) el.style.translate = `${(nx * d).toFixed(1)}px ${(ny * d * .5).toFixed(1)}px`;
     parallax = { x: nx * 13, y: ny * 6.5 };
+    // the sidebar's copy of the sky moves with it: its stars as the plate's stars, its hill as the halo and hill
+    const bs = document.body.style;
+    bs.setProperty("--sx", (nx * 4).toFixed(1) + "px"); bs.setProperty("--sy", (ny * 2).toFixed(1) + "px");
+    bs.setProperty("--hx", (nx * 13).toFixed(1) + "px"); bs.setProperty("--hy", (ny * 6.5).toFixed(1) + "px");
   }
   if (!REDUCED) {
     root.addEventListener("pointermove", e => {

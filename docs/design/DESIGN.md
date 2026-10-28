@@ -138,7 +138,9 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 - Drag: the halo turns and tilts with inertia (pitch .10–.34); it draws only while it moves.
 - Recovery: one shooting star across the upper sky.
 - Count change: the numeral flexes (weight/axis + skew, 0.9 s).
-- Pointer: parallax layers (stars, glow, halo, callout), eased, one rAF per move; the callout glides (560 ms).
+- Pointer: parallax over the whole window — stars 4 px, halo, hill and callout 13 px, eased (900 ms), one rAF per move. The sidebar's
+  copy of the sky moves with it (its stars by background-position, its hill by `translate`, the hill line at the curve's own slope at
+  the seam), so nothing freezes at the sidebar's edge. The callout glides (560 ms).
 - Always on (cheap): the online LED breathing in the host rows. Nothing in the sky loops.
 - Nothing runs while the window is hidden. Nothing moves under `prefers-reduced-motion`.
 
