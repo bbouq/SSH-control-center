@@ -135,7 +135,7 @@ fn versions_compare_as_numbers_and_a_pre_release_is_older() {
     assert_eq!(upgrade::compare("v0.5.0", "0.5.0"), Ordering::Equal);
     assert_eq!(upgrade::compare("0.5.0-rc.1", "0.5.0"), Ordering::Less);
     assert_eq!(upgrade::compare("0.5", "0.5.0"), Ordering::Equal);
-    assert_eq!(upgrade::ours(), "0.5.1", "this release ships 0.5.1");
+    assert_eq!(upgrade::ours(), "0.5.2", "this release ships 0.5.2");
 }
 
 #[test]
