@@ -39,7 +39,7 @@ const en = {
   },
   // The Inventory sky (sky.js): the headline, the film edge's readouts and the pointed host's facts.
   sky: {
-    word: "Inventory", tag: "Fleet topology", hot: "High load",
+    hot: "High load",
     headline: (up, total) => ({ n: String(up), of: "of " + total, on: "online." }),
     film: { app: version => "SSHCC " + version, online: (up, total) => up + "/" + total + " online", polled: when => "Polled " + when, checking: "Checking…", off: n => n + " off" },
     facts: { address: "Address", system: "System", response: "Response", online: "Online for", checked: "Checked" }, ms: n => n + " ms"
@@ -514,7 +514,7 @@ const th = {
     unavailable: "ติดต่อไม่ได้",
   },
   sky: {
-    word: "เครื่องทั้งหมด", tag: "ผังเครื่อง", hot: "โหลดสูง",
+    hot: "โหลดสูง",
     headline: (up, total) => ({ n: String(up), of: "จาก " + total, on: "เครื่องออนไลน์" }),
     film: { app: version => "SSHCC " + version, online: (up, total) => "ออนไลน์ " + up + "/" + total, polled: when => "ตรวจล่าสุด " + when, checking: "กำลังตรวจ…", off: n => "ออฟไลน์ " + n },
     facts: { address: "ที่อยู่", system: "ระบบ", response: "ตอบกลับ", online: "ออนไลน์มา", checked: "ตรวจเมื่อ" }, ms: n => n + " ms"

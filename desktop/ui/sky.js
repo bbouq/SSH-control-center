@@ -5,7 +5,6 @@
    without a GPU). It draws only while something moves: the arrival, a drag, its inertia, a host changing. Motion budget
    otherwise: the glint and a few sparks; the clock repaints the sky once a minute. CSP: no style="" anywhere, custom
    properties go through CSSOM. */
-const NS = "http://www.w3.org/2000/svg";
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const MAX_SPARKS = 48; // hosts named on the halo; the rest still glitter in it
 
@@ -23,12 +22,11 @@ const PHASES = {
 const HOURS = [[0, "night", .2, 1, 0], [4.3, "predawn", .55, .95, 0], [6.2, "sunrise", .95, .3, .2], [8.5, "day", .5, 0, .55], [13, "day", .42, 0, .7],
   [16.3, "late", .5, 0, .5], [18.1, "golden", .9, .15, .15], [19.4, "dusk", .55, .6, 0], [21, "night", .22, 1, 0], [24, "night", .2, 1, 0]];
 const SUNRISE = 6, SUNSET = 18.6;
-const SPARKS = [[78, 12, 8, 9.5, 0], [88, 26, 5, 11, 2.4], [66, 8, 5, 8.2, 4.1], [94, 44, 7, 12, 1.2], [57, 18, 4, 10.4, 6], [83, 52, 4, 9, 3.3]];
-const FACES = ["c", "f", "g", "m"];
 const STATE_COLOUR = { online: "var(--led)", offline: "var(--rose)", hot: "var(--amber)" };
 const SPARK_RGB = { online: "255,238,214", offline: "255,127,174", hot: "255,194,102", checking: "201,205,226" };
 const GLITTER = 5200, TONES = [[240, 160, 96], [255, 232, 200], [191, 216, 255], [255, 140, 90]];
 const REST = { yaw: .35, pitch: .27 };
+const BLEED = 24; // the halo canvases run this far past the plate on each side, so the parallax never opens an edge
 
 const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
 const mix = (a, b, t) => "#" + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t).toString(16).padStart(2, "0")).join("");
@@ -37,36 +35,20 @@ const ease = t => t * t * (3 - 2 * t);
 const px = v => v + "px";
 const set = (el, props) => { for (const k in props) el.style.setProperty(k, props[k]); return el; };
 const make = (tag, cls, parent) => { const el = document.createElement(tag); if (cls) el.className = cls; if (parent) parent.append(el); return el; };
-const svgEl = (tag, attrs, parent) => { const el = document.createElementNS(NS, tag); for (const k in attrs) el.setAttribute(k, attrs[k]); if (parent) parent.append(el); return el; };
-const RIDGE_FAR = "M0 128 C 140 104, 250 86, 360 108 S 560 132, 700 104 S 900 50, 1010 44 S 1150 40, 1200 52";
-const RIDGE_NEAR = "M0 100 C 120 92, 250 96, 360 122 S 500 168, 630 158 S 830 112, 970 96 S 1130 74, 1200 82";
 
 export function createSky({ onSelect }) {
   const root = make("section", "sky");
   root.id = "sky"; root.hidden = true; root.setAttribute("aria-hidden", "true");
+  // Clean, as the prototype: stars, the clock's sun and moon, the glow, the halo on one hill, the film edge, the headline
   const dust = make("div", "sky-dust", root);
-  const word = make("div", "sky-word", root);
-  const rays = make("div", "sky-rays", root), sun = make("div", "sky-sun", root), moon = make("div", "sky-moon", root);
+  const sun = make("div", "sky-sun", root), moon = make("div", "sky-moon", root);
   const dawn = make("div", "sky-dawn", root), chill = make("div", "sky-chill", root);
-  const far = svgEl("svg", { class: "sky-ridge far", viewBox: "0 0 1200 190", preserveAspectRatio: "none" }, root);
-  const grad = svgEl("linearGradient", { id: "sky-rim", x1: 0, x2: 1, y1: 0, y2: 0 }, svgEl("defs", {}, far));
-  [[0, "#8FB0F0", 0], [.22, "#C9A8F0", .85], [.45, "#8FB0F0", .35], [.8, "#8FB0F0", 0]].forEach(([o, c, a]) => svgEl("stop", { offset: o, "stop-color": c, "stop-opacity": a }, grad));
-  svgEl("path", { class: "fill", d: RIDGE_FAR + " L1200 190 L0 190 Z" }, far);
-  svgEl("path", { class: "rim", d: RIDGE_FAR }, far);
-  const glint = make("div", "sky-glint", root); make("i", "", glint);
-  const back = make("canvas", "sky-halo", root);
-  const near = svgEl("svg", { class: "sky-ridge near", viewBox: "0 0 1200 190", preserveAspectRatio: "none" }, root);
-  svgEl("path", { d: RIDGE_NEAR + " L1200 190 L0 190 Z" }, near);
-  const front = make("canvas", "sky-halo", root), bloom = make("canvas", "sky-halo bloom", root);
-  const sparks = SPARKS.map(([x, y, s, t, dl]) => set(make("i", "sky-spark", root), { left: x + "%", top: y + "%", "--s": px(s), "--t": t + "s", "--dl": dl + "s" }));
+  const back = make("canvas", "sky-halo", root), front = make("canvas", "sky-halo", root), bloom = make("canvas", "sky-halo bloom", root);
   const film = make("div", "sky-film", root); make("i", "perf", film); const frames = make("span", "frames", film); make("i", "perf", film);
-  make("i", "sky-reg tl", root); make("i", "sky-reg br", root);
-  const tag = make("span", "sky-tag", root);
   const headline = make("p", "sky-headline", root);
   const callout = make("div", "sky-callout", root); make("i", "stem", callout);
   const cBody = make("div", "body", callout), cName = make("span", "name", cBody), cState = make("span", "state", cBody), cFacts = make("dl", "", cBody);
   const shoot = make("div", "", root); set(shoot, { inset: "0", "pointer-events": "none", overflow: "hidden" });
-  void sparks;
 
   let T = null, snap = null, layoutKey = "", ring = [], byKey = new Map();
   let focusId = null, last = new Map(), hour = 0, clock = 0, parallax = { x: 0, y: 0 };
@@ -82,7 +64,7 @@ export function createSky({ onSelect }) {
     const W = root.clientWidth, H = root.clientHeight, horizon = H * .8;
     const d = (h - SUNRISE) / (SUNSET - SUNRISE), up = d > -.04 && d < 1.04, dc = Math.min(Math.max(d, 0), 1);
     const sx = W * (.33 + .58 * dc), sy = horizon - Math.sin(Math.PI * dc) * H * .5;
-    sun.style.transform = rays.style.transform = `translate(${sx.toFixed(0)}px, ${sy.toFixed(0)}px)`;
+    sun.style.transform = `translate(${sx.toFixed(0)}px, ${sy.toFixed(0)}px)`;
     sun.style.opacity = up ? Math.min(1, Math.sin(Math.PI * dc) * 6).toFixed(2) : "0";
     set(root, { "--gx": up ? (sx / W * 100).toFixed(1) + "%" : "34%", "--gy": up ? Math.min(92, sy / H * 100 + 6).toFixed(1) + "%" : "74%" });
     const m = (h >= 19 ? h - 19 : h + 5) / 10.5, night = m >= 0 && m <= 1;
@@ -120,13 +102,23 @@ export function createSky({ onSelect }) {
     byKey = new Map(ring.map(sp => [sp.key, sp]));
   }
   function size() {
-    DPR = Math.min(2, devicePixelRatio || 1); W = root.clientWidth; H = root.clientHeight;
-    cx = W * .6; cy = H * .58; R = Math.min(W * .25, H * .7);
+    DPR = Math.min(2, devicePixelRatio || 1); const plate = root.clientWidth; W = plate + BLEED * 2; H = root.clientHeight;
+    cx = BLEED + plate * .56; cy = H * .5; R = Math.min(plate * .3, H * .46);
+    // the hill meets the sidebar's copy of the sky at the plate's left edge
+    document.body.style.setProperty("--hill-y", hillAt(BLEED).toFixed(0) + "px");
     for (const c of [back, front]) { c.width = W * DPR; c.height = H * DPR; }
     bloom.width = W * DPR / 4; bloom.height = H * DPR / 4;
   }
+  const crest = () => cy + R * .3;
+  // the hill: rises from the left edge to the relic's crest, falls away to the right (the prototype's curve)
+  const hillAt = x => { const top = crest(); if (x <= cx) { const t = x / cx; return top + R * .36 * (1 - t) ** 1.6; } const t = (x - cx) / (W - cx); return top + R * .4 * t ** 1.4; };
+  function hill(x) {
+    const top = crest(), g = x.createLinearGradient(0, top - 20, 0, H); g.addColorStop(0, "#161624"); g.addColorStop(1, "#06060B");
+    x.globalCompositeOperation = "source-over"; x.fillStyle = g; x.beginPath(); x.moveTo(0, H);
+    for (let px = 0; px <= W; px += 8) x.lineTo(px, hillAt(px)); x.lineTo(W, H); x.fill();
+  }
   function relic(x) {
-    const w = R * .07, h = R * .34, base = H - 36, g = x.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
+    const w = R * .07, h = R * .36, base = crest() + 4, g = x.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
     g.addColorStop(0, "#6E7CA8"); g.addColorStop(.35, "#F4F6FB"); g.addColorStop(.6, "#A6B4D8"); g.addColorStop(1, "#3A4166");
     x.globalCompositeOperation = "source-over"; x.fillStyle = g; x.beginPath(); x.roundRect(cx - w / 2, base - h, w, h, [w / 2, w / 2, 2, 2]); x.fill();
     const s = (seed => () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646)(11);
@@ -142,7 +134,7 @@ export function createSky({ onSelect }) {
     if (arrive < 1) arrive = arriveAt ? Math.min(1, (now - arriveAt) / 1800) : 0;
     const k = eased(arrive), b = back.getContext("2d"), f = front.getContext("2d"), g = bloom.getContext("2d");
     for (const [x, d] of [[b, DPR], [f, DPR], [g, DPR / 4]]) { x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, W, H); x.globalCompositeOperation = "lighter"; }
-    relic(b); b.globalCompositeOperation = "lighter";
+    hill(f); relic(f); f.globalCompositeOperation = "lighter";
     for (let i = 0; i < GLITTER; i++) {
       const [x0, y0, z, s] = project(G[i * 4], G[i * 4 + 1], G[i * 4 + 2]), x = x0 + (FROM[i * 2] * W - x0) * (1 - k), y = y0 + (FROM[i * 2 + 1] * H - y0) * (1 - k);
       const c = z > 0 ? b : f, sz = G[i * 4 + 3] * s; c.fillStyle = GC[i]; c.fillRect(x - sz / 2, y - sz / 2, sz, sz);
@@ -174,7 +166,7 @@ export function createSky({ onSelect }) {
   // drag turns the halo, a point names a spark, a click opens its host
   const pick = (x, y) => { let best = null, d = 22; for (const sp of ring) { if (sp.x == null) continue; const dd = Math.hypot(sp.x - x, sp.y - y); if (dd < d) { d = dd; best = sp.key; } } return best; };
   let lastX = 0, lastY = 0, moved = 0;
-  const local = e => { const r = root.getBoundingClientRect(); return [e.clientX - r.left - parallax.x, e.clientY - r.top - parallax.y]; };
+  const local = e => { const r = root.getBoundingClientRect(); return [e.clientX - r.left + BLEED - parallax.x, e.clientY - r.top - parallax.y]; };
   root.addEventListener("pointerdown", e => { if (e.button !== 0 || e.target.closest(".sky-callout")) return; if (arrive < 1) { arrive = 1; kick(); }
     dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY; root.setPointerCapture(e.pointerId); root.classList.add("is-dragging"); });
   root.addEventListener("pointermove", e => {
@@ -207,17 +199,6 @@ export function createSky({ onSelect }) {
     const raw = new Set([items[0], snap.master.label, snap.master.address]);
     frames.replaceChildren(...items.map((text, i) => { const s = make("span", i === 1 ? "on" : ""); s.textContent = text; if (raw.has(text)) s.dataset.raw = ""; return s; }));
   }
-  function writeWord() {
-    const text = T.sky.word, latin = /^[\x20-\x7e]+$/.test(text);
-    word.replaceChildren(...[...text].map((ch, i) => { const s = make("span", latin ? (i === 0 ? "c" : FACES[(i * 7 + 3) % 4]) : ""); s.textContent = ch; return s; }));
-  }
-  function reroll() {
-    if (REDUCED) return;
-    [...word.children].forEach((l, i) => {
-      if (!FACES.some(f => l.classList.contains(f))) return;
-      setTimeout(() => { l.classList.add("out"); setTimeout(() => { const cur = FACES.find(f => l.classList.contains(f)); let next; do next = FACES[Math.floor(Math.random() * 4)]; while (next === cur); l.classList.replace(cur, next); l.classList.remove("out"); }, 180); }, i * 70);
-    });
-  }
   function health() {
     const share = snap.total ? snap.online / snap.total : 1;
     dawn.style.opacity = (0.25 + 0.75 * share ** 3).toFixed(2);
@@ -239,8 +220,8 @@ export function createSky({ onSelect }) {
   }
   function place() {
     const sp = byKey.get(focusId); if (!sp || sp.x == null) return;
-    callout.classList.toggle("down", sp.y < 220); callout.classList.toggle("left", sp.x > W - 330);
-    callout.style.transform = `translate(${sp.x.toFixed(0)}px, ${sp.y.toFixed(0)}px)`;
+    const x = sp.x - BLEED; callout.classList.toggle("down", sp.y < 220); callout.classList.toggle("left", x > W - BLEED * 2 - 330);
+    callout.style.transform = `translate(${x.toFixed(0)}px, ${sp.y.toFixed(0)}px)`;
     callout.classList.add("is-shown");
   }
   const defaultFocus = () => {
@@ -271,11 +252,11 @@ export function createSky({ onSelect }) {
       if (before && before !== now) { signal(key); if (before !== "online" && now === "online") recovered = true; }
     }
     if (recovered) setTimeout(shootingStar, 700);
-    if (prev.online !== snap.online) { flex(); reroll(); }
+    if (prev.online !== snap.online) flex();
   }
 
   /* ---------- parallax: one write per pointer move, eased by CSS, nothing while still ---------- */
-  const LAYERS = [[dust, 4], [word, 9], [far, 6], [dawn, 3], [back, 13], [front, 13], [bloom, 13], [callout, 13], [glint, 16], [near, 20]];
+  const LAYERS = [[dust, 4], [dawn, 3], [back, 13], [front, 13], [bloom, 13], [callout, 13]];
   let pending = 0;
   function drift(nx, ny) {
     for (const [el, d] of LAYERS) el.style.translate = `${(nx * d).toFixed(1)}px ${(ny * d * .5).toFixed(1)}px`;
@@ -297,7 +278,7 @@ export function createSky({ onSelect }) {
 
   /* ---------- public ---------- */
   function update(next, strings) {
-    const langChanged = strings !== T; T = strings;
+    T = strings;
     document.body.classList.toggle("has-sky", Boolean(next?.visible));
     if (!next?.visible) { root.hidden = true; return; }
     const prev = snap, wasHidden = root.hidden; snap = next; root.hidden = false;
@@ -305,8 +286,6 @@ export function createSky({ onSelect }) {
     if (key !== layoutKey) { layoutKey = key; build(next); focusId = null; }
     if (wasHidden) { size(); if (!arriveAt && !REDUCED) arriveAt = performance.now(); }
     writeHeadline(); writeFilm(); health(); kick();
-    tag.textContent = T.sky.tag;
-    if (langChanged || !word.childElementCount) writeWord();
     if (wasHidden) { paint(nowHour()); startClock(); }
     react(wasHidden ? null : prev);
     // a host that just went offline or hot takes the callout
