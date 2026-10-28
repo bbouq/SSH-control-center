@@ -1,6 +1,6 @@
 # SSH Control Center — Design System "Relic Night" (v6)
 
-A black sky over the fleet. The sky keeps local time, the hour's colour gathers at the horizon, stars stay visible all day.
+A night sky over the fleet, as the Stardust Halo prototype: deep blue to violet, an ember haze where the halo sits, scattered stars, film grain.
 The fleet is a halo of stardust around this Master, one bright spark per host; a spark swells when its host changes. The rainbow lives only where you point.
 Dreamy where it is sky, precise where it is data.
 
@@ -11,13 +11,13 @@ Supersedes "Engraved Violet" (`DESIGN-v5.md`, kept for reference). The prototype
 
 1. **One black ground, one sky.** The window is a single near-black gradient. The sky (top of Inventory) and the ground continue
    under the sidebar with no panel, border or seam. Nothing may stop at the sidebar's edge.
-2. **Soft lives in the sky, hard lives in the data.** Sky, haze, grain, light leak, blurred faded word, italic "online." are soft.
-   Film edge, registration marks, callout block, numerals, tabs, rows, host names are crisp: hairlines, square or 6 px corners, heavy weights.
+2. **Soft lives in the sky, hard lives in the data.** Sky, haze, grain, light leak, the halo's glitter, italic "online." are soft.
+   Film edge, callout block, numerals, tabs, rows, host names are crisp: hairlines, square or 6 px corners, heavy weights.
 3. **The rainbow is a response, not a decoration.** The iridescent pearl appears on hover, focus and selection (and on a pointed pod cap).
    Everything at rest is black, silver, steel blue and the sky's own colour.
 4. **Steel blue is the accent** (`--steel`). Status colours are status only. No other accent.
 5. **Motion has a reason and stops.** It reacts to the fleet (a state change, a recovery) or to the pointer. Nothing loops except the
-   breathing online LED, the slow glint ripple and a few twinkling stars, all opacity/transform. Idle budget: **< 1 % of one core**.
+   breathing online LED in the rows, all opacity/transform. The sky itself is still at rest (clean, as the prototype). Idle budget: **< 1 % of one core**.
 6. **Readable at a glance, all day.** Text on the sky and on the ground stays ≥ 7:1 (`--white`, `--lilac`). Muted text is a colour
    token, never opacity. Focus: `outline: 2px solid var(--steel); outline-offset: 3px`. Targets ≥ 44 px. Everything that moves stops
    under `prefers-reduced-motion`.
@@ -34,7 +34,7 @@ Supersedes "Engraved Violet" (`DESIGN-v5.md`, kept for reference). The prototype
   /* text */
   --white: #EEF0F8;   /* primary text */
   --lilac: #A9AEC8;   /* muted text, labels (≥ 7:1 on --ground-1) */
-  --silver: #DCE0F0;  /* faded word, chrome highlights */
+  --silver: #DCE0F0;  /* chrome highlights */
   /* accent + status */
   --steel: #8FB0F0;
   --led:   #7CF2C0;   /* online */
@@ -53,6 +53,8 @@ Supersedes "Engraved Violet" (`DESIGN-v5.md`, kept for reference). The prototype
 ```
 
 ### Sky clock
+
+Since 2026-10-28 the Inventory sky is the prototype's fixed night; the clock below still colours the thin sky strip on the other pages.
 
 The sky's four stops (`--sky0` zenith → `--sky3` horizon), the glow colour and the far-ridge colour are interpolated between hour
 keyframes (smoothstep) and written to `<body>` **once a minute** from the viewer's local time. The sky and the sidebar both read them.
@@ -80,7 +82,6 @@ All bundled (Tauri CSP: no font downloads). All OFL.
 | Role | Face | Use |
 |---|---|---|
 | Headline numeral | Fraunces, `SOFT 0`, `opsz 144`, wght 900, 136 px | "9" in "9 of 11 online." |
-| Faded word | Mixed per letter: Cormorant Garamond italic 300 · Fraunces 300 · Space Grotesk 300 · Space Mono — 16 % opacity, 2 px blur | "Inventory" behind the scene |
 | Landing word | Cormorant Garamond italic 400, 64 px | "online." — the one soft italic |
 | Callout name, logo "SSH" | Fraunces `SOFT 0`, 500–800 | |
 | UI: host names, menu, tabs, buttons | Instrument Sans 600–700 (Space Grotesk for menu/status caps, letter-spacing .14–.18em) | |
@@ -91,13 +92,20 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 
 ## Layout (main screen)
 
-1. **Sidebar** — 236 px, transparent over the window ground. The sky continues under it, cut by a curve that carries the near ridge
-   (meets the plate's ridge at 416 px). Top → bottom: stacked logo (SSH / Control / CENTER), Add host (6 px, hairline), filter (6 px,
-   faint fill), menu (each row a faint pill; the active one pearl with a dark dot), host tree with curved connectors, current Master + round-cornered Refresh.
-2. **Sky plate** — 500 px, top of Inventory. Film edge (30 px, perforations, real readouts: online/total, Master, IP, last poll, offline),
-   registration marks, faded word, the **Stardust Halo** (a ring of glitter round this Master, a silver relic standing on the near ridge;
+1. **Sidebar** — 236 px, transparent over the window ground. The sky continues under it down to the hill line (`--hill-y`, written by
+   sky.js where the hill meets the plate's left edge), and the hill carries on under it in the same colours. Top → bottom, as the
+   prototype: stacked logo (SSH / Control / CENTER); **Add host**, always in sight, the one solid button (white, pearl on hover);
+   the menu (each row a faint pill; the active one pearl). Inventory's dropdown opens right under it — the filter and the host tree
+   with curved connectors — folded by default, opened by its chevron and remembered; then Masters, Alarms, Service; current Master +
+   round-cornered Refresh at the foot. Its sky carries the plate's stars,
+   haze and grain (positions from sky.js), so nothing steps at the edge.
+   No scrim over the sidebar's sky: its tree and foot words carry a dark halo instead.
+2. **Sky plate** — the full window height (560–980 px), top of Inventory; the rows start below it. As the prototype: a fixed night
+   (`#05071A → #16204A → #2A3566 → #0B0D1A`, ember haze `rgba(240,160,96,.22)` at the halo), scattered stars drawn once, a vignette,
+   film grain (.32, overlay), the film edge (30 px, real readouts: online/total, Master, IP, last poll, offline), one hill, the
+   **Stardust Halo** (a ring of glitter round this Master, a silver relic standing on the hill's crest;
    one spark per host, merged Masters larger), headline bottom-left, callout on the pointed spark. Drag turns and tilts the halo
-   (inertia; double-click resets); a click opens the host. The plate's bottom 30 px fade into the ground.
+   (inertia; double-click resets); a click opens the host; a mono hint bottom-right says so. The plate's bottom 30 px fade into the ground.
 3. **Below the sky** — the summary line, then square tabs (All · Direct · Through <Master> per merged Master · Needs a look, each with a count)
    over host rows in two columns on hairlines (one column under 1000 px). "All" starts with this Master. The sky draws the topology; the rows are where you act.
 4. **Every other page** (host, Master, Masters, Alarms, Service, Add host) — no sky plate; a faint 150 px strip of the same sky across the top,
@@ -118,8 +126,9 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 | Menu row | faint pill `rgba(238,240,248,.035)` | `--pearl` | `--pearl` + dark dot |
 | Button (primary) | 6 px, hairline white | `--pearl`, dark ink | — |
 | Callout | frosted ink block (`rgba(10,11,24,.72)` + 10 px backdrop blur), square, inner hairline, straight elbow leader, square terminal | — | — |
-| Halo | 5 200 glitter points (ember `#F0A060`, cream, pale blue) in a tilted ring; far half behind the near ridge, near half and a ¼-size bloom in front | — | — |
-| Spark (host) | a flare in its status colour (cream online, rose offline, amber high load); merged Masters ×1.6, Masters below them ×1.3; Masters, offline and high-load sparks are named in mono | ×1.8 and named | callout on it |
+| Halo | 5 200 glitter points (ember `#F0A060`, cream, pale blue) in a tilted ring; far half behind the hill and relic, near half and a ¼-size bloom in front | — | — |
+| Spark (host) | a flare in its status colour (cream online, rose offline, amber high load); offline and high-load sparks are named in mono | ×1.8 and named | callout on it |
+| Planet (Master) | a merged Master (radius 11 % of the halo) or a Master below one (7 %): a lit silver-violet sphere with faint bands, a tilted cream-and-ember ring (far arc behind, near arc in front), a rim and glow in its status colour; spread round the halo, named in bold mono (on its left near the edge); this Master stays the relic | ×1.18; a pointer anywhere on it picks it | callout on it |
 | Status dot | 9 px round in its colour (7 px in the tree) | | |
 
 ## Motion (all event-driven, all transform/opacity)
@@ -128,9 +137,11 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 - Arrival: the first time the sky shows, the glitter gathers from scattered dust into the halo (1.8 s); a click skips it.
 - Drag: the halo turns and tilts with inertia (pitch .10–.34); it draws only while it moves.
 - Recovery: one shooting star across the upper sky.
-- Count change: the numeral flexes (weight/axis + skew, 0.9 s); the faded word's letters re-roll their faces one by one.
-- Pointer: parallax layers (stars, word, far ridge, glow, halo, callout, glint, near ridge), eased, one rAF per move; the callout glides (560 ms).
-- Always on (cheap): online LED breathing, glint ripple under this Master (7 s), ≤ 6 twinkling stars (8–12 s).
+- Count change: the numeral flexes (weight/axis + skew, 0.9 s).
+- Pointer: parallax over the whole window — stars 4 px, halo, hill and callout 13 px, eased (900 ms), one rAF per move. The sidebar's
+  copy of the sky moves with it (its stars by background-position, its hill by `translate`, the hill line at the curve's own slope at
+  the seam), so nothing freezes at the sidebar's edge. The callout glides (560 ms).
+- Always on (cheap): the online LED breathing in the host rows. Nothing in the sky loops.
 - Nothing runs while the window is hidden. Nothing moves under `prefers-reduced-motion`.
 
 ## Implementation notes
@@ -143,11 +154,10 @@ Thai: Noto Serif Thai (display, headings, numerals' words) + Noto Sans Thai Loop
 - **No `preserve-3d` / `translateZ` anywhere.** WebKitGTK (the Ubuntu window) without GPU compositing — a VM, or
   `WEBKIT_DISABLE_COMPOSITING_MODE=1` — flattens it (found 2026-10-28 in Linux WebKit, Playwright 1.48 image). 3D is drawn by hand.
 - Six font families: subset before shipping.
-- **Text over the sky** — near the horizon the sky gets light (white is only 2.5–3:1 on sunrise/day `--sky3`), so text there
-  carries a local scrim: the sidebar's copy of the sky darkens below 38 % of its height, and the headline has a soft radial scrim
-  plus a dark halo. Measured 2026-10-27 at 02:00, 05:00, 06:36, 10:00, 13:00, 17:36 and 19:00 (95th-percentile background behind
-  the text): headline white 7.3–11.3:1, sidebar tree 8.4–10.5:1.
-  Thai ("เครื่องออนไลน์" runs wider, into the glow) gets a wider, denser scrim: 7.9–12.9:1 at the same hours.
+- **Text over the sky** — near the horizon the sky gets light (white is only 2.5–3:1 on sunrise/day `--sky3`). In the clean sky
+  the headline sits on the hill (dark) and keeps its scrim and halo; the sidebar has no scrim, so its tree is `#D6DAEA` and its words
+  carry a dark halo. Measured 2026-10-28 at 02:00, 05:00, 06:36, 10:00, 13:00, 17:36 and 19:00 (95th-percentile background with the
+  text hidden, halo not counted): sidebar tree 8.5–12.7:1, menu 10.3–12.3:1, headline 17.4:1, film edge 17.8:1.
 - The callout shows address, system, response (the Master's timed SSH banner read, `latencyMs`), online for (since `onlineSince`,
   the first check of the current online run, as the Master saw it, not the machine's boot uptime) and when it was last checked.
 - The sidebar is sticky: its copy of the sky follows the page scroll (`--scroll`, one write per frame while scrolling) so the seam never opens.

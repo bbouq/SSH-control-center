@@ -64,7 +64,13 @@ body { margin: 0; background: radial-gradient(ellipse 60% 45% at 0% 0%, rgba(120
 .side-logo { flex: none; padding: 6px 4px 10px; color: var(--white); }
 .side-logo b { display: block; font: 800 34px/.9 var(--serif); font-variation-settings: "SOFT" 0, "WONK" 0, "opsz" 144; letter-spacing: -.02em; }
 .side-logo span { display: block; margin-top: 3px; font: 400 10px/1.5 var(--mono); letter-spacing: .3em; text-transform: uppercase; color: var(--lilac); }
-.side-nav { display: flex; flex-direction: column; gap: 2px; }
+.side-nav { display: flex; flex-direction: column; gap: 6px; }
+/* Inventory's dropdown, right under it: the filter and the host tree, folded until its chevron opens it */
+.side-hosts[hidden] { display: none; }
+.side-hosts { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 6px; padding: 8px 0 4px 4px; border-left: 1px solid var(--rule); }
+/* Add host stays in sight under the logo: the one solid button in the sidebar */
+.app-side .add-host { flex: none; min-height: 44px; background: var(--white); color: var(--ink-on-green); border-color: var(--white); font-weight: 700; }
+.app-side .add-host:hover:not(:disabled), .app-side .add-host:focus-visible { background: var(--pearl); border-color: transparent; color: var(--ink-on-green); }
 .side-nav-row { display: flex; align-items: center; }
 .side-nav .nav { width: 100%; min-height: 40px; padding: 0 12px; justify-content: flex-start; font-size: 13px; font-weight: 700; letter-spacing: .16em; color: #C9CDE2; background: rgba(238, 240, 248, .035) !important; border-radius: var(--radius); }
 .side-nav .nav:hover:not(:disabled) { background: var(--pearl) !important; color: var(--ink-on-green) !important; }
@@ -496,7 +502,7 @@ dialog h2 { margin-bottom: 12px; }
 .dc-item { flex: 1; min-width: 0; min-height: 38px; display: flex; align-items: center; gap: 9px; border: 0; padding: 0 6px; justify-content: flex-start; background: transparent; color: var(--white); text-align: left; font-family: var(--body); font-weight: 600; font-size: 15px; letter-spacing: 0; text-transform: none; }
 .dc-item:hover:not(:disabled) { background: transparent; color: var(--white); }
 /* Quiet tree: smaller type in muted ink so the centre panel leads; the selected row turns white. */
-.app-side .dc-item { min-height: 30px; font-size: 13px; color: #B9BED6; }
+.app-side .dc-item { min-height: 30px; font-size: 13px; color: #D6DAEA; }
 .app-side .dot { width: 7px; height: 7px; }
 .app-side .dc-toggle { min-height: 30px; }
 .app-side .dc-count, .app-side .dc-os { font-size: 10px; }

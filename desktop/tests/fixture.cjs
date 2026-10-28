@@ -636,7 +636,7 @@ function command(name, args) {
   if (name === "rpc") return recorded(args.method, args.params || {});
   throw new Error("Unsupported fixture command: " + name);
 }
-const bootstrap = 'window.__TAURI__={core:{invoke:async(command,args)=>{const r=await fetch("/rpc",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({command,args})});const data=await r.json();if(!r.ok)throw new Error(data.error);return data;}}};';
+const bootstrap = 'try{if(localStorage.getItem("sshcc.sideHosts")===null)localStorage.setItem("sshcc.sideHosts","open")}catch{};window.__TAURI__={core:{invoke:async(command,args)=>{const r=await fetch("/rpc",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({command,args})});const data=await r.json();if(!r.ok)throw new Error(data.error);return data;}}};';
 const json = (res, value) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(value === undefined ? null : value)); };
 const body = async req => { let text = ""; for await (const chunk of req) text += chunk; return text ? JSON.parse(text) : {}; };
 const server = http.createServer(async (req, res) => {

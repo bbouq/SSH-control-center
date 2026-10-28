@@ -1,11 +1,10 @@
 /* The Inventory sky (DESIGN.md "Relic Night"). Built once, then only updated, so the halo's turn or the parallax
    survives the window's re-renders. app.js hands it a snapshot of the fleet; the sky never asks the Master itself.
-   The fleet is the Stardust Halo: a ring of glitter around this Master (a silver relic on the near ridge), one bright
+   The fleet is the Stardust Halo: a ring of glitter around this Master (a silver relic on its hill), one bright
    spark per host. Real 3D points projected by hand on canvas 2D (no library, no WebGL, so it also draws in WebKitGTK
    without a GPU). It draws only while something moves: the arrival, a drag, its inertia, a host changing. Motion budget
    otherwise: the glint and a few sparks; the clock repaints the sky once a minute. CSP: no style="" anywhere, custom
    properties go through CSSOM. */
-const NS = "http://www.w3.org/2000/svg";
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const MAX_SPARKS = 48; // hosts named on the halo; the rest still glitter in it
 
@@ -22,13 +21,11 @@ const PHASES = {
 // hour · phase · glow strength · stars · rays
 const HOURS = [[0, "night", .2, 1, 0], [4.3, "predawn", .55, .95, 0], [6.2, "sunrise", .95, .3, .2], [8.5, "day", .5, 0, .55], [13, "day", .42, 0, .7],
   [16.3, "late", .5, 0, .5], [18.1, "golden", .9, .15, .15], [19.4, "dusk", .55, .6, 0], [21, "night", .22, 1, 0], [24, "night", .2, 1, 0]];
-const SUNRISE = 6, SUNSET = 18.6;
-const SPARKS = [[78, 12, 8, 9.5, 0], [88, 26, 5, 11, 2.4], [66, 8, 5, 8.2, 4.1], [94, 44, 7, 12, 1.2], [57, 18, 4, 10.4, 6], [83, 52, 4, 9, 3.3]];
-const FACES = ["c", "f", "g", "m"];
 const STATE_COLOUR = { online: "var(--led)", offline: "var(--rose)", hot: "var(--amber)" };
 const SPARK_RGB = { online: "255,238,214", offline: "255,127,174", hot: "255,194,102", checking: "201,205,226" };
 const GLITTER = 5200, TONES = [[240, 160, 96], [255, 232, 200], [191, 216, 255], [255, 140, 90]];
 const REST = { yaw: .35, pitch: .27 };
+const BLEED = 24; // the halo canvases run this far past the plate on each side, so the parallax never opens an edge
 
 const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
 const mix = (a, b, t) => "#" + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t).toString(16).padStart(2, "0")).join("");
@@ -37,36 +34,20 @@ const ease = t => t * t * (3 - 2 * t);
 const px = v => v + "px";
 const set = (el, props) => { for (const k in props) el.style.setProperty(k, props[k]); return el; };
 const make = (tag, cls, parent) => { const el = document.createElement(tag); if (cls) el.className = cls; if (parent) parent.append(el); return el; };
-const svgEl = (tag, attrs, parent) => { const el = document.createElementNS(NS, tag); for (const k in attrs) el.setAttribute(k, attrs[k]); if (parent) parent.append(el); return el; };
-const RIDGE_FAR = "M0 128 C 140 104, 250 86, 360 108 S 560 132, 700 104 S 900 50, 1010 44 S 1150 40, 1200 52";
-const RIDGE_NEAR = "M0 100 C 120 92, 250 96, 360 122 S 500 168, 630 158 S 830 112, 970 96 S 1130 74, 1200 82";
 
 export function createSky({ onSelect }) {
   const root = make("section", "sky");
   root.id = "sky"; root.hidden = true; root.setAttribute("aria-hidden", "true");
-  const dust = make("div", "sky-dust", root);
-  const word = make("div", "sky-word", root);
-  const rays = make("div", "sky-rays", root), sun = make("div", "sky-sun", root), moon = make("div", "sky-moon", root);
-  const dawn = make("div", "sky-dawn", root), chill = make("div", "sky-chill", root);
-  const far = svgEl("svg", { class: "sky-ridge far", viewBox: "0 0 1200 190", preserveAspectRatio: "none" }, root);
-  const grad = svgEl("linearGradient", { id: "sky-rim", x1: 0, x2: 1, y1: 0, y2: 0 }, svgEl("defs", {}, far));
-  [[0, "#8FB0F0", 0], [.22, "#C9A8F0", .85], [.45, "#8FB0F0", .35], [.8, "#8FB0F0", 0]].forEach(([o, c, a]) => svgEl("stop", { offset: o, "stop-color": c, "stop-opacity": a }, grad));
-  svgEl("path", { class: "fill", d: RIDGE_FAR + " L1200 190 L0 190 Z" }, far);
-  svgEl("path", { class: "rim", d: RIDGE_FAR }, far);
-  const glint = make("div", "sky-glint", root); make("i", "", glint);
-  const back = make("canvas", "sky-halo", root);
-  const near = svgEl("svg", { class: "sky-ridge near", viewBox: "0 0 1200 190", preserveAspectRatio: "none" }, root);
-  svgEl("path", { d: RIDGE_NEAR + " L1200 190 L0 190 Z" }, near);
-  const front = make("canvas", "sky-halo", root), bloom = make("canvas", "sky-halo bloom", root);
-  const sparks = SPARKS.map(([x, y, s, t, dl]) => set(make("i", "sky-spark", root), { left: x + "%", top: y + "%", "--s": px(s), "--t": t + "s", "--dl": dl + "s" }));
-  const film = make("div", "sky-film", root); make("i", "perf", film); const frames = make("span", "frames", film); make("i", "perf", film);
-  make("i", "sky-reg tl", root); make("i", "sky-reg br", root);
-  const tag = make("span", "sky-tag", root);
+  // As the prototype: a fixed night (CSS), scattered stars, the halo on one hill, grain and a vignette, the film edge, the headline
+  const stars = make("canvas", "sky-stars", root);
+  const back = make("canvas", "sky-halo", root), front = make("canvas", "sky-halo", root), bloom = make("canvas", "sky-halo bloom", root);
+  make("div", "sky-vignette", root); make("div", "sky-grain", root);
+  const film = make("div", "sky-film", root); const frames = make("span", "frames", film);
+  const hint = make("p", "sky-hint", root);
   const headline = make("p", "sky-headline", root);
   const callout = make("div", "sky-callout", root); make("i", "stem", callout);
   const cBody = make("div", "body", callout), cName = make("span", "name", cBody), cState = make("span", "state", cBody), cFacts = make("dl", "", cBody);
   const shoot = make("div", "", root); set(shoot, { inset: "0", "pointer-events": "none", overflow: "hidden" });
-  void sparks;
 
   let T = null, snap = null, layoutKey = "", ring = [], byKey = new Map();
   let focusId = null, last = new Map(), hour = 0, clock = 0, parallax = { x: 0, y: 0 };
@@ -79,15 +60,6 @@ export function createSky({ onSelect }) {
     a[0].forEach((c, n) => st.setProperty("--sky" + n, mix(c, b[0][n], t)));
     st.setProperty("--glow", mix(a[1], b[1], t)); st.setProperty("--ridge-far", mix(a[2], b[2], t));
     st.setProperty("--gs", lerp(A[2], B[2], t).toFixed(3)); st.setProperty("--stars", lerp(A[3], B[3], t).toFixed(3)); st.setProperty("--rays", lerp(A[4], B[4], t).toFixed(3));
-    const W = root.clientWidth, H = root.clientHeight, horizon = H * .8;
-    const d = (h - SUNRISE) / (SUNSET - SUNRISE), up = d > -.04 && d < 1.04, dc = Math.min(Math.max(d, 0), 1);
-    const sx = W * (.33 + .58 * dc), sy = horizon - Math.sin(Math.PI * dc) * H * .5;
-    sun.style.transform = rays.style.transform = `translate(${sx.toFixed(0)}px, ${sy.toFixed(0)}px)`;
-    sun.style.opacity = up ? Math.min(1, Math.sin(Math.PI * dc) * 6).toFixed(2) : "0";
-    set(root, { "--gx": up ? (sx / W * 100).toFixed(1) + "%" : "34%", "--gy": up ? Math.min(92, sy / H * 100 + 6).toFixed(1) + "%" : "74%" });
-    const m = (h >= 19 ? h - 19 : h + 5) / 10.5, night = m >= 0 && m <= 1;
-    moon.style.transform = `translate(${(W * (.9 - .55 * m)).toFixed(0)}px, ${(horizon - Math.sin(Math.PI * m) * H * .58).toFixed(0)}px) rotate(-20deg)`;
-    moon.style.opacity = night ? Math.min(1, Math.sin(Math.PI * m) * 4).toFixed(2) : "0";
   }
   const nowHour = () => { const d = new Date(); return d.getHours() + d.getMinutes() / 60; };
   // the clock runs on every page: the thin sky strip on the other pages reads the same colours
@@ -116,17 +88,47 @@ export function createSky({ onSelect }) {
   // This Master: the hosts sit evenly round the ring, merged Masters and Masters below them larger
   function build(s) {
     const list = [...s.direct.map(h => [h.id, h, 1]), ...s.peers.flatMap(p => [[p.id, p, 1.6], ...p.hosts.map(h => [p.id + "\u0000" + h.id, h, h.master ? 1.3 : 1])])].slice(0, MAX_SPARKS);
-    ring = list.map(([key, , size], i) => ({ key, size, a: -Math.PI / 2 + (i + .5) * Math.PI * 2 / list.length }));
+    // hosts evenly round the ring; the Masters (planets) spread apart, each half a step between two hosts
+    const hosts = list.filter(([, , size]) => size === 1), masters = list.filter(([, , size]) => size > 1), step = Math.PI * 2 / Math.max(1, hosts.length);
+    ring = [...hosts.map(([key, , size], i) => ({ key, size, a: -Math.PI / 2 + i * step })),
+      ...masters.map(([key, , size], j) => ({ key, size, a: -Math.PI / 2 + (Math.round(j * hosts.length / masters.length) + .5) * step + .35 }))];
     byKey = new Map(ring.map(sp => [sp.key, sp]));
   }
   function size() {
-    DPR = Math.min(2, devicePixelRatio || 1); W = root.clientWidth; H = root.clientHeight;
-    cx = W * .6; cy = H * .58; R = Math.min(W * .25, H * .7);
+    DPR = Math.min(2, devicePixelRatio || 1); const plate = root.clientWidth; W = plate + BLEED * 2; H = root.clientHeight;
+    cx = BLEED + plate * .56; cy = H * .5; R = Math.min(plate * .3, H * .46);
+    // the hill meets the sidebar's copy of the sky at the plate's left edge
+    document.body.style.setProperty("--hill-y", hillAt(BLEED).toFixed(0) + "px");
     for (const c of [back, front]) { c.width = W * DPR; c.height = H * DPR; }
     bloom.width = W * DPR / 4; bloom.height = H * DPR / 4;
+    stars.width = W * DPR; stars.height = H * DPR; scatter(stars.getContext("2d"), W, H, DPR, 3);
+    const side = document.querySelector(".app-side"), sw = side ? side.clientWidth : 0;
+    // the ember haze, in the sidebar's own coordinates, so its copy of the sky carries the same warmth to the edge
+    const bs = document.body.style; bs.setProperty("--haze-x", (sw + plate * .56).toFixed(0) + "px"); bs.setProperty("--haze-y", (H * .5).toFixed(0) + "px");
+    bs.setProperty("--haze-rx", (plate * .6).toFixed(0) + "px"); bs.setProperty("--haze-ry", (H * .7).toFixed(0) + "px");
+    // the sidebar's hill line, at the curve's own slope at the seam (so a parallax shift keeps the two meeting); its box bleeds 24 px each side
+    const slope = (hillAt(BLEED - 8) - hillAt(BLEED)) / 8;
+    bs.setProperty("--hill-l", (hillAt(BLEED) + slope * (sw + 24)).toFixed(1) + "px"); bs.setProperty("--hill-r", (hillAt(BLEED) - slope * 24).toFixed(1) + "px");
+    if (sw) { const c = document.createElement("canvas"); c.width = sw * DPR; c.height = H * DPR; scatter(c.getContext("2d"), sw, H, DPR, 5);
+      document.body.style.setProperty("--side-stars", `url(${c.toDataURL()})`); }
+  }
+  // the prototype's stars: scattered, uneven, a few larger; thinning toward the hill
+  function scatter(x, w, h, d, seed) {
+    const s = (v => () => ((v = (v * 16807) % 2147483647) - 1) / 2147483646)(seed);
+    x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, w, h);
+    for (let i = 0, n = Math.round(w * h / 1440); i < n; i++) { const y = s() * h * .82, a = (.15 + s() * .6) * (1 - y / h * .6);
+      x.fillStyle = `rgba(230,235,255,${a.toFixed(2)})`; x.beginPath(); x.arc(s() * w, y, s() < .96 ? .6 : 1.3, 0, 7); x.fill(); }
+  }
+  const crest = () => cy + R * .3;
+  // the hill: rises from the left edge to the relic's crest, falls away to the right (the prototype's curve)
+  const hillAt = x => { const top = crest(); if (x <= cx) { const t = x / cx; return top + R * .36 * (1 - t) ** 1.6; } const t = (x - cx) / (W - cx); return top + R * .4 * t ** 1.4; };
+  function hill(x) {
+    const top = crest(), g = x.createLinearGradient(0, top - 20, 0, H); g.addColorStop(0, "#161624"); g.addColorStop(1, "#06060B");
+    x.globalCompositeOperation = "source-over"; x.fillStyle = g; x.beginPath(); x.moveTo(0, H);
+    for (let px = 0; px <= W; px += 8) x.lineTo(px, hillAt(px)); x.lineTo(W, H); x.fill();
   }
   function relic(x) {
-    const w = R * .07, h = R * .34, base = H - 36, g = x.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
+    const w = R * .07, h = R * .36, base = crest() + 4, g = x.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
     g.addColorStop(0, "#6E7CA8"); g.addColorStop(.35, "#F4F6FB"); g.addColorStop(.6, "#A6B4D8"); g.addColorStop(1, "#3A4166");
     x.globalCompositeOperation = "source-over"; x.fillStyle = g; x.beginPath(); x.roundRect(cx - w / 2, base - h, w, h, [w / 2, w / 2, 2, 2]); x.fill();
     const s = (seed => () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646)(11);
@@ -137,12 +139,32 @@ export function createSky({ onSelect }) {
     x.fillStyle = g; x.beginPath(); x.arc(px, py, r * 3, 0, 7); x.fill();
     x.strokeStyle = `rgba(${rgb},${a * .8})`; x.lineWidth = .8; x.beginPath(); x.moveTo(px - r * 4, py); x.lineTo(px + r * 4, py); x.moveTo(px, py - r * 4); x.lineTo(px, py + r * 4); x.stroke();
   }
+  /* A Master as a planet: a lit silver-violet sphere, a tilted ring (its far arc behind, near arc in front) and a glow
+     in its status colour; dimmer when it is on the far side of the halo */
+  function planet(x, g, px, py, r, st, far) {
+    const rgb = SPARK_RGB[st], tilt = -.32, rx = r * 1.9, ry = r * .5;
+    x.globalCompositeOperation = "lighter"; flare(g, px, py, r * .9, rgb, .7);
+    const halo = x.createRadialGradient(px, py, r * .8, px, py, r * 1.9); halo.addColorStop(0, `rgba(${rgb},.32)`); halo.addColorStop(1, `rgba(${rgb},0)`);
+    x.fillStyle = halo; x.beginPath(); x.arc(px, py, r * 1.9, 0, 7); x.fill();
+    x.globalCompositeOperation = "source-over"; x.globalAlpha = far ? .7 : 1;
+    const ring = (from, to) => { x.strokeStyle = "rgba(255,232,200,.75)"; x.lineWidth = Math.max(1, r * .09); x.beginPath(); x.ellipse(px, py, rx, ry, tilt, from, to); x.stroke();
+      x.strokeStyle = "rgba(240,160,96,.45)"; x.lineWidth = Math.max(.6, r * .05); x.beginPath(); x.ellipse(px, py, rx * .84, ry * .84, tilt, from, to); x.stroke(); };
+    ring(Math.PI, Math.PI * 2);
+    const sphere = x.createRadialGradient(px - r * .38, py - r * .42, r * .08, px, py, r);
+    sphere.addColorStop(0, "#F4F6FB"); sphere.addColorStop(.35, st === "offline" ? "#C9A0B8" : "#B8C2E4"); sphere.addColorStop(.75, st === "offline" ? "#4A2A44" : "#3A4166"); sphere.addColorStop(1, "#14162A");
+    x.fillStyle = sphere; x.beginPath(); x.arc(px, py, r, 0, 7); x.fill();
+    // faint bands and a rim in its status colour
+    x.save(); x.beginPath(); x.arc(px, py, r, 0, 7); x.clip(); x.strokeStyle = "rgba(255,255,255,.12)"; x.lineWidth = r * .12;
+    for (const k of [-.35, .1, .5]) { x.beginPath(); x.ellipse(px, py + r * k, r * 1.1, r * .22, tilt * .6, 0, 7); x.stroke(); } x.restore();
+    x.strokeStyle = `rgba(${rgb},.85)`; x.lineWidth = 1.2; x.beginPath(); x.arc(px, py, r, 0, 7); x.stroke();
+    ring(0, Math.PI); x.globalAlpha = 1; x.globalCompositeOperation = "lighter";
+  }
   const eased = t => 1 - Math.pow(1 - t, 3);
   function frame(now) {
     if (arrive < 1) arrive = arriveAt ? Math.min(1, (now - arriveAt) / 1800) : 0;
     const k = eased(arrive), b = back.getContext("2d"), f = front.getContext("2d"), g = bloom.getContext("2d");
     for (const [x, d] of [[b, DPR], [f, DPR], [g, DPR / 4]]) { x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, W, H); x.globalCompositeOperation = "lighter"; }
-    relic(b); b.globalCompositeOperation = "lighter";
+    hill(f); relic(f); f.globalCompositeOperation = "lighter";
     for (let i = 0; i < GLITTER; i++) {
       const [x0, y0, z, s] = project(G[i * 4], G[i * 4 + 1], G[i * 4 + 2]), x = x0 + (FROM[i * 2] * W - x0) * (1 - k), y = y0 + (FROM[i * 2 + 1] * H - y0) * (1 - k);
       const c = z > 0 ? b : f, sz = G[i * 4 + 3] * s; c.fillStyle = GC[i]; c.fillRect(x - sz / 2, y - sz / 2, sz, sz);
@@ -154,11 +176,19 @@ export function createSky({ onSelect }) {
       const [x, y, z, s] = project(sp.a, 0, 0), c = z > 0 ? b : f, st = podState(h), hit = changed.get(sp.key);
       const swell = hit ? Math.max(0, 1 - (now - hit) / 1400) : 0; if (swell) busy = true;
       const r = 2 * sp.size * s * (sp.key === hover || sp.key === focusId ? 1.8 : 1) * (1 + swell * 1.5) * (k - .6) / .4;
-      sp.x = x; sp.y = y; flare(c, x, y, r, SPARK_RGB[st], 1); flare(g, x, y, r * 1.6, SPARK_RGB[st], .9);
-      if (swell) { c.strokeStyle = `rgba(${SPARK_RGB[st]},${swell.toFixed(2)})`; c.lineWidth = 1.5; c.beginPath(); c.arc(x, y, 6 + (1 - swell) * 30, 0, 7); c.stroke(); }
+        sp.x = x; sp.y = y;
+      // a Master (merged, or one below it) is a planet on the halo; every other host a spark
+      if (sp.size > 1) { const pr = R * (sp.size > 1.4 ? .11 : .07) * s * (sp.key === hover || sp.key === focusId ? 1.18 : 1) * (1 + swell * .4) * (k - .6) / .4;
+        sp.r = pr; planet(c, g, x, y, pr, st, z > 0); }
+      else { sp.r = 0; flare(c, x, y, r, SPARK_RGB[st], 1); flare(g, x, y, r * 1.6, SPARK_RGB[st], .9); }
+      if (swell) { c.globalCompositeOperation = "lighter"; c.strokeStyle = `rgba(${SPARK_RGB[st]},${swell.toFixed(2)})`; c.lineWidth = 1.5; c.beginPath(); c.arc(x, y, 6 + (1 - swell) * 30, 0, 7); c.stroke(); }
       if (sp.size > 1 || st === "offline" || st === "hot" || sp.key === hover) {
         c.globalCompositeOperation = "source-over"; c.font = "400 10px 'Space Mono', monospace"; c.globalAlpha = z > 0 ? .55 : 1;
-        c.fillStyle = st === "offline" ? "#FF7FAE" : st === "hot" ? "#FFC266" : "#DCE0F0"; c.fillText(h.label.toUpperCase(), x + 11, y - 9);
+        c.fillStyle = st === "offline" ? "#FF7FAE" : st === "hot" ? "#FFC266" : "#DCE0F0";
+        const text = h.label.toUpperCase();
+        if (sp.r) { c.font = "700 11px 'Space Mono', monospace"; const w = c.measureText(text).width, right = x + sp.r * 1.9 + 6;
+          // a planet near the plate's right edge names itself on its left
+          c.fillText(text, right + w > W - BLEED - 12 ? x - sp.r * 1.9 - 6 - w : right, y + 4); } else c.fillText(text, x + 11, y - 9);
         c.globalAlpha = 1; c.globalCompositeOperation = "lighter";
       }
     }
@@ -172,9 +202,13 @@ export function createSky({ onSelect }) {
   }
   document.addEventListener("visibilitychange", kick);
   // drag turns the halo, a point names a spark, a click opens its host
-  const pick = (x, y) => { let best = null, d = 22; for (const sp of ring) { if (sp.x == null) continue; const dd = Math.hypot(sp.x - x, sp.y - y); if (dd < d) { d = dd; best = sp.key; } } return best; };
+  // a planet under the pointer wins over a spark near it; otherwise the nearest spark within 22 px
+  const pick = (x, y) => {
+    const on = ring.find(sp => sp.r && sp.x != null && Math.hypot(sp.x - x, sp.y - y) < sp.r + 8); if (on) return on.key;
+    let best = null, d = 22; for (const sp of ring) { if (sp.x == null) continue; const dd = Math.hypot(sp.x - x, sp.y - y); if (dd < d) { d = dd; best = sp.key; } } return best;
+  };
   let lastX = 0, lastY = 0, moved = 0;
-  const local = e => { const r = root.getBoundingClientRect(); return [e.clientX - r.left - parallax.x, e.clientY - r.top - parallax.y]; };
+  const local = e => { const r = root.getBoundingClientRect(); return [e.clientX - r.left + BLEED - parallax.x, e.clientY - r.top - parallax.y]; };
   root.addEventListener("pointerdown", e => { if (e.button !== 0 || e.target.closest(".sky-callout")) return; if (arrive < 1) { arrive = 1; kick(); }
     dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY; root.setPointerCapture(e.pointerId); root.classList.add("is-dragging"); });
   root.addEventListener("pointermove", e => {
@@ -207,22 +241,6 @@ export function createSky({ onSelect }) {
     const raw = new Set([items[0], snap.master.label, snap.master.address]);
     frames.replaceChildren(...items.map((text, i) => { const s = make("span", i === 1 ? "on" : ""); s.textContent = text; if (raw.has(text)) s.dataset.raw = ""; return s; }));
   }
-  function writeWord() {
-    const text = T.sky.word, latin = /^[\x20-\x7e]+$/.test(text);
-    word.replaceChildren(...[...text].map((ch, i) => { const s = make("span", latin ? (i === 0 ? "c" : FACES[(i * 7 + 3) % 4]) : ""); s.textContent = ch; return s; }));
-  }
-  function reroll() {
-    if (REDUCED) return;
-    [...word.children].forEach((l, i) => {
-      if (!FACES.some(f => l.classList.contains(f))) return;
-      setTimeout(() => { l.classList.add("out"); setTimeout(() => { const cur = FACES.find(f => l.classList.contains(f)); let next; do next = FACES[Math.floor(Math.random() * 4)]; while (next === cur); l.classList.replace(cur, next); l.classList.remove("out"); }, 180); }, i * 70);
-    });
-  }
-  function health() {
-    const share = snap.total ? snap.online / snap.total : 1;
-    dawn.style.opacity = (0.25 + 0.75 * share ** 3).toFixed(2);
-    chill.style.opacity = Math.min(1, snap.offline * 0.7).toFixed(2);
-  }
 
   /* ---------- the callout follows the pointed host (or the first host that needs a look) ---------- */
   function point(id) {
@@ -239,8 +257,8 @@ export function createSky({ onSelect }) {
   }
   function place() {
     const sp = byKey.get(focusId); if (!sp || sp.x == null) return;
-    callout.classList.toggle("down", sp.y < 220); callout.classList.toggle("left", sp.x > W - 330);
-    callout.style.transform = `translate(${sp.x.toFixed(0)}px, ${sp.y.toFixed(0)}px)`;
+    const x = sp.x - BLEED; callout.classList.toggle("down", sp.y < 220); callout.classList.toggle("left", x > W - BLEED * 2 - 330);
+    callout.style.transform = `translate(${x.toFixed(0)}px, ${sp.y.toFixed(0)}px)`;
     callout.classList.add("is-shown");
   }
   const defaultFocus = () => {
@@ -271,15 +289,19 @@ export function createSky({ onSelect }) {
       if (before && before !== now) { signal(key); if (before !== "online" && now === "online") recovered = true; }
     }
     if (recovered) setTimeout(shootingStar, 700);
-    if (prev.online !== snap.online) { flex(); reroll(); }
+    if (prev.online !== snap.online) flex();
   }
 
   /* ---------- parallax: one write per pointer move, eased by CSS, nothing while still ---------- */
-  const LAYERS = [[dust, 4], [word, 9], [far, 6], [dawn, 3], [back, 13], [front, 13], [bloom, 13], [callout, 13], [glint, 16], [near, 20]];
+  const LAYERS = [[stars, 4], [back, 13], [front, 13], [bloom, 13], [callout, 13]];
   let pending = 0;
   function drift(nx, ny) {
     for (const [el, d] of LAYERS) el.style.translate = `${(nx * d).toFixed(1)}px ${(ny * d * .5).toFixed(1)}px`;
     parallax = { x: nx * 13, y: ny * 6.5 };
+    // the sidebar's copy of the sky moves with it: its stars as the plate's stars, its hill as the halo and hill
+    const bs = document.body.style;
+    bs.setProperty("--sx", (nx * 4).toFixed(1) + "px"); bs.setProperty("--sy", (ny * 2).toFixed(1) + "px");
+    bs.setProperty("--hx", (nx * 13).toFixed(1) + "px"); bs.setProperty("--hy", (ny * 6.5).toFixed(1) + "px");
   }
   if (!REDUCED) {
     root.addEventListener("pointermove", e => {
@@ -297,16 +319,14 @@ export function createSky({ onSelect }) {
 
   /* ---------- public ---------- */
   function update(next, strings) {
-    const langChanged = strings !== T; T = strings;
+    T = strings;
     document.body.classList.toggle("has-sky", Boolean(next?.visible));
     if (!next?.visible) { root.hidden = true; return; }
     const prev = snap, wasHidden = root.hidden; snap = next; root.hidden = false;
     const key = JSON.stringify([next.direct.map(h => h.id), next.peers.map(p => [p.id, p.hosts.map(h => h.id)])]);
     if (key !== layoutKey) { layoutKey = key; build(next); focusId = null; }
     if (wasHidden) { size(); if (!arriveAt && !REDUCED) arriveAt = performance.now(); }
-    writeHeadline(); writeFilm(); health(); kick();
-    tag.textContent = T.sky.tag;
-    if (langChanged || !word.childElementCount) writeWord();
+    writeHeadline(); writeFilm(); hint.textContent = T.sky.hint; kick();
     if (wasHidden) { paint(nowHour()); startClock(); }
     react(wasHidden ? null : prev);
     // a host that just went offline or hot takes the callout
