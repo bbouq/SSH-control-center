@@ -81,13 +81,24 @@ body { margin: 0; background: radial-gradient(ellipse 60% 45% at 0% 0%, rgba(120
 .app-main { min-width: 0; }
 
 /* Inventory: the sky (sky.css), one summary line, then tabs over host rows. */
-.inv-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 10px 0; margin-bottom: 18px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+/* Summary: headline + when it was checked on one row; below, the hosts that need a look grouped by why (crisp: mono tag, hairlines) */
+.inv-summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 0 16px; padding: 12px 0; margin-bottom: 18px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .inv-summary strong { font-family: var(--serif); font-weight: 600; font-size: 22px; letter-spacing: -.01em; }
+.sum-groups { grid-column: 2 / -1; display: grid; margin-top: 10px; }
+.sum-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 6px 0; border-top: 1px solid var(--rule); }
+.sum-tag { display: inline-flex; align-items: center; gap: 8px; margin-right: 14px; font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--lilac); }
+.sum-tag .dot { width: 9px; height: 9px; }
+.sum-tag b { color: var(--white); font-weight: 700; letter-spacing: .04em; }
+.sum-group.is-offline .sum-tag { color: var(--rose); }
+.sum-group.is-hot .sum-tag { color: var(--amber); }
+.sum-host, .sum-more { min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--white); font: 500 14px/1 var(--body); letter-spacing: 0; text-transform: none; transition: background 180ms ease-out; }
+.sum-host:hover, .sum-host:focus-visible { background: var(--pearl-faint); }
+.sum-more { border: 1px solid var(--rule); color: var(--lilac); font: 400 12px/1 var(--mono); letter-spacing: .06em; margin-left: 4px; }
+.sum-more:hover, .sum-more:focus-visible { background: var(--pearl); border-color: transparent; color: var(--ink-on-green); }
 .summary-icon { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-weight: 700; color: var(--lilac); }
 .summary-icon.is-good { color: var(--led); }
 .summary-icon.is-bad { color: var(--rose); }
-.inv-summary .text-button { min-height: 32px; padding: 0; border: 0; color: var(--white); font-family: var(--body); font-weight: 500; letter-spacing: 0; text-transform: none; text-decoration: underline; text-decoration-color: var(--rose); text-underline-offset: 4px; font-size: 15px; }
-.inv-summary .status-meta { margin-left: auto; }
+.inv-summary .status-meta { justify-self: end; }
 @media (max-width: 760px) {
   body { grid-template-columns: minmax(0, 1fr); }
   .app-side { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--rule-soft); }
@@ -690,10 +701,10 @@ dialog h2 { margin-bottom: 12px; }
    marks above and below the letters. Latin-only text (logo, version, host key seal, EN) keeps its spacing. */
 html:lang(th) :is(.side-nav .nav, .side-foot .label, .side-foot strong, .inv-summary strong, h3, .label, .stat-label, th, .status-meta, .fig, button, label, .nav, .info-line,
   .status-filter strong, td strong, .badge, .chip, .callout strong, summary, summary small, .facts dt, .live-label, .tabs button, .console-bar strong, .stepper strong,
-  .ctx-item, .dc-item, .dc-tag, .inv-state, .spark-empty, .check-head h2, .foil-sticker span) { letter-spacing: 0; }
+  .ctx-item, .dc-item, .dc-tag, .inv-state, .spark-empty, .check-head h2, .foil-sticker span, .sum-tag) { letter-spacing: 0; }
 html:lang(th) :is(h1, h2) { line-height: 1.2; }
 html:lang(th) :is(h3, .callout strong, td strong, .badge, summary, button) { line-height: 1.3; }
 html:lang(th) .lang-switch button[lang="en"] { letter-spacing: .08em; }
 /* The 10–11 px mono labels are sized for uppercase Latin; Thai at that size is too small to read. */
-html:lang(th) :is(.label, .stat-label, th, .status-meta, .fig, label, .facts dt, .side-foot .label, .live-label, .chip, .info-line, summary small) { font-size: 13px; }
+html:lang(th) :is(.label, .stat-label, th, .status-meta, .fig, label, .facts dt, .side-foot .label, .live-label, .chip, .info-line, summary small, .sum-tag) { font-size: 13px; }
 html:lang(th) :is(.dc-tag, .dc-count, .dc-os) { font-size: 12px; }
