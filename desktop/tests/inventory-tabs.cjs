@@ -18,7 +18,7 @@ const { startFixture } = require("./decisions.cjs");
     await page.locator('.inv-tab[aria-selected="true"]', { hasText: "Through Branch Master" }).waitFor();
     assert.equal(await page.locator(".inv-row").count(), 7, "Branch Master and its six hosts");
     for (const name of ["Lab Master", "Lab web", "Lab db"]) await page.locator(".inv-row", { hasText: name }).first().waitFor();
-    assert.equal(await page.$$eval(".sky-pod", pods => pods.filter(pod => pod.dataset.key.startsWith("branch-master\u0000")).length), 6, "the sky draws every host below Branch Master");
+    assert.equal(await page.evaluate(() => window.sshccSky.keys().filter(key => key.startsWith("branch-master\u0000")).length), 6, "the sky draws every host below Branch Master");
     console.log("inventory-tabs: ok");
   } finally { fixture.stop(); await browser.close(); }
 })().catch(error => { console.error(error); process.exit(1); });
